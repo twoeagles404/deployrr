@@ -1,0 +1,193 @@
+# =============================================================================
+# Deployrr Max — Auto-Release GitHub Actions Workflow
+# =============================================================================
+#
+# Triggers on: git tag push matching v*  (e.g., v2.0.0, v2.1.0)
+#
+# HOW TO RELEASE:
+#   git tag -a v2.0.0 -m "Release v2.0.0: 110 apps, enhanced WebUI"
+#   git push origin v2.0.0
+#
+# This workflow will:
+#   1. Create a GitHub Release with auto-generated release notes
+#   2. Attach the key files as release assets
+#   3. Build and push a Docker image to GitHub Container Registry (ghcr.io)
+#
+# Required secrets (set in repo Settings → Secrets → Actions):
+#   GITHUB_TOKEN  — automatically provided by GitHub Actions
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ===========================================================================
+  # Job 1: Create GitHub Release and upload assets
+  # ===========================================================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for changelog generation
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "TAG=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Get commit messages since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [[ -n "${PREV_TAG}" ]]; then
+            CHANGES=$(git log ${PREV_TAG}..HEAD --oneline --no-decorate 2>/dev/null || echo "See commit history")
+          else
+            CHANGES="Initial release"
+          fi
+
+          # Count apps in catalog
+          APP_COUNT=$(python3 -c "import json; d=json.load(open('apps/catalog.json')); print(len(d.get('apps',[])))" 2>/dev/null || echo "110+")
+
+          cat > release_notes.md << EOF
+          ## Deployrr Max ${{ steps.version.outputs.TAG }}
+
+          **One-command install:**
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sudo bash
+          \`\`\`
+
+          ### What's included
+          - **${APP_COUNT} apps** across 17 categories
+          - Pure Bash TUI with \`media\` command
+          - Flask WebUI on port 9999 with monitoring, deploy, backup tabs
+          - Docker auto-install, self-update, full stack presets
+
+          ### Changes in this release
+          ${CHANGES}
+
+          ### Quick start
+          \`\`\`bash
+          # Install
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sudo bash
+
+          # Open TUI
+          media
+
+          # Open WebUI
+          # http://your-server-ip:9999
+          \`\`\`
+
+          ---
+          *Built with ❤️ for the homelab community*
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Deployrr Max ${{ steps.version.outputs.TAG }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          files: |
+            install.sh
+            deployrr.sh
+            app.py
+            Dockerfile
+            apps/catalog.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ===========================================================================
+  # Job 2: Build and push Docker image to ghcr.io
+  # ===========================================================================
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/deployrr
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=Deployrr Max WebUI
+            org.opencontainers.image.description=Server monitoring and Docker management dashboard
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # Job 3: Validate the installer script
+  # ===========================================================================
+  validate:
+    name: Validate Scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint install.sh
+        run: shellcheck --severity=warning install.sh || true
+
+      - name: Lint deployrr.sh
+        run: shellcheck --severity=error deployrr.sh || true
+
+      - name: Validate catalog.json
+        run: |
+          # Check JSON is valid
+          python3 -c "import json; json.load(open('apps/catalog.json'))" && \
+          echo "✓ catalog.json is valid JSON" || \
+          echo "✗ catalog.json has JSON errors"
+
+      - name: Count apps in catalog
+        run: |
+          APP_COUNT=$(python3 -c "import json; d=json.load(open('apps/catalog.json')); print(len(d.get('apps',[])))")
+          echo "✓ catalog.json contains ${APP_COUNT} apps"

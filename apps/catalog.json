@@ -1,0 +1,2745 @@
+{
+  "meta": {
+    "version": "1.0.0",
+    "generated_by": "Deployrr (converted from YAML)",
+    "github": "https://github.com/twoeagles404/deployrr",
+    "total_apps": 103
+  },
+  "apps": [
+    {
+      "id": "qbittorrent",
+      "name": "qBittorrent",
+      "category": "Downloaders",
+      "image": "lscr.io/linuxserver/qbittorrent:latest",
+      "description": "Popular, feature-rich BitTorrent client with a clean web UI.",
+      "ports": [
+        "8080:8080",
+        "6881:6881",
+        "6881:6881/udp"
+      ],
+      "volumes": [
+        "{CONFIG}/qbittorrent:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}",
+        "WEBUI_PORT=8080"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "transmission",
+      "name": "Transmission",
+      "category": "Downloaders",
+      "image": "lscr.io/linuxserver/transmission:latest",
+      "description": "Lightweight, cross-platform BitTorrent client.",
+      "ports": [
+        "9091:9091",
+        "51413:51413",
+        "51413:51413/udp"
+      ],
+      "volumes": [
+        "{CONFIG}/transmission:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "deluge",
+      "name": "Deluge",
+      "category": "Downloaders",
+      "image": "lscr.io/linuxserver/deluge:latest",
+      "description": "Highly extensible BitTorrent client with a rich plugin ecosystem.",
+      "ports": [
+        "8112:8112",
+        "6881:6881",
+        "6881:6881/udp"
+      ],
+      "volumes": [
+        "{CONFIG}/deluge:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "sabnzbd",
+      "name": "SABnzbd",
+      "category": "Downloaders",
+      "image": "lscr.io/linuxserver/sabnzbd:latest",
+      "description": "Best-in-class Usenet NZB downloader with post-processing.",
+      "ports": [
+        "8090:8080"
+      ],
+      "volumes": [
+        "{CONFIG}/sabnzbd:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "nzbget",
+      "name": "NZBGet",
+      "category": "Downloaders",
+      "image": "lscr.io/linuxserver/nzbget:latest",
+      "description": "Efficient, highly optimised Usenet downloader.",
+      "ports": [
+        "6789:6789"
+      ],
+      "volumes": [
+        "{CONFIG}/nzbget:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "jdownloader2",
+      "name": "JDownloader 2",
+      "category": "Downloaders",
+      "image": "jlesage/jdownloader-2:latest",
+      "description": "Java-based download manager supporting 100s of file hosters.",
+      "ports": [
+        "5800:5800"
+      ],
+      "volumes": [
+        "{CONFIG}/jdownloader2:/config",
+        "{MEDIA}/downloads:/output"
+      ],
+      "environment": [
+        "USER_ID={PUID}",
+        "GROUP_ID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "pyload",
+      "name": "pyLoad",
+      "category": "Downloaders",
+      "image": "ghcr.io/pyload/pyload:latest",
+      "description": "Free, open-source download manager written in Python.",
+      "ports": [
+        "8000:8000"
+      ],
+      "volumes": [
+        "{CONFIG}/pyload:/config",
+        "{MEDIA}/downloads:/downloads"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "aria2",
+      "name": "Aria2 Pro",
+      "category": "Downloaders",
+      "image": "p3terx/aria2-pro:latest",
+      "description": "Multi-protocol & multi-source command-line download utility.",
+      "ports": [
+        "6800:6800",
+        "6888:6888",
+        "6888:6888/udp"
+      ],
+      "volumes": [
+        "{CONFIG}/aria2:/config",
+        "{MEDIA}/downloads:/downloads"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}",
+        "RPC_SECRET=deployrr_change_me"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "⬇️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "pinchflat",
+      "name": "Pinchflat",
+      "category": "Downloaders",
+      "image": "ghcr.io/kieraneglin/pinchflat:latest",
+      "description": "Self-hosted YouTube and media subscription manager with automatic downloads.",
+      "ports": [
+        "8945:8945"
+      ],
+      "volumes": [
+        "/config",
+        "/downloads"
+      ],
+      "environment": [
+        "TZ"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📺",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "qbitrr",
+      "name": "qbitrr",
+      "category": "Downloaders",
+      "image": "feramance/qbitrr:latest",
+      "description": "Companion app for qBittorrent, Radarr, and Sonarr — manages queue and removes stalled downloads.",
+      "ports": [
+        "6969:6969"
+      ],
+      "volumes": [
+        "/config",
+        "/completed_downloads"
+      ],
+      "environment": [
+        "TZ"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🔧",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "prowlarr",
+      "name": "Prowlarr",
+      "category": "ARR Suite",
+      "image": "lscr.io/linuxserver/prowlarr:latest",
+      "description": "Indexer manager and proxy supporting many torrent and Usenet trackers.",
+      "ports": [
+        "9696:9696"
+      ],
+      "volumes": [
+        "{CONFIG}/prowlarr:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "radarr",
+      "name": "Radarr",
+      "category": "ARR Suite",
+      "image": "lscr.io/linuxserver/radarr:latest",
+      "description": "Movie collection manager. Integrates with download clients and media servers.",
+      "ports": [
+        "7878:7878"
+      ],
+      "volumes": [
+        "{CONFIG}/radarr:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "sonarr",
+      "name": "Sonarr",
+      "category": "ARR Suite",
+      "image": "lscr.io/linuxserver/sonarr:latest",
+      "description": "Smart PVR for TV shows. Searches, downloads, and manages your TV library.",
+      "ports": [
+        "8989:8989"
+      ],
+      "volumes": [
+        "{CONFIG}/sonarr:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "lidarr",
+      "name": "Lidarr",
+      "category": "ARR Suite",
+      "image": "lscr.io/linuxserver/lidarr:latest",
+      "description": "Music collection manager. Automatically downloads music to your library.",
+      "ports": [
+        "8686:8686"
+      ],
+      "volumes": [
+        "{CONFIG}/lidarr:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "bazarr",
+      "name": "Bazarr",
+      "category": "ARR Suite",
+      "image": "lscr.io/linuxserver/bazarr:latest",
+      "description": "Companion app to Sonarr and Radarr for automatic subtitle management.",
+      "ports": [
+        "6767:6767"
+      ],
+      "volumes": [
+        "{CONFIG}/bazarr:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "whisparr",
+      "name": "Whisparr",
+      "category": "ARR Suite",
+      "image": "ghcr.io/hotio/whisparr:nightly",
+      "description": "Adult content collection manager. Part of the ARR family.",
+      "ports": [
+        "6969:6969"
+      ],
+      "volumes": [
+        "{CONFIG}/whisparr:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "readarr",
+      "name": "Readarr",
+      "category": "ARR Suite",
+      "image": "ghcr.io/hotio/readarr:nightly",
+      "description": "Book/eBook collection manager. Like Sonarr but for books.",
+      "ports": [
+        "8787:8787"
+      ],
+      "volumes": [
+        "{CONFIG}/readarr:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "mylar3",
+      "name": "Mylar3",
+      "category": "ARR Suite",
+      "image": "lscr.io/linuxserver/mylar3:latest",
+      "description": "Automated comic book downloader for CBZ/CBR files.",
+      "ports": [
+        "8090:8090"
+      ],
+      "volumes": [
+        "{CONFIG}/mylar3:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "doplarr",
+      "name": "Doplarr",
+      "category": "ARR Suite",
+      "image": "lscr.io/linuxserver/doplarr:latest",
+      "description": "Discord bot for requesting media via Overseerr, Radarr, and Sonarr.",
+      "ports": [],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "Requires Discord bot token and Sonarr/Radarr API keys post-deploy."
+    },
+    {
+      "id": "boxarr",
+      "name": "Boxarr",
+      "category": "ARR Suite",
+      "image": "nicholasammann/boxarr:latest",
+      "description": "Physical media collection manager — track box sets alongside your digital library.",
+      "ports": [
+        "3579:3000"
+      ],
+      "volumes": [
+        "{CONFIG}/boxarr:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": true,
+      "notes": "Tracks physical box sets (DVDs/Blu-rays) alongside your Radarr/Sonarr library."
+    },
+    {
+      "id": "recyclarr",
+      "name": "Recyclarr",
+      "category": "ARR Suite",
+      "image": "ghcr.io/recyclarr/recyclarr:latest",
+      "description": "Syncs TRaSH Guide quality profiles and settings to Sonarr and Radarr.",
+      "ports": [],
+      "volumes": [
+        "{CONFIG}/recyclarr:/config"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "unpackerr",
+      "name": "Unpackerr",
+      "category": "ARR Suite",
+      "image": "golift/unpackerr:latest",
+      "description": "Extracts downloaded archives for Radarr, Sonarr, Lidarr, and Readarr.",
+      "ports": [],
+      "volumes": [
+        "{CONFIG}/unpackerr:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "PUID={PUID}",
+        "PGID={PGID}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "notifiarr",
+      "name": "Notifiarr",
+      "category": "ARR Suite",
+      "image": "golift/notifiarr:latest",
+      "description": "Unified notification and integration hub for your ARR stack.",
+      "ports": [
+        "5454:5454"
+      ],
+      "volumes": [
+        "{CONFIG}/notifiarr:/config"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "category": "Media Servers",
+      "image": "jellyfin/jellyfin:latest",
+      "description": "Free, open-source media server. No subscriptions, no tracking.",
+      "ports": [
+        "8096:8096",
+        "8920:8920"
+      ],
+      "volumes": [
+        "{CONFIG}/jellyfin:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎬",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "plex",
+      "name": "Plex Media Server",
+      "category": "Media Servers",
+      "image": "plexinc/pms-docker:latest",
+      "description": "Feature-rich media server with apps for almost every device.",
+      "ports": [
+        "32400:32400"
+      ],
+      "volumes": [
+        "{CONFIG}/plex:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "PLEX_CLAIM="
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎬",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "emby",
+      "name": "Emby",
+      "category": "Media Servers",
+      "image": "emby/embyserver:latest",
+      "description": "Personal media server with live TV, DVR, and subtitle support.",
+      "ports": [
+        "8096:8096",
+        "8920:8920"
+      ],
+      "volumes": [
+        "{CONFIG}/emby:/config",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "UID={PUID}",
+        "GID={PGID}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎬",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "navidrome",
+      "name": "Navidrome",
+      "category": "Media Servers",
+      "image": "deluan/navidrome:latest",
+      "description": "Modern, lightweight music server compatible with Subsonic/Airsonic clients.",
+      "ports": [
+        "4533:4533"
+      ],
+      "volumes": [
+        "{CONFIG}/navidrome:/data",
+        "{MEDIA}/music:/music:ro"
+      ],
+      "environment": [
+        "ND_SCANSCHEDULE=@every 1h",
+        "ND_LOGLEVEL=info",
+        "ND_SESSIONTIMEOUT=24h"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎬",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "kavita",
+      "name": "Kavita",
+      "category": "Media Servers",
+      "image": "kizaing/kavita:latest",
+      "description": "Manga, comics, and book server with reading progress tracking.",
+      "ports": [
+        "5000:5000"
+      ],
+      "volumes": [
+        "{CONFIG}/kavita:/kavita/config",
+        "{MEDIA}/books:/books",
+        "{MEDIA}/comics:/comics"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎬",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "komga",
+      "name": "Komga",
+      "category": "Media Servers",
+      "image": "gotson/komga:latest",
+      "description": "Media server for comics, manga, and graphic novels with OPDS support.",
+      "ports": [
+        "8081:8080"
+      ],
+      "volumes": [
+        "{CONFIG}/komga:/config",
+        "{MEDIA}/comics:/data"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎬",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "audiobookshelf",
+      "name": "Audiobookshelf",
+      "category": "Media Servers",
+      "image": "ghcr.io/advplyr/audiobookshelf:latest",
+      "description": "Self-hosted audiobook and podcast server with app support.",
+      "ports": [
+        "13378:80"
+      ],
+      "volumes": [
+        "{CONFIG}/audiobookshelf:/config",
+        "{MEDIA}/audiobooks:/audiobooks",
+        "{MEDIA}/podcasts:/podcasts"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎬",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "tdarr",
+      "name": "Tdarr",
+      "category": "Media Tools",
+      "image": "ghcr.io/haveagitgat/tdarr:latest",
+      "description": "Distributed media transcoding automation with health checks and GPU support.",
+      "ports": [
+        "8265:8265",
+        "8266:8266"
+      ],
+      "volumes": [
+        "{CONFIG}/tdarr/server:/app/server",
+        "{CONFIG}/tdarr/configs:/app/configs",
+        "{CONFIG}/tdarr/logs:/app/logs",
+        "{MEDIA}:/media"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "serverIP=0.0.0.0",
+        "serverPort=8266",
+        "webUIPort=8265",
+        "internalNode=true",
+        "nodeName=MyInternalNode"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "fileflows",
+      "name": "FileFlows",
+      "category": "Media Tools",
+      "image": "revenz/fileflows:latest",
+      "description": "File processing system with a visual flow editor for media conversion.",
+      "ports": [
+        "19200:5000"
+      ],
+      "volumes": [
+        "{CONFIG}/fileflows:/app/Data",
+        "{CONFIG}/fileflows/logs:/app/Logs",
+        "{MEDIA}:/media",
+        "/tmp/fileflows:/temp"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "handbrake",
+      "name": "HandBrake",
+      "category": "Media Tools",
+      "image": "jlesage/handbrake:latest",
+      "description": "Video transcoder GUI accessible via web browser.",
+      "ports": [
+        "5800:5800"
+      ],
+      "volumes": [
+        "{CONFIG}/handbrake:/config",
+        "{MEDIA}:/storage:ro",
+        "{MEDIA}/transcoded:/output"
+      ],
+      "environment": [
+        "USER_ID={PUID}",
+        "GROUP_ID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "kometa",
+      "name": "Kometa (Plex Meta Manager)",
+      "category": "Media Tools",
+      "image": "kometateam/kometa:latest",
+      "description": "Automates Plex collection and metadata management using YAML configs.",
+      "ports": [],
+      "volumes": [
+        "{CONFIG}/kometa:/config"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "Configure Plex connection in /config/config.yml before starting."
+    },
+    {
+      "id": "wizarr",
+      "name": "Wizarr",
+      "category": "Media Tools",
+      "image": "ghcr.io/wizarrrr/wizarr:latest",
+      "description": "Automatic user invitation and onboarding system for Plex and Jellyfin.",
+      "ports": [
+        "5690:5690"
+      ],
+      "volumes": [
+        "{CONFIG}/wizarr:/data/database"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "jellystat",
+      "name": "Jellystat",
+      "category": "Media Tools",
+      "image": "cyfershepard/jellystat:latest",
+      "description": "Statistics and activity tracking dashboard for Jellyfin.",
+      "ports": [
+        "3005:3000"
+      ],
+      "volumes": [
+        "{CONFIG}/jellystat:/app/backend/data"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "JWT_SECRET=jellystat_change_me_secret"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "seerr",
+      "name": "Seerr",
+      "category": "Request Tools",
+      "image": "ghcr.io/seerr-team/seerr:latest",
+      "description": "Unified media request manager — successor to Jellyseerr and Overseerr.",
+      "ports": [
+        "5055:5055"
+      ],
+      "volumes": [
+        "{CONFIG}/seerr:/app/config"
+      ],
+      "environment": [
+        "LOG_LEVEL=info",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎥",
+      "full_stack": true,
+      "notes": "Replaces Overseerr and Jellyseerr. Supports Jellyfin, Plex, and Emby."
+    },
+    {
+      "id": "ombi",
+      "name": "Ombi",
+      "category": "Request Tools",
+      "image": "lscr.io/linuxserver/ombi:latest",
+      "description": "User-facing media request portal for Plex, Emby, and Jellyfin.",
+      "ports": [
+        "3579:3579"
+      ],
+      "volumes": [
+        "{CONFIG}/ombi:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎥",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "requestrr",
+      "name": "Requestrr",
+      "category": "Request Tools",
+      "image": "lscr.io/linuxserver/requestrr:latest",
+      "description": "Discord bot for requesting movies and TV shows via Radarr/Sonarr.",
+      "ports": [
+        "4545:4545"
+      ],
+      "volumes": [
+        "{CONFIG}/requestrr:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎥",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "tautulli",
+      "name": "Tautulli",
+      "category": "Request Tools",
+      "image": "lscr.io/linuxserver/tautulli:latest",
+      "description": "Monitoring and tracking tool for Plex Media Server.",
+      "ports": [
+        "8181:8181"
+      ],
+      "volumes": [
+        "{CONFIG}/tautulli:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎥",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "flaresolverr",
+      "name": "FlareSolverr",
+      "category": "Request Tools",
+      "image": "ghcr.io/flaresolverr/flaresolverr:latest",
+      "description": "Proxy server to bypass Cloudflare and DDoS-Guard protection.",
+      "ports": [
+        "8191:8191"
+      ],
+      "volumes": [],
+      "environment": [
+        "LOG_LEVEL=info",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🎥",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "grafana",
+      "name": "Grafana",
+      "category": "Monitoring",
+      "image": "grafana/grafana:latest",
+      "description": "Open observability platform for metrics, logs, and traces visualization.",
+      "ports": [
+        "3000:3000"
+      ],
+      "volumes": [
+        "{CONFIG}/grafana:/var/lib/grafana"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "GF_SECURITY_ADMIN_PASSWORD=admin"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "prometheus",
+      "name": "Prometheus",
+      "category": "Monitoring",
+      "image": "prom/prometheus:latest",
+      "description": "Systems monitoring and alerting toolkit with time-series database.",
+      "ports": [
+        "9090:9090"
+      ],
+      "volumes": [
+        "{CONFIG}/prometheus:/etc/prometheus",
+        "{CONFIG}/prometheus/data:/prometheus"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "uptime_kuma",
+      "name": "Uptime Kuma",
+      "category": "Monitoring",
+      "image": "louislam/uptime-kuma:latest",
+      "description": "Fancy self-hosted monitoring tool with status pages and notifications.",
+      "ports": [
+        "3001:3001"
+      ],
+      "volumes": [
+        "{CONFIG}/uptime-kuma:/app/data"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "netdata",
+      "name": "Netdata",
+      "category": "Monitoring",
+      "image": "netdata/netdata:latest",
+      "description": "Real-time, high-resolution system performance monitoring.",
+      "ports": [
+        "19999:19999"
+      ],
+      "volumes": [
+        "/proc:/host/proc:ro",
+        "/sys:/host/sys:ro",
+        "/var/run/docker.sock:/var/run/docker.sock:ro"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": true,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "glances",
+      "name": "Glances",
+      "category": "Monitoring",
+      "image": "nicolargo/glances:latest",
+      "description": "Cross-platform system monitoring tool with a web interface.",
+      "ports": [
+        "61208:61208"
+      ],
+      "volumes": [
+        "/var/run/docker.sock:/var/run/docker.sock:ro"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "GLANCES_OPT=-w"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "dozzle",
+      "name": "Dozzle",
+      "category": "Monitoring",
+      "image": "amir20/dozzle:latest",
+      "description": "Realtime Docker log viewer with a clean, searchable web interface.",
+      "ports": [
+        "8888:8080"
+      ],
+      "volumes": [
+        "/var/run/docker.sock:/var/run/docker.sock:ro"
+      ],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "portainer",
+      "name": "Portainer CE",
+      "category": "Monitoring",
+      "image": "portainer/portainer-ce:latest",
+      "description": "Docker management GUI with stacks, container management, and user roles.",
+      "ports": [
+        "9000:9000",
+        "9443:9443"
+      ],
+      "volumes": [
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "{CONFIG}/portainer:/data"
+      ],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "watchtower",
+      "name": "Watchtower",
+      "category": "Monitoring",
+      "image": "containrrr/watchtower:latest",
+      "description": "Automatically updates running Docker containers when new images are available.",
+      "ports": [],
+      "volumes": [
+        "/var/run/docker.sock:/var/run/docker.sock"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "WATCHTOWER_SCHEDULE=0 0 4 * * *",
+        "WATCHTOWER_CLEANUP=true"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "scrutiny",
+      "name": "Scrutiny",
+      "category": "Monitoring",
+      "image": "ghcr.io/analogj/scrutiny:master-omnibus",
+      "description": "Hard drive health dashboard using S.M.A.R.T. data with alerts.",
+      "ports": [
+        "8080:8080"
+      ],
+      "volumes": [
+        "/run/udev:/run/udev:ro",
+        "{CONFIG}/scrutiny:/opt/scrutiny/config",
+        "{CONFIG}/scrutiny/influxdb:/opt/scrutiny/influxdb"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": true,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "speedtest",
+      "name": "Speedtest Tracker",
+      "category": "Monitoring",
+      "image": "lscr.io/linuxserver/speedtest-tracker:latest",
+      "description": "Self-hosted internet speed test tracker with historical graphing.",
+      "ports": [
+        "8765:80"
+      ],
+      "volumes": [
+        "{CONFIG}/speedtest:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📈",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "homer",
+      "name": "Homer",
+      "category": "Dashboards",
+      "image": "ghcr.io/bastienwirtz/homer:latest",
+      "description": "Simple, static homepage for your homelab services.",
+      "ports": [
+        "8085:8080"
+      ],
+      "volumes": [
+        "{CONFIG}/homer:/www/assets"
+      ],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📊",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "homarr",
+      "name": "Homarr",
+      "category": "Dashboards",
+      "image": "ghcr.io/ajnart/homarr:latest",
+      "description": "Sleek, modern dashboard with drag-and-drop, service integrations, and widgets.",
+      "ports": [
+        "7575:7575"
+      ],
+      "volumes": [
+        "/var/run/docker.sock:/var/run/docker.sock:ro",
+        "{CONFIG}/homarr/configs:/app/data/configs",
+        "{CONFIG}/homarr/icons:/app/public/icons"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📊",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "dasherr",
+      "name": "Dasherr",
+      "category": "Dashboards",
+      "image": "ghcr.io/erwin-kok/dasherr:latest",
+      "description": "Minimal, lightweight app dashboard with customizable layout.",
+      "ports": [
+        "3080:3080"
+      ],
+      "volumes": [
+        "{CONFIG}/dasherr:/app/config"
+      ],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📊",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "flame",
+      "name": "Flame",
+      "category": "Dashboards",
+      "image": "pawelmalak/flame:latest",
+      "description": "Self-hosted startpage and application dashboard with bookmarks.",
+      "ports": [
+        "5005:5005"
+      ],
+      "volumes": [
+        "{CONFIG}/flame:/app/data",
+        "/var/run/docker.sock:/var/run/docker.sock:ro"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "PASSWORD=flame_change_me"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📊",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "heimdall",
+      "name": "Heimdall",
+      "category": "Dashboards",
+      "image": "lscr.io/linuxserver/heimdall:latest",
+      "description": "Application dashboard with search functionality and enhanced app tiles.",
+      "ports": [
+        "8086:80",
+        "8443:443"
+      ],
+      "volumes": [
+        "{CONFIG}/heimdall:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📊",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "organizr",
+      "name": "Organizr",
+      "category": "Dashboards",
+      "image": "organizr/organizr:latest",
+      "description": "HTPC/homelab organizer with tabbed interface and user authentication.",
+      "ports": [
+        "8089:80"
+      ],
+      "volumes": [
+        "{CONFIG}/organizr:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📊",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "traefik",
+      "name": "Traefik",
+      "category": "Reverse Proxies",
+      "image": "traefik:latest",
+      "description": "Cloud-native reverse proxy and load balancer with auto SSL.",
+      "ports": [
+        "80:80",
+        "443:443",
+        "8888:8080"
+      ],
+      "volumes": [
+        "/var/run/docker.sock:/var/run/docker.sock:ro",
+        "{CONFIG}/traefik:/etc/traefik"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "Requires traefik.yml config in {CONFIG}/traefik/ before starting."
+    },
+    {
+      "id": "npm",
+      "name": "Nginx Proxy Manager",
+      "category": "Reverse Proxies",
+      "image": "jc21/nginx-proxy-manager:latest",
+      "description": "Easiest way to manage Nginx proxy hosts with SSL via Let's Encrypt.",
+      "ports": [
+        "80:80",
+        "443:443",
+        "81:81"
+      ],
+      "volumes": [
+        "{CONFIG}/npm/data:/data",
+        "{CONFIG}/npm/letsencrypt:/etc/letsencrypt"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "caddy",
+      "name": "Caddy",
+      "category": "Reverse Proxies",
+      "image": "caddy:latest",
+      "description": "Modern web server with automatic HTTPS, simple configuration.",
+      "ports": [
+        "80:80",
+        "443:443"
+      ],
+      "volumes": [
+        "{CONFIG}/caddy/Caddyfile:/etc/caddy/Caddyfile",
+        "{CONFIG}/caddy/data:/data",
+        "{CONFIG}/caddy/config:/config"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "swag",
+      "name": "SWAG",
+      "category": "Reverse Proxies",
+      "image": "lscr.io/linuxserver/swag:latest",
+      "description": "Secure Web Application Gateway: Nginx + Certbot + Fail2ban in one container.",
+      "ports": [
+        "443:443",
+        "80:80"
+      ],
+      "volumes": [
+        "{CONFIG}/swag:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}",
+        "URL=yourdomain.com",
+        "SUBDOMAINS=wildcard",
+        "VALIDATION=dns"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "Set URL, SUBDOMAINS, and VALIDATION env vars before starting."
+    },
+    {
+      "id": "wireguard",
+      "name": "WireGuard",
+      "category": "VPN & Network",
+      "image": "lscr.io/linuxserver/wireguard:latest",
+      "description": "Fast, modern VPN tunnel. Use as a VPN server or client.",
+      "ports": [
+        "51820:51820/udp"
+      ],
+      "volumes": [
+        "{CONFIG}/wireguard:/config",
+        "/lib/modules:/lib/modules:ro"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}",
+        "SERVERURL=auto",
+        "PEERS=3",
+        "PEERDNS=auto",
+        "INTERNAL_SUBNET=10.13.13.0"
+      ],
+      "privileged": true,
+      "restart": "unless-stopped",
+      "network_mode": "host",
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🌐",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "tailscale",
+      "name": "Tailscale",
+      "category": "VPN & Network",
+      "image": "tailscale/tailscale:latest",
+      "description": "Zero-config mesh VPN built on WireGuard. Connect all your devices.",
+      "ports": [],
+      "volumes": [
+        "{CONFIG}/tailscale:/var/lib",
+        "/dev/net/tun:/dev/net/tun"
+      ],
+      "environment": [
+        "TS_AUTHKEY=",
+        "TS_EXTRA_ARGS=--advertise-exit-node"
+      ],
+      "privileged": true,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🌐",
+      "full_stack": false,
+      "notes": "Set TS_AUTHKEY from your Tailscale admin console before starting."
+    },
+    {
+      "id": "gluetun",
+      "name": "Gluetun",
+      "category": "VPN & Network",
+      "image": "qmcgaw/gluetun:latest",
+      "description": "VPN client container for 20+ providers. Route other containers through it.",
+      "ports": [
+        "8888:8888"
+      ],
+      "volumes": [
+        "{CONFIG}/gluetun:/gluetun"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "VPN_SERVICE_PROVIDER=mullvad",
+        "VPN_TYPE=wireguard"
+      ],
+      "privileged": true,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🌐",
+      "full_stack": false,
+      "notes": "Set VPN_SERVICE_PROVIDER and credentials before starting."
+    },
+    {
+      "id": "wg_easy",
+      "name": "WG-Easy",
+      "category": "VPN & Network",
+      "image": "ghcr.io/wg-easy/wg-easy:latest",
+      "description": "Easiest WireGuard VPN server with a beautiful web UI for peer management.",
+      "ports": [
+        "51820:51820/udp",
+        "51821:51821"
+      ],
+      "volumes": [
+        "{CONFIG}/wg-easy:/etc/wireguard"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "WG_HOST=your_server_ip",
+        "PASSWORD=wgeasy_change_me"
+      ],
+      "privileged": true,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🌐",
+      "full_stack": false,
+      "notes": "Set WG_HOST to your server's public IP or domain."
+    },
+    {
+      "id": "adguardhome",
+      "name": "AdGuard Home",
+      "category": "VPN & Network",
+      "image": "adguard/adguardhome:latest",
+      "description": "Network-wide ad and tracker blocking DNS server.",
+      "ports": [
+        "53:53",
+        "53:53/udp",
+        "8082:3000"
+      ],
+      "volumes": [
+        "{CONFIG}/adguardhome/work:/opt/adguardhome/work",
+        "{CONFIG}/adguardhome/conf:/opt/adguardhome/conf"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🌐",
+      "full_stack": false,
+      "notes": "Port 53 may conflict with systemd-resolved. Disable it first."
+    },
+    {
+      "id": "pihole",
+      "name": "Pi-hole",
+      "category": "VPN & Network",
+      "image": "pihole/pihole:latest",
+      "description": "DNS-based ad blocker for your entire network.",
+      "ports": [
+        "53:53",
+        "53:53/udp",
+        "8083:80"
+      ],
+      "volumes": [
+        "{CONFIG}/pihole/etc:/etc/pihole",
+        "{CONFIG}/pihole/dnsmasq:/etc/dnsmasq.d"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "WEBPASSWORD=pihole_change_me"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🌐",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "technitium",
+      "name": "Technitium DNS",
+      "category": "VPN & Network",
+      "image": "technitium/dns-server:latest",
+      "description": "Self-hosted authoritative DNS server with ad blocking and split horizon.",
+      "ports": [
+        "5380:5380",
+        "53:53",
+        "53:53/udp"
+      ],
+      "volumes": [
+        "{CONFIG}/technitium:/etc/dns"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🌐",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "n8n",
+      "name": "n8n",
+      "category": "Automation",
+      "image": "docker.n8n.io/n8nio/n8n:latest",
+      "description": "Workflow automation tool with 350+ integrations. Like Zapier, self-hosted.",
+      "ports": [
+        "5678:5678"
+      ],
+      "volumes": [
+        "{CONFIG}/n8n:/home/node/.n8n"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "N8N_BASIC_AUTH_ACTIVE=true",
+        "N8N_BASIC_AUTH_USER=admin",
+        "N8N_BASIC_AUTH_PASSWORD=admin"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "huginn",
+      "name": "Huginn",
+      "category": "Automation",
+      "image": "ghcr.io/huginn/huginn:latest",
+      "description": "Create agents that monitor the web and act on your behalf.",
+      "ports": [
+        "3007:3000"
+      ],
+      "volumes": [
+        "{CONFIG}/huginn:/var/lib/mysql"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "HUGINN_DATABASE_ADAPTER=mysql2",
+        "DATABASE_PASSWORD=huginn_change_me"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "changedetection",
+      "name": "Changedetection.io",
+      "category": "Automation",
+      "image": "ghcr.io/dgtlmoon/changedetection.io:latest",
+      "description": "Monitor websites for changes and receive notifications.",
+      "ports": [
+        "5000:5000"
+      ],
+      "volumes": [
+        "{CONFIG}/changedetection:/datastore"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "node_red",
+      "name": "Node-RED",
+      "category": "Automation",
+      "image": "nodered/node-red:latest",
+      "description": "Flow-based programming for visual wiring of IoT hardware and APIs.",
+      "ports": [
+        "1880:1880"
+      ],
+      "volumes": [
+        "{CONFIG}/node-red:/data"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "activepieces",
+      "name": "Activepieces",
+      "category": "Automation",
+      "image": "activepieces/activepieces:latest",
+      "description": "Open-source Zapier alternative with no-code automation flows.",
+      "ports": [
+        "8096:80"
+      ],
+      "volumes": [
+        "{CONFIG}/activepieces:/root/.activepieces"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "AP_JWT_SECRET=activepieces_change_me",
+        "AP_ENCRYPTION_KEY=activepieces_key_16ch"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "nextcloud",
+      "name": "Nextcloud",
+      "category": "File & Cloud",
+      "image": "nextcloud:latest",
+      "description": "Self-hosted productivity platform: files, calendar, contacts, and more.",
+      "ports": [
+        "8093:80"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "filebrowser",
+      "name": "File Browser",
+      "category": "File & Cloud",
+      "image": "filebrowser/filebrowser:latest",
+      "description": "Web-based file manager with user management and sharing.",
+      "ports": [
+        "8084:80"
+      ],
+      "volumes": [
+        "{CONFIG}/filebrowser:/config",
+        "{MEDIA}:/srv"
+      ],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "syncthing",
+      "name": "Syncthing",
+      "category": "File & Cloud",
+      "image": "lscr.io/linuxserver/syncthing:latest",
+      "description": "Continuous file synchronization between devices. No cloud required.",
+      "ports": [
+        "8384:8384",
+        "22000:22000",
+        "21027:21027/udp"
+      ],
+      "volumes": [
+        "{CONFIG}/syncthing:/config",
+        "{MEDIA}:/data"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "paperless_ngx",
+      "name": "Paperless-ngx",
+      "category": "File & Cloud",
+      "image": "ghcr.io/paperless-ngx/paperless-ngx:latest",
+      "description": "Document management system that transforms scans into searchable documents.",
+      "ports": [
+        "8010:8000"
+      ],
+      "volumes": [
+        "{CONFIG}/paperless/data:/usr/src/paperless/data",
+        "{CONFIG}/paperless/media:/usr/src/paperless/media",
+        "{CONFIG}/paperless/export:/usr/src/paperless/export",
+        "{CONFIG}/paperless/consume:/usr/src/paperless/consume"
+      ],
+      "environment": [
+        "PAPERLESS_REDIS=redis://paperless-redis:6379",
+        "PAPERLESS_TIME_ZONE={TZ}",
+        "USERMAP_UID={PUID}",
+        "USERMAP_GID={PGID}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "For full functionality, add a Redis container and set PAPERLESS_REDIS."
+    },
+    {
+      "id": "immich",
+      "name": "Immich",
+      "category": "File & Cloud",
+      "image": "ghcr.io/immich-app/immich-server:release",
+      "description": "High-performance self-hosted photo and video backup solution.",
+      "ports": [
+        "2283:3001"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "photoprism",
+      "name": "PhotoPrism",
+      "category": "File & Cloud",
+      "image": "photoprism/photoprism:latest",
+      "description": "AI-powered photo management with face recognition and geo-tagging.",
+      "ports": [
+        "2342:2342"
+      ],
+      "volumes": [
+        "{CONFIG}/photoprism:/photoprism/storage",
+        "{MEDIA}/photos:/photoprism/originals"
+      ],
+      "environment": [
+        "PHOTOPRISM_ADMIN_PASSWORD=photoprism_change_me",
+        "PHOTOPRISM_SITE_URL=http://localhost:2342/",
+        "PHOTOPRISM_ORIGINALS_LIMIT=5000",
+        "PHOTOPRISM_HTTP_COMPRESSION=gzip"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "stirling_pdf",
+      "name": "Stirling PDF",
+      "category": "File & Cloud",
+      "image": "frooodle/s-pdf:latest",
+      "description": "Locally hosted web-based PDF manipulation tool with 30+ operations.",
+      "ports": [
+        "8094:8080"
+      ],
+      "volumes": [
+        "{CONFIG}/stirling-pdf/trainingData:/usr/share/tessdata",
+        "{CONFIG}/stirling-pdf/configs:/configs"
+      ],
+      "environment": [
+        "DOCKER_ENABLE_SECURITY=false"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "vaultwarden",
+      "name": "Vaultwarden",
+      "category": "Security",
+      "image": "vaultwarden/server:latest",
+      "description": "Unofficial Bitwarden-compatible password manager server. Lightweight.",
+      "ports": [
+        "8087:80"
+      ],
+      "volumes": [
+        "{CONFIG}/vaultwarden:/data"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "SIGNUPS_ALLOWED=true",
+        "ADMIN_TOKEN="
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "authentik",
+      "name": "Authentik",
+      "category": "Security",
+      "image": "ghcr.io/goauthentik/server:latest",
+      "description": "Open-source identity provider with SSO, OAuth2, and LDAP support.",
+      "ports": [
+        "9000:9000",
+        "9443:9443"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "authelia",
+      "name": "Authelia",
+      "category": "Security",
+      "image": "authelia/authelia:latest",
+      "description": "Open-source authentication and authorization server with 2FA/MFA.",
+      "ports": [
+        "9091:9091"
+      ],
+      "volumes": [
+        "{CONFIG}/authelia:/config"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "Requires configuration.yml in {CONFIG}/authelia/ before starting."
+    },
+    {
+      "id": "crowdsec",
+      "name": "CrowdSec",
+      "category": "Security",
+      "image": "crowdsecurity/crowdsec:latest",
+      "description": "Crowd-sourced security engine that detects and blocks malicious IPs.",
+      "ports": [],
+      "volumes": [
+        "{CONFIG}/crowdsec/config:/etc/crowdsec",
+        "{CONFIG}/crowdsec/data:/var/lib/crowdsec/data",
+        "/var/log:/var/log:ro",
+        "/var/run/docker.sock:/var/run/docker.sock:ro"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "ntfy",
+      "name": "ntfy",
+      "category": "Communication",
+      "image": "binwiederhier/ntfy:latest",
+      "description": "Simple HTTP-based pub-sub notification service. Push to any device.",
+      "ports": [
+        "2586:80"
+      ],
+      "volumes": [
+        "{CONFIG}/ntfy:/etc/ntfy",
+        "{CONFIG}/ntfy/cache:/var/cache/ntfy"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "gotify",
+      "name": "Gotify",
+      "category": "Communication",
+      "image": "gotify/server:latest",
+      "description": "Simple server for sending and receiving notification messages.",
+      "ports": [
+        "2587:80"
+      ],
+      "volumes": [
+        "{CONFIG}/gotify:/app/data"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "GOTIFY_DEFAULTUSER_PASS=gotify_change_me"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "matrix_synapse",
+      "name": "Matrix Synapse",
+      "category": "Communication",
+      "image": "matrixdotorg/synapse:latest",
+      "description": "Open, decentralized real-time communication server.",
+      "ports": [
+        "8448:8448"
+      ],
+      "volumes": [
+        "{CONFIG}/matrix:/data"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "SYNAPSE_SERVER_NAME=matrix.yourdomain.com",
+        "SYNAPSE_REPORT_STATS=no"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "Generate config first: docker run --rm -v {CONFIG}/matrix:/data -e SYNAPSE_SERVER_NAME=matrix.yourdomain.com matrixdotorg/synapse:latest generate"
+    },
+    {
+      "id": "gitea",
+      "name": "Gitea",
+      "category": "Development",
+      "image": "gitea/gitea:latest",
+      "description": "Lightweight self-hosted Git service. Like GitHub, locally.",
+      "ports": [
+        "3030:3000",
+        "2222:22"
+      ],
+      "volumes": [
+        "{CONFIG}/gitea:/data",
+        "/etc/timezone:/etc/timezone:ro",
+        "/etc/localtime:/etc/localtime:ro"
+      ],
+      "environment": [
+        "USER_UID={PUID}",
+        "USER_GID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "code_server",
+      "name": "Code Server",
+      "category": "Development",
+      "image": "lscr.io/linuxserver/code-server:latest",
+      "description": "Run VS Code in the browser on your server. Code from anywhere.",
+      "ports": [
+        "8888:8443"
+      ],
+      "volumes": [
+        "{CONFIG}/code-server:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}",
+        "PASSWORD=code_change_me",
+        "SUDO_PASSWORD=code_change_me"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "drone",
+      "name": "Drone CI",
+      "category": "Development",
+      "image": "drone/drone:latest",
+      "description": "Container-native continuous integration and delivery platform.",
+      "ports": [
+        "8097:80"
+      ],
+      "volumes": [
+        "{CONFIG}/drone:/data",
+        "/var/run/docker.sock:/var/run/docker.sock"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "DRONE_GITEA_SERVER=http://gitea:3000",
+        "DRONE_RPC_SECRET=drone_change_me",
+        "DRONE_SERVER_HOST=localhost:8097",
+        "DRONE_SERVER_PROTO=http"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "mariadb",
+      "name": "MariaDB",
+      "category": "Databases",
+      "image": "lscr.io/linuxserver/mariadb:latest",
+      "description": "MySQL-compatible relational database. Used by many homelab apps.",
+      "ports": [],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🗄️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL",
+      "category": "Databases",
+      "image": "postgres:latest",
+      "description": "Advanced open-source relational database with JSON support.",
+      "ports": [
+        "5432:5432"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🗄️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "redis",
+      "name": "Redis",
+      "category": "Databases",
+      "image": "redis:alpine",
+      "description": "In-memory data structure store. Used as cache/message broker.",
+      "ports": [
+        "6379:6379"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🗄️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "mongodb",
+      "name": "MongoDB",
+      "category": "Databases",
+      "image": "mongo:latest",
+      "description": "Document-oriented NoSQL database for flexible data storage.",
+      "ports": [
+        "27017:27017"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🗄️",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "mealie",
+      "name": "Mealie",
+      "category": "Home & Misc",
+      "image": "ghcr.io/mealie-recipes/mealie:latest",
+      "description": "Self-hosted recipe manager and meal planner with import from any URL.",
+      "ports": [
+        "9003:9000"
+      ],
+      "volumes": [
+        "{CONFIG}/mealie:/app/data"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "BASE_URL=http://localhost:9003"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "grocy",
+      "name": "Grocy",
+      "category": "Home & Misc",
+      "image": "lscr.io/linuxserver/grocy:latest",
+      "description": "Grocery and household management system with barcode scanning.",
+      "ports": [
+        "9283:80"
+      ],
+      "volumes": [
+        "{CONFIG}/grocy:/config"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "freshrss",
+      "name": "FreshRSS",
+      "category": "Home & Misc",
+      "image": "freshrss/freshrss:latest",
+      "description": "Self-hosted RSS feed aggregator with multi-user support.",
+      "ports": [
+        "8092:80"
+      ],
+      "volumes": [
+        "{CONFIG}/freshrss/data:/var/www/FreshRSS/data",
+        "{CONFIG}/freshrss/extensions:/var/www/FreshRSS/extensions"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "CRON_MIN=1,31"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "wallabag",
+      "name": "Wallabag",
+      "category": "Home & Misc",
+      "image": "wallabag/wallabag:latest",
+      "description": "Self-hosted read-it-later application with offline access.",
+      "ports": [
+        "8095:80"
+      ],
+      "volumes": [
+        "{CONFIG}/wallabag/data:/var/www/wallabag/data",
+        "{CONFIG}/wallabag/images:/var/www/wallabag/web/assets/images"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "SYMFONY__ENV__DOMAIN_NAME=http://localhost:8095"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "linkding",
+      "name": "Linkding",
+      "category": "Home & Misc",
+      "image": "sissbruecker/linkding:latest",
+      "description": "Self-hosted bookmark manager with tags, search, and browser extensions.",
+      "ports": [
+        "9099:9090"
+      ],
+      "volumes": [
+        "{CONFIG}/linkding:/etc/linkding/data"
+      ],
+      "environment": [
+        "TZ={TZ}",
+        "LD_SUPERUSER_NAME=admin",
+        "LD_SUPERUSER_PASSWORD=linkding_change_me"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "calibre_web",
+      "name": "Calibre-Web",
+      "category": "Home & Misc",
+      "image": "lscr.io/linuxserver/calibre-web:latest",
+      "description": "Web-based eBook library browser and reader with OPDS support.",
+      "ports": [
+        "8083:8083"
+      ],
+      "volumes": [
+        "{CONFIG}/calibre-web:/config",
+        "{MEDIA}/books:/books"
+      ],
+      "environment": [
+        "PUID={PUID}",
+        "PGID={PGID}",
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "actual_budget",
+      "name": "Actual Budget",
+      "category": "Home & Misc",
+      "image": "actualbudget/actual-server:latest",
+      "description": "Self-hosted personal finance app. Local-first budgeting that syncs.",
+      "ports": [
+        "5006:5006"
+      ],
+      "volumes": [
+        "{CONFIG}/actual:/data"
+      ],
+      "environment": [
+        "TZ={TZ}"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "cyberchef",
+      "name": "CyberChef",
+      "category": "Home & Misc",
+      "image": "mpepping/cyberchef:latest",
+      "description": "The Cyber Swiss Army Knife. Encode, decode, encrypt, analyse data in the browser.",
+      "ports": [
+        "8098:8000"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": ""
+    },
+    {
+      "id": "deployrr_webui",
+      "name": "Deployrr WebUI",
+      "category": "Deployrr",
+      "image": "deployrr-webui:local",
+      "description": "Built-in server monitoring and Docker management dashboard on port 9999.",
+      "ports": [
+        "9999:9999"
+      ],
+      "volumes": [],
+      "environment": [],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": true,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "📦",
+      "full_stack": false,
+      "notes": "Built from local Dockerfile. Run 'media → WebUI Control → Rebuild' after updates."
+    }
+  ]
+}

@@ -51,7 +51,8 @@ RUN pip install --upgrade pip && \
 
 # ── Copy application ──────────────────────────────────────────────────────────
 COPY app.py .
-COPY apps/ ./apps/
+# NOTE: apps/catalog.json is mounted at runtime via -v, not baked into the image.
+# This keeps the image generic and allows catalog updates without rebuilding.
 
 # ── Expose port ───────────────────────────────────────────────────────────────
 EXPOSE 9999

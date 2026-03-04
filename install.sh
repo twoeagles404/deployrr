@@ -291,15 +291,45 @@ ok "'media' command installed → ${MEDIA_CMD}"
 ok "Usage: media [update|help]"
 
 # =============================================================================
-# STEP 7 — Build & start the WebUI Docker container
+# STEP 7 — Get & start the WebUI Docker container
 # =============================================================================
-step "Building Deployrr WebUI Docker image"
+# Strategy: pull the pre-built image from ghcr.io first (fastest).
+# If the pull fails (no internet, no tag yet), fall back to local build.
+# The catalog.json is ALWAYS mounted at runtime — never baked into the image.
+
+WEBUI_IMAGE="ghcr.io/${GITHUB_USER}/${GITHUB_REPO}:latest"
+WEBUI_LOCAL_TAG="deployrr-webui:local"
 
 if [[ "${DOCKER_OK}" == "true" ]]; then
-    info "Building image deployrr-webui:local (may take 60-90 seconds)..."
-    if docker build -q -t deployrr-webui:local "${DEST}/deployrr-webui" >> "${LOG}" 2>&1; then
-        ok "Image built: deployrr-webui:local"
 
+    IMAGE_READY=false
+
+    # ── Try 1: pull pre-built image from GitHub Container Registry ──
+    step "Pulling Deployrr WebUI image"
+    info "Trying: docker pull ${WEBUI_IMAGE}"
+    if docker pull "${WEBUI_IMAGE}" >> "${LOG}" 2>&1; then
+        docker tag "${WEBUI_IMAGE}" "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1 || true
+        ok "Image pulled from ghcr.io"
+        IMAGE_READY=true
+    else
+        warn "Could not pull from ghcr.io — falling back to local build"
+    fi
+
+    # ── Try 2: local build as fallback ──
+    if [[ "${IMAGE_READY}" != "true" ]]; then
+        step "Building Deployrr WebUI image locally"
+        info "Building from ${DEST}/deployrr-webui (may take 60-90 seconds)..."
+        if docker build -q -t "${WEBUI_LOCAL_TAG}" "${DEST}/deployrr-webui" >> "${LOG}" 2>&1; then
+            ok "Image built: ${WEBUI_LOCAL_TAG}"
+            IMAGE_READY=true
+        else
+            warn "Image build failed — check ${LOG}"
+            warn "Retry: media → WebUI Control → Rebuild image"
+        fi
+    fi
+
+    # ── Start the container ──
+    if [[ "${IMAGE_READY}" == "true" ]]; then
         # Remove any stale container (prevents port conflict on reinstall)
         docker rm -f deployrr_webui >> "${LOG}" 2>&1 || true
 
@@ -311,8 +341,9 @@ if [[ "${DOCKER_OK}" == "true" ]]; then
             -p 9999:9999 \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${DEST}/apps:/opt/deployrr/apps:ro" \
+            -v "${DEST}/data:/data" \
             --pid=host \
-            deployrr-webui:local >> "${LOG}" 2>&1
+            "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1
         then
             SERVER_IP="$(hostname -I | awk '{print $1}' 2>/dev/null || echo 'your-server-ip')"
             ok "WebUI started → http://${SERVER_IP}:9999"
@@ -320,12 +351,9 @@ if [[ "${DOCKER_OK}" == "true" ]]; then
             warn "WebUI failed to start — check ${LOG}"
             warn "Retry from TUI: media → WebUI Control → Start WebUI"
         fi
-    else
-        warn "Image build failed — check ${LOG}"
-        warn "Retry: media → WebUI Control → Rebuild image"
     fi
 else
-    warn "Skipping WebUI build (Docker not available)"
+    warn "Skipping WebUI (Docker not available)"
     warn "After installing Docker: media → WebUI Control → Start WebUI"
 fi
 

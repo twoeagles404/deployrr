@@ -321,6 +321,7 @@ server {
 | 5 | `README.md` + `.github/workflows/release.yml` | ✅ Done | Full rewrite; multi-platform Docker build (amd64+arm64) |
 | 6 | `docs/auth-setup.md` | ✅ Done | Nginx/Caddy/NPM + HTTPS guides |
 | 7 | Bug fixes + new apps + architecture changes | ✅ Done | See below |
+| 8 | Critical bug fixes (compose YAML + WebUI build) | ✅ Done | See below |
 
 **Stage 7 Changes (Session 3):**
 - `Dockerfile`: Fixed pip install QEMU arm64 failure — added `gcc`/`python3-dev`, `pip --upgrade`, `--prefer-binary`; updated package versions (flask 3.1.0, psutil 6.1.1, gunicorn 23.0.0)
@@ -333,6 +334,12 @@ server {
 - `deployrr.sh`: **Tailscale LXC fix** — `tailscale up` now checks if `tailscaled` is running first; if not, starts it via systemctl or directly
 - `deployrr.sh`: **Uninstall option** added to main menu (option 10)
 - `apps/catalog.json` + `apps/catalog.sh`: Updated to match all above changes (readarr fixed, huntarr/cleanuperr removed, pinchflat/qbitrr added)
+
+**Stage 8 Changes (Session 4 — critical bug fixes):**
+- `deployrr.sh`: **Fixed "services must be a mapping" bug** — generic `add_service()` was still writing to `${COMPOSE_FILE}` (the old global compose file) instead of `$(app_compose "${id}")` (the per-app file). Per-app compose files had `services:` header but no service block. Fixed line 461.
+- `Dockerfile`: **Removed `COPY apps/ ./apps/`** — catalog.json is now mounted at runtime via `-v` volume mount instead of baked into the image. This fixes the build failure when apps/ dir is not in the build context.
+- `app.py`: **Multi-path catalog lookup** — now checks `/opt/deployrr/apps/catalog.json` (runtime volume mount) first, then falls back to local `./apps/catalog.json` (for development or baked-in image).
+- `install.sh`: **Pull-first strategy for WebUI** — tries `docker pull ghcr.io/twoeagles404/deployrr:latest` first (fast, no build needed). Falls back to local `docker build` only if pull fails. Also adds `-v ${DEST}/data:/data` volume for SQLite persistence.
 
 ---
 

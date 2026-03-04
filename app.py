@@ -38,7 +38,13 @@ CACHE_RSS = 900       # 15 minutes
 CACHE_CATALOG = 300   # 5 minutes
 
 # ── Catalog ───────────────────────────────────────────────────────────────────
-CATALOG_PATH = os.path.join(os.path.dirname(__file__), "apps", "catalog.json")
+# Check multiple locations: volume mount first, then local (for development/baked-in)
+_catalog_candidates = [
+    "/opt/deployrr/apps/catalog.json",                          # runtime volume mount
+    os.path.join(os.path.dirname(__file__), "apps", "catalog.json"),  # baked into image
+]
+CATALOG_PATH = next((p for p in _catalog_candidates if os.path.isfile(p)),
+                     _catalog_candidates[-1])
 
 def _load_catalog():
     """Load app catalog from catalog.json (cached)."""

@@ -458,7 +458,7 @@ add_service() {
         return
     fi
 
-    local f="${COMPOSE_FILE}"
+    local f; f="$(app_compose "${id}")"
     local image="${APP_IMAGE[$id]}"
     local ports="${APP_PORTS[$id]:-}"
     local priv="${APP_PRIV[$id]:-false}"

@@ -1027,6 +1027,7 @@ add_service_watchtower() {
         echo "      - WATCHTOWER_CLEANUP=true"
         echo "      - WATCHTOWER_POLL_INTERVAL=86400"
         echo "      - WATCHTOWER_INCLUDE_STOPPED=false"
+        echo "      - DOCKER_API_VERSION=1.44"
         echo "      - TZ=${TZ_VAL}"
     } >> "${f}"
     log INFO "Watchtower configured — will poll for updates every 24h"

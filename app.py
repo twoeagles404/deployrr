@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Deployrr Max Monitor — Enhanced Server Administration Dashboard
-Version: 3.1.0 · Full deployment, update management, and real-time monitoring
+Version: 3.3.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -163,7 +163,16 @@ def api_overview():
             pass
 
         return jsonify({
+            "hostname": os.uname().nodename,
+            "os": os.uname().sysname,
+            "kernel": os.uname().release,
+            "arch": os.uname().machine,
+            "python": "3.12",
+            "cpu_count": psutil.cpu_count(),
             "cpu_percent": cpu_pct,
+            "mem_percent": mem.percent,
+            "mem_used": mem.used,
+            "mem_total": mem.total,
             "memory": {
                 "total": mem.total,
                 "used": mem.used,
@@ -212,18 +221,19 @@ def api_stream():
 def api_storage():
     """Disk usage and I/O statistics."""
     try:
-        disks = {}
+        filesystems = []
         for part in psutil.disk_partitions():
             try:
                 usage = psutil.disk_usage(part.mountpoint)
-                disks[part.mountpoint] = {
+                filesystems.append({
+                    "mountpoint": part.mountpoint,
                     "device": part.device,
                     "total": usage.total,
                     "used": usage.used,
                     "free": usage.free,
                     "percent": usage.percent,
                     "fstype": part.fstype
-                }
+                })
             except (PermissionError, OSError):
                 pass
 
@@ -236,7 +246,7 @@ def api_storage():
         } if io_stats else {}
 
         return jsonify({
-            "disks": disks,
+            "filesystems": filesystems,
             "io": io_data
         })
     except Exception as e:
@@ -246,9 +256,26 @@ def api_storage():
 def api_network():
     """Network interfaces and statistics."""
     try:
-        interfaces = {}
-        for name, addrs in psutil.net_if_addrs().items():
-            interfaces[name] = [{"family": str(addr.family), "address": addr.address, "netmask": addr.netmask} for addr in addrs]
+        interfaces = []
+        addrs_by_name = psutil.net_if_addrs()
+        stats_by_name = psutil.net_if_stats()
+        io_by_name = psutil.net_io_counters(pernic=True)
+
+        for name, addrs in addrs_by_name.items():
+            stats = stats_by_name.get(name, None)
+            io = io_by_name.get(name, None)
+
+            addresses = [{"family": str(addr.family), "address": addr.address, "netmask": addr.netmask} for addr in addrs]
+
+            interfaces.append({
+                "name": name,
+                "addresses": addresses,
+                "is_up": stats.isup if stats else False,
+                "bytes_sent": io.bytes_sent if io else 0,
+                "bytes_recv": io.bytes_recv if io else 0,
+                "packets_sent": io.packets_sent if io else 0,
+                "packets_recv": io.packets_recv if io else 0
+            })
 
         net_io = psutil.net_io_counters()
         connections = len(psutil.net_connections(kind='inet'))
@@ -419,14 +446,15 @@ def api_logs():
             cmd.extend(["-u", unit])
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        return jsonify({"logs": result.stdout})
+        log_lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        return jsonify({"lines": log_lines})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/catalog")
 def api_catalog():
     """Get application catalog."""
-    return jsonify({"apps": APP_REGISTRY})
+    return jsonify({"apps": list(APP_REGISTRY.values())})
 
 @app.route("/api/catalog/apps")
 def api_catalog_apps():
@@ -546,6 +574,21 @@ def api_deploy_app():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/deploy/history")
+def api_deploy_history_alias():
+    """Get deployment history."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT id, timestamp, app_id, app_name, action, status, error FROM deploy_history ORDER BY timestamp DESC LIMIT 50"
+            ).fetchall()
+        return jsonify({"history": [
+            {"id": r[0], "timestamp": r[1], "app_id": r[2], "app_name": r[3], "action": r[4], "status": r[5], "error": r[6]}
+            for r in rows
+        ]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/history")
 def api_deploy_history():
     """Get deployment history."""
@@ -579,14 +622,15 @@ def api_stack_compose():
 def api_settings_get():
     """Get current settings."""
     return jsonify({
-        "config_dir": _db_get("config_dir", "/docker"),
-        "media_dir": _db_get("media_dir", "/mnt/media"),
-        "tz": _db_get("tz", "America/New_York"),
-        "puid": _db_get("puid", "1000"),
-        "pgid": _db_get("pgid", "1000"),
-        "no_auth": _NO_AUTH,
-        "token_hint": _db_get("token_raw_hint", "not set"),
-        "version": "3.1.0"
+        "settings": {
+            "config_dir": _db_get("config_dir", "/docker"),
+            "media_dir": _db_get("media_dir", "/mnt/media"),
+            "tz": _db_get("tz", "America/New_York"),
+            "puid": _db_get("puid", "1000"),
+            "pgid": _db_get("pgid", "1000"),
+            "no_auth": _NO_AUTH,
+            "version": "3.3.0"
+        }
     })
 
 @app.route("/api/settings", methods=["POST"])
@@ -599,6 +643,26 @@ def api_settings_set():
         if key in data:
             _db_set(key, data[key])
     return jsonify({"status": "saved"})
+
+@app.route("/api/updates")
+def api_updates():
+    """Check which containers have image updates available."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+    updates = []
+    try:
+        containers = _dc.containers.list()
+        for c in containers:
+            image_tag = c.image.tags[0] if c.image.tags else "unknown"
+            updates.append({
+                "name": c.name,
+                "image": image_tag,
+                "status": c.status,
+                "update_available": False
+            })
+        return jsonify({"updates": updates, "checked_at": datetime.now().isoformat()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/updates/check")
 def api_updates_check():
@@ -659,6 +723,23 @@ def api_backup_create():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/backups")
+def api_backups():
+    """List available backups."""
+    backup_dir = "/data/backups"
+    backups = []
+    if os.path.exists(backup_dir):
+        for f in sorted(os.listdir(backup_dir), reverse=True):
+            if f.endswith(".tar.gz"):
+                path = os.path.join(backup_dir, f)
+                backups.append({
+                    "name": f,
+                    "path": path,
+                    "size": os.path.getsize(path),
+                    "created": datetime.fromtimestamp(os.path.getctime(path)).isoformat()
+                })
+    return jsonify({"backups": backups})
+
 @app.route("/api/backup/list")
 def api_backup_list():
     """List available backups."""
@@ -681,11 +762,24 @@ def api_backup_list():
 def api_stacks():
     """Get available docker-compose stacks."""
     stacks = []
+    config_dir = _db_get("config_dir", "/docker")
     try:
-        for root, dirs, files in os.walk("/app/stacks"):
-            for f in files:
-                if f.endswith(".yml") or f.endswith(".yaml"):
-                    stacks.append({"name": f, "path": os.path.join(root, f)})
+        # Search for docker-compose.yml files in subdirectories
+        for item in glob.glob(os.path.join(config_dir, "*", "docker-compose.yml")):
+            try:
+                stack_dir = os.path.dirname(item)
+                stack_name = os.path.basename(stack_dir)
+                # Count services in the compose file
+                with open(item) as f:
+                    content = f.read()
+                service_count = content.count(":")
+                stacks.append({
+                    "name": stack_name,
+                    "path": item,
+                    "services": service_count
+                })
+            except Exception:
+                pass
     except Exception:
         pass
     return jsonify({"stacks": stacks})
@@ -826,6 +920,69 @@ def api_weather():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/rss/feeds")
+def api_rss_feeds():
+    """Fetch RSS feeds with categories."""
+    global _rss_cache
+
+    try:
+        # Check cache
+        cache_key = "rss_feeds"
+        if cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < CACHE_RSS:
+            return jsonify(_rss_cache[cache_key]["data"])
+
+        feeds = {
+            "news": {
+                "Reuters": "https://www.reutersagency.com/feed/?taxonomy=best-topics&output=rss",
+                "BBC": "http://feeds.bbc.co.uk/news/rss.xml"
+            },
+            "soccer": {
+                "ESPN FC": "https://www.espn.com/espn/rss/soccer/news",
+                "Guardian Football": "https://www.theguardian.com/football/rss"
+            },
+            "tech": {
+                "Hacker News": "https://news.ycombinator.com/rss",
+                "r/selfhosted": "https://www.reddit.com/r/selfhosted/.rss"
+            },
+            "reddit": {
+                "r/homelab": "https://www.reddit.com/r/homelab/.rss",
+                "r/docker": "https://www.reddit.com/r/docker/.rss"
+            }
+        }
+
+        result = {"feeds": []}
+        for category, sources in feeds.items():
+            for source_name, url in sources.items():
+                try:
+                    resp = requests.get(url, timeout=5)
+                    root = ET.fromstring(resp.content)
+
+                    articles = []
+                    for item in root.findall(".//item"):
+                        title_elem = item.find("title")
+                        link_elem = item.find("link")
+                        pubdate_elem = item.find("pubDate")
+
+                        if title_elem is not None and link_elem is not None:
+                            articles.append({
+                                "title": title_elem.text or "Untitled",
+                                "link": link_elem.text or "#",
+                                "pubdate": pubdate_elem.text if pubdate_elem is not None else ""
+                            })
+
+                    result["feeds"].append({
+                        "source": source_name,
+                        "category": category,
+                        "articles": articles[:5]  # Limit to 5 per source
+                    })
+                except Exception:
+                    pass
+
+        _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/rss")
 def api_rss():
     """Fetch RSS feeds."""
@@ -873,6 +1030,52 @@ def api_rss():
 
         _rss_cache[cache_key] = {"data": result, "ts": time.time()}
         return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ports/check")
+def api_ports_check():
+    """Check for port conflicts in running containers."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+
+    try:
+        port_usage = {}
+        container_ports = []
+        conflicts = []
+
+        containers = _dc.containers.list()
+        for c in containers:
+            ports = c.ports or {}
+            for key, val in ports.items():
+                if val:
+                    host_port = val[0].get("HostPort")
+                    container_port = key.split('/')[0] if key else ""
+                    if host_port:
+                        port_num = int(host_port)
+                        container_ports.append({
+                            "host_port": port_num,
+                            "container_name": c.name,
+                            "container_port": container_port
+                        })
+
+                        if port_num not in port_usage:
+                            port_usage[port_num] = []
+                        port_usage[port_num].append(c.name)
+
+        # Identify conflicts
+        for port, containers_list in port_usage.items():
+            if len(containers_list) > 1:
+                conflicts.append({
+                    "port": port,
+                    "containers": containers_list
+                })
+
+        return jsonify({
+            "ports": container_ports,
+            "conflicts": conflicts,
+            "total_ports": len(container_ports)
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1067,17 +1270,15 @@ def _calc_cpu_percent(stats):
         return 0
 
 def _extract_ports(container):
-    """Extract ports from container."""
+    """Extract ports from container as simple strings."""
     ports = []
     try:
         port_info = container.ports or {}
         for key, val in port_info.items():
             if val:
-                ports.append({
-                    "container_port": key,
-                    "host_port": val[0].get("HostPort"),
-                    "host_ip": val[0].get("HostIp")
-                })
+                host_port = val[0].get("HostPort")
+                container_port = key.split('/')[0] if key else ""
+                ports.append(f"{host_port}:{container_port}")
     except Exception:
         pass
     return ports
@@ -1624,6 +1825,14 @@ tbody tr:last-child{border-bottom:none;}
   </div>
 
   <div class="sb-section">
+    <div class="sb-section-label">Feeds</div>
+    <div class="sb-item" onclick="showTab('rss',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7m-6 0a1 1 0 11-2 0 1 1 0 012 0z"/></svg>
+      RSS Feeds
+    </div>
+  </div>
+
+  <div class="sb-section">
     <div class="sb-section-label">System</div>
     <div class="sb-item" onclick="showTab('settings',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -1879,6 +2088,27 @@ tbody tr:last-child{border-bottom:none;}
       </div>
     </div>
 
+    <!-- ── RSS FEEDS ── -->
+    <div id="tab-rss" class="tab-panel">
+      <div class="section-header">
+        <div class="section-title">RSS Feeds</div>
+        <button class="btn-primary" onclick="loadRSSFeeds()">
+          <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Refresh
+        </button>
+      </div>
+      <div class="filter-row" id="rss-filters">
+        <div class="filter-pill active" onclick="filterRSS('all',this)">All</div>
+        <div class="filter-pill" onclick="filterRSS('news',this)">News</div>
+        <div class="filter-pill" onclick="filterRSS('tech',this)">Tech</div>
+        <div class="filter-pill" onclick="filterRSS('soccer',this)">Soccer</div>
+        <div class="filter-pill" onclick="filterRSS('reddit',this)">Reddit</div>
+      </div>
+      <div id="rss-grid" class="cat-grid">
+        <div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Click a category to load feeds...</div></div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /main -->
 </div><!-- /app -->
@@ -1937,9 +2167,15 @@ function showTab(name, el) {
     else if (name === 'stack') { loadStackManager(); loadDeployHistory(); }
     else if (name === 'backup') loadBackups();
     else if (name === 'settings') loadSettings();
+    else if (name === 'rss') loadRSSFeeds();
 }
 
-function openExternalLink(url) { window.open(url, '_blank'); }
+function openExternalLink(url) {
+    // Replace localhost with actual server hostname so links work remotely
+    const host = window.location.hostname;
+    url = url.replace('localhost', host).replace('127.0.0.1', host);
+    window.open(url, '_blank');
+}
 
 // ── Gauge ─────────────────────────────────────────────────────────────
 function updateGauge(ringId, textId, value, max) {
@@ -2394,7 +2630,7 @@ async function loadBackups() {
         const el = document.getElementById('backups-list');
         const b = d.backups || [];
         if (!b.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">💾</div><div class="empty-text">No backups yet</div></div>'; return; }
-        el.innerHTML = b.map(x=>`<div class="ctr-row"><span>${x.name}</span><span>${x.size}</span></div>`).join('');
+        el.innerHTML = b.map(x=>`<div class="ctr-row"><span>${x.name}</span><span>${fmtBytes(x.size)}</span></div>`).join('');
     } catch(e) {}
 }
 
@@ -2436,6 +2672,52 @@ async function saveSettings() {
         const d = await r.json();
         alert(d.error ? 'Error: '+d.error : 'Settings saved!');
     } catch(e) { alert('Save failed'); }
+}
+
+// ── RSS Feeds ─────────────────────────────────────────────────────────
+let allFeeds = [];
+let rssFilter = 'all';
+
+async function loadRSSFeeds() {
+    const grid = document.getElementById('rss-grid');
+    grid.innerHTML = '<div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Loading feeds...</div></div>';
+    try {
+        const r = await fetch(API + '/api/rss/feeds');
+        const d = await r.json();
+        allFeeds = d.feeds || [];
+        renderRSS();
+    } catch(e) {
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load feeds</div></div>';
+    }
+}
+
+function filterRSS(cat, el) {
+    rssFilter = cat;
+    document.querySelectorAll('#rss-filters .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    renderRSS();
+}
+
+function renderRSS() {
+    const grid = document.getElementById('rss-grid');
+    let feeds = allFeeds;
+    if (rssFilter !== 'all') feeds = feeds.filter(f => f.category === rssFilter);
+    if (!feeds.length) {
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">📡</div><div class="empty-text">No feeds in this category</div></div>';
+        return;
+    }
+    grid.innerHTML = feeds.map(feed => `
+      <div class="cat-card">
+        <div class="cat-card-header">
+          <div class="cat-icon">📰</div>
+          <div><div class="cat-name">${feed.source}</div><div class="cat-cat">${feed.category}</div></div>
+        </div>
+        ${(feed.articles || []).map(a => `
+          <div style="padding:6px 0;border-bottom:1px solid var(--border)">
+            <a href="${a.link}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;font-size:12.5px;line-height:1.4;display:block">${a.title}</a>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px">${a.pubdate || ''}</div>
+          </div>`).join('')}
+      </div>`).join('');
 }
 
 // ── Polling ───────────────────────────────────────────────────────────

@@ -1,1 +1,37 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.env.*
+venv/
+.venv/
+
+# Project data (runtime, not in repo)
+data/
+*.db
+*.db-journal
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# Claude / AI session files
+CLAUDE.md

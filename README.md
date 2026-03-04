@@ -1,6 +1,6 @@
-# 🚀 Deployrr
+# Deployrr
 
-> A dead-simple, fully open-source homelab Docker deployment tool.  
+> A dead-simple, fully open-source homelab Docker deployment tool.
 > One `curl | sudo bash` install. Pure Bash TUI + beautiful Flask WebUI. 104+ apps. MIT licensed.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -9,100 +9,98 @@
 
 ---
 
-## ✨ Features
+## Features
 
 - **One-command install** — `curl -fsSL ... | sudo bash`, zero manual steps
-- **104+ apps** across 15 categories (ARR Suite, Media Servers, Monitoring, Security, and more)
+- **104+ apps** across 17 categories (ARR Suite, Media Servers, Monitoring, Security, and more)
 - **Pure Bash TUI** — run `media` to launch the interactive deployment wizard
-- **Flask WebUI** on port `:9999` — real-time SSE dashboard, no polling
-- **Deploy tab** — browse the catalog, search apps, one-click deploy
-- **Stack Manager** — view your compose file and deployment history
-- **Updates tab** — pull latest images and restart containers
-- **Backup tab** — one-click config backup/restore
+- **Flask WebUI** on port `:9999` — real-time SSE dashboard with PegaProx-inspired dark UI
+- **Live monitoring** — CPU, RAM, load, network, and storage via Server-Sent Events
+- **Container management** — start, stop, restart, remove, view logs, per-container CPU/MEM stats
+- **Deploy tab** — browse the full catalog, filter by category, search, one-click deploy
+- **Stack Manager** — view per-app compose files and deployment history
+- **Updates tab** — check for image updates, pull latest with one click
+- **Backup tab** — one-click config backup and restore
+- **RSS feeds** — built-in news, tech, sports, and Reddit feeds right in the dashboard
+- **Port conflict detection** — checks for port collisions before deploying
 - **Settings tab** — persist config dir, media dir, timezone, PUID/PGID
-- **Optional auth** — bearer token with auto-generation, or disable for LAN
+- **No auth required** — designed for trusted LAN use (optional bearer token available)
 - **SQLite persistence** — settings and history stored at `/data/deployrr.db`
 - **No PHP, no Node, no NPM** — Python + Bash, fully self-contained
 - **MIT licensed** — no paid tiers, fork it, use it, do whatever
 
 ---
 
-## 🚀 Install
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/twoeagles404/deployrr/main/install.sh | sudo bash
 ```
 
-The installer:
-1. Installs Docker if not present
-2. Downloads all Deployrr files to `/opt/deployrr/`
-3. Builds and starts the WebUI container on port `9999`
-4. Installs the `media` alias to `/usr/local/bin/media`
+The installer downloads all files to `/opt/deployrr/`, pulls the Docker image from `ghcr.io` (or builds locally as fallback), starts the WebUI on port `9999`, and installs the `media` TUI alias.
 
 ---
 
-## 🖥️ Usage
+## Usage
 
 ### Bash TUI
 ```bash
 media
 ```
-Launches the interactive terminal UI where you can browse categories, deploy apps, manage your stack, and configure settings.
+Launches the interactive terminal UI for browsing categories, deploying apps, managing stacks, and configuring settings.
 
 ### WebUI
-Open `http://your-server-ip:9999` in your browser.
+Open `http://your-server-ip:9999` in your browser. No login required by default.
 
-**First launch:** Get your token from container logs:
+To enable token auth:
 ```bash
-docker logs deployrr_webui | grep "DEPLOYRR TOKEN"
-```
-Enter the token in the login screen.
-
-**Disable auth (LAN-only):**
-```bash
-docker run -e DEPLOYRR_NO_AUTH=true ...
+docker run -e DEPLOYRR_TOKEN=your-secret-token ...
 ```
 
 ---
 
-## 📦 App Categories
+## App Categories
 
-| Category | Apps |
+| Category | Example Apps |
 |---|---|
-| ARR Suite | Radarr, Sonarr, Lidarr, Bazarr, Prowlarr, Readarr, Whisparr, Huntarr... |
-| Downloaders | qBittorrent, Transmission, Deluge, SABnzbd, NZBGet, JDownloader2... |
+| ARR Suite | Radarr, Sonarr, Lidarr, Bazarr, Prowlarr, Readarr, Whisparr, Boxarr |
+| Downloaders | qBittorrent, Transmission, Deluge, SABnzbd, NZBGet, JDownloader2, Pinchflat, qbitrr |
 | Media Servers | Jellyfin, Plex, Emby, Navidrome, Komga, Audiobookshelf, Kavita |
-| Request Tools | Jellyseerr, Overseerr, Ombi |
+| Request Tools | Jellyseerr, Overseerr, Ombi, Doplarr |
 | Dashboards | Homer, Homarr, Homepage, Dashy, Heimdall |
-| Monitoring | Uptime Kuma, Netdata, Grafana, Prometheus, Dozzle, Scrutiny |
+| Monitoring | Uptime Kuma, Netdata, Grafana, Prometheus, Dozzle, Glances, Scrutiny |
 | Reverse Proxy | Traefik, Nginx Proxy Manager, Caddy, SWAG |
-| Auth & Security | Authelia, Authentik, Vaultwarden, CrowdSec |
-| Databases | MariaDB, PostgreSQL, Redis, MongoDB |
-| Photos | Immich, PhotoPrism, Photoview |
-| Notes & Docs | Bookstack, Outline, WikiJS, Joplin |
-| Files & Storage | Nextcloud, FileBrowser, Syncthing, MinIO |
-| Dev Tools | Gitea, code-server, Portainer, Watchtower, Drone CI |
-| Home Automation | Home Assistant, Homebridge, Node-RED, ESPHome |
-| VPN & Network | WireGuard, Tailscale, Pi-hole, AdGuard Home |
+| Auth & Security | Authelia, Authentik, Vaultwarden, CrowdSec, Fail2ban |
+| Databases | MariaDB, PostgreSQL, Redis, Adminer, pgAdmin |
+| Photos | Immich, PhotoPrism, Photoview, Lychee, Pigallery2 |
+| Notes & Docs | Bookstack, Outline, WikiJS, Joplin Server, Memos |
+| Files & Storage | Nextcloud, FileBrowser, Syncthing, Rclone, Seafile |
+| Dev Tools | Gitea, Forgejo, code-server, Portainer, Watchtower, Drone CI, Dockge |
+| Home Automation | Home Assistant, Homebridge, Node-RED, ESPHome, Mosquitto, Zigbee2MQTT |
+| VPN & Network | WireGuard, Tailscale, Pi-hole, AdGuard Home, Unbound, Gluetun |
+| Communication | Matrix Synapse, Rocket.Chat |
+| Other | Speedtest Tracker, IT-Tools |
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 deployrr/
-├── install.sh          ← One-command installer
-├── deployrr.sh         ← Bash TUI (run via `media`)
-├── app.py              ← Flask WebUI (all HTML/CSS/JS embedded)
-├── Dockerfile          ← WebUI container (python:3.12-slim)
+├── install.sh           ← One-command installer
+├── deployrr.sh          ← Bash TUI (run via `media`)
+├── app.py               ← Flask WebUI (all HTML/CSS/JS embedded)
+├── Dockerfile           ← WebUI container (python:3.12-slim)
 ├── apps/
-│   ├── catalog.json    ← Master app catalog (104 apps)
-│   └── catalog.sh      ← Auto-generated Bash version
+│   ├── catalog.json     ← Master app catalog (104+ apps)
+│   └── catalog.sh       ← Auto-generated Bash version
 ├── scripts/
-│   └── gen_catalog_sh.py  ← Generates catalog.sh from catalog.json
+│   └── gen_catalog_sh.py
 └── docs/
-    └── auth-setup.md   ← Auth + HTTPS setup guide
+    └── auth-setup.md    ← Auth + HTTPS setup guide
 ```
+
+Each app deploys to its own compose file at `/docker/<appname>/docker-compose.yml`, keeping stacks isolated and independently manageable.
 
 **Adding a new app:** Edit `apps/catalog.json`, then run:
 ```bash
@@ -111,53 +109,34 @@ python3 scripts/gen_catalog_sh.py
 
 ---
 
-## 🔐 Authentication & HTTPS
-
-See [docs/auth-setup.md](docs/auth-setup.md) for the complete guide covering:
-- Custom tokens via environment variable
-- Disabling auth for LAN-only use
-- Nginx, Caddy, and NPM reverse proxy configs
-- SSL/HTTPS setup
-
----
-
-## 🐳 Docker Run (Manual)
+## Docker Run (Manual)
 
 ```bash
 docker run -d \
   --name deployrr_webui \
   -p 9999:9999 \
-  -e DEPLOYRR_TOKEN=your-secret-token \
   -v /opt/deployrr/data:/data \
+  -v /opt/deployrr/apps:/opt/deployrr/apps \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --pid=host \
   --restart unless-stopped \
   ghcr.io/twoeagles404/deployrr:latest
 ```
 
----
-
-## 📡 GitHub Push Instructions
-
-```bash
-cd /opt/deployrr
-git init
-git remote add origin https://github.com/twoeagles404/deployrr.git
-git add .
-git commit -m "Initial release: Deployrr v3.0.0"
-git push -u origin main
-
-# Tag a release (triggers GitHub Actions auto-release + Docker build)
-git tag v3.0.0
-git push origin v3.0.0
-```
+To enable auth, add `-e DEPLOYRR_TOKEN=your-secret-token`.
 
 ---
 
-## 📄 License
+## Authentication & HTTPS
+
+See [docs/auth-setup.md](docs/auth-setup.md) for Nginx, Caddy, and NPM reverse proxy configs with SSL/HTTPS setup.
+
+---
+
+## License
 
 MIT — see [LICENSE](LICENSE)
 
 ---
 
-*Inspired by SimpleHomelab/Deployrr and PegaProx. Built with ❤️ for the homelab community.*
+*Built with care for the homelab community.*

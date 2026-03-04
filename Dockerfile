@@ -15,7 +15,7 @@ FROM python:3.12-slim
 
 # ── Labels ────────────────────────────────────────────────────────────────────
 LABEL maintainer="twoeagles404"
-LABEL version="3.3.0"
+LABEL version="3.4.0"
 LABEL description="ArrHub — Server monitoring and Docker management dashboard"
 LABEL org.opencontainers.image.source="https://github.com/twoeagles404/arrhub"
 

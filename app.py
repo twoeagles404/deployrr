@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.3.0 · Full deployment, update management, and real-time monitoring
+Version: 3.4.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -629,7 +629,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.3.0"
+            "version": "3.4.0"
         }
     })
 
@@ -1751,7 +1751,7 @@ tbody tr:last-child{border-bottom:none;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.3.0</div>
+      <div class="sb-version">v3.4.0</div>
     </div>
   </div>
 
@@ -2082,7 +2082,7 @@ tbody tr:last-child{border-bottom:none;}
       </div>
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.3.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.4.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>

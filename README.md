@@ -1,4 +1,4 @@
-# ArrHub
+# 👻 ArrHub
 
 > A dead-simple, fully open-source homelab Docker deployment tool.
 > One `curl | sudo bash` install. Pure Bash TUI + beautiful Flask WebUI. 104+ apps. MIT licensed.

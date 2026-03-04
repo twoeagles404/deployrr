@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Deployrr Max Monitor — Enhanced Server Administration Dashboard
-Version: 3.0.0 · Full deployment, update management, and real-time monitoring
+Version: 3.1.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -567,7 +567,7 @@ def api_settings_get():
         "pgid": _db_get("pgid", "1000"),
         "no_auth": _NO_AUTH,
         "token_hint": _db_get("token_raw_hint", "not set"),
-        "version": "3.0.0"
+        "version": "3.1.0"
     })
 
 @app.route("/api/settings", methods=["POST"])
@@ -707,7 +707,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for Deployrr updates."""
-    return jsonify({"update_available": False, "version": "3.0.0"})
+    return jsonify({"update_available": False, "version": "3.1.0"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1894,7 +1894,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
                 </div>
             </div>
 
-            <div class="sf">v3.0.0</div>
+            <div class="sf">v3.1.0</div>
         </div>
 
         <!-- MAIN CONTENT -->
@@ -2108,7 +2108,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
                         <div style="margin-top:2rem; padding-top:1.5rem; border-top:1px solid var(--border);">
                             <h3 style="font-size:1rem; font-weight:600; margin-bottom:0.75rem;">About</h3>
                             <div style="font-size:0.9rem; color:var(--text2); line-height:1.8;">
-                                <div>Version: <span style="color:var(--teal);">3.0.0</span></div>
+                                <div>Version: <span style="color:var(--teal);">3.1.0</span></div>
                                 <div>Auth: <span id="settings-auth-status" style="color:var(--green);">checking...</span></div>
                                 <div>Token hint: <span id="settings-token-hint" style="font-family:var(--mono); color:var(--text);">...</span></div>
                             </div>

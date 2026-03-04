@@ -1151,28 +1151,28 @@ _HTML_SPA = r"""<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #080b11;
-            --bg2: #0c1018;
-            --panel: #0f1521;
-            --panel2: #141c28;
-            --border: #1a2535;
-            --border2: #243348;
-            --text: #c8d8e8;
-            --text2: #4e6880;
-            --text3: #2a3d52;
-            --teal: #00cfc8;
-            --teal-dim: rgba(0, 207, 200, 0.12);
-            --teal-border: rgba(0, 207, 200, 0.22);
+            --bg: #1a1b2e;
+            --bg2: #151629;
+            --panel: #1e2035;
+            --panel2: #252a42;
+            --border: #2a2d45;
+            --border2: #343855;
+            --text: #e2e8f0;
+            --text2: #94a3b8;
+            --text3: #64748b;
+            --teal: #f97316;
+            --teal-dim: rgba(249, 115, 22, 0.12);
+            --teal-border: rgba(249, 115, 22, 0.22);
             --blue: #4f8ef7;
-            --green: #2ecc71;
-            --red: #e74c3c;
+            --green: #22c55e;
+            --red: #ef4444;
             --yellow: #f0a500;
             --purple: #a259f7;
             --orange: #f97316;
             --mono: 'JetBrains Mono', monospace;
             --ui: 'DM Sans', sans-serif;
-            --r: 10px;
-            --sb-w: 204px;
+            --r: 12px;
+            --sb-w: 220px;
         }
 
         * {
@@ -1264,13 +1264,14 @@ _HTML_SPA = r"""<!DOCTYPE html>
         }
 
         .ni:hover {
-            background: var(--panel2);
+            background: rgba(249, 115, 22, 0.08);
             color: var(--text);
         }
 
         .ni.active {
             background: var(--teal-dim);
-            border-left-color: var(--teal);
+            border-left: 3px solid var(--teal);
+            padding-left: calc(1rem - 3px);
             color: var(--teal);
         }
 
@@ -1343,7 +1344,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
 
         .tab:hover {
             color: var(--text);
-            background: rgba(0, 207, 200, 0.05);
+            background: rgba(249, 115, 22, 0.08);
         }
 
         .tab.active {
@@ -1402,11 +1403,14 @@ _HTML_SPA = r"""<!DOCTYPE html>
             border-radius: var(--r);
             padding: 1rem;
             transition: all 0.2s;
+            border-top: 3px solid var(--green);
         }
 
         .card:hover {
-            border-color: var(--teal-border);
+            border-color: var(--border2);
             background: var(--panel2);
+            border-top-color: var(--teal);
+            box-shadow: 0 4px 12px rgba(249, 115, 22, 0.08);
         }
 
         .card-title {
@@ -1432,16 +1436,16 @@ _HTML_SPA = r"""<!DOCTYPE html>
 
         .card-bar {
             width: 100%;
-            height: 4px;
+            height: 6px;
             background: var(--border);
-            border-radius: 2px;
+            border-radius: 3px;
             margin-top: 0.8rem;
             overflow: hidden;
         }
 
         .card-bar-fill {
             height: 100%;
-            background: var(--teal);
+            background: var(--green);
             border-radius: 2px;
             transition: width 0.3s;
         }
@@ -1506,7 +1510,9 @@ _HTML_SPA = r"""<!DOCTYPE html>
         }
 
         .btn:hover {
-            background: #00b8ad;
+            background: #e8730e;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(249, 115, 22, 0.3);
         }
 
         .btn-sm {
@@ -1629,17 +1635,18 @@ _HTML_SPA = r"""<!DOCTYPE html>
         }
 
         .peer-status {
-            font-size: 0.8rem;
-            padding: 0.3rem 0.6rem;
-            background: var(--teal-dim);
-            border: 1px solid var(--teal-border);
-            border-radius: 4px;
-            color: var(--teal);
+            font-size: 0.75rem;
+            padding: 0.3rem 0.7rem;
+            background: rgba(34, 197, 94, 0.12);
+            border: none;
+            border-radius: 6px;
+            color: var(--green);
+            font-weight: 700;
+            letter-spacing: 0.5px;
         }
 
         .peer-status.offline {
-            background: rgba(231, 76, 60, 0.12);
-            border-color: rgba(231, 76, 60, 0.22);
+            background: rgba(239, 68, 68, 0.12);
             color: var(--red);
         }
 
@@ -1674,7 +1681,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
             width: 1rem;
             height: 1rem;
             border: 2px solid var(--border);
-            border-top-color: var(--teal);
+            border-top-color: var(--orange);
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
@@ -1690,13 +1697,36 @@ _HTML_SPA = r"""<!DOCTYPE html>
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(8, 11, 17, 0.97);
+            background: rgba(26, 27, 46, 0.97);
             z-index: 9999;
             display: flex;
             align-items: center;
             justify-content: center;
             flex-direction: column;
             gap: 1.5rem;
+        }
+
+        /* LIVE INDICATOR */
+        .live-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--green);
+            font-weight: 500;
+        }
+
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--green);
+            border-radius: 50%;
+            animation: pulse-live 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse-live {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
         }
 
         #login-overlay.hidden {
@@ -1785,7 +1815,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
 <body>
     <!-- Auth Login Overlay -->
     <div id="login-overlay" class="hidden">
-        <div style="font-size:2rem; font-weight:700; color:var(--teal);">🚀 Deployrr</div>
+        <div style="font-size:2rem; font-weight:700; color:var(--orange);">🚀 Deployrr</div>
         <div style="color:var(--text2); font-size:0.95rem;">Enter your access token to continue</div>
         <div style="display:flex; gap:0.75rem; width:100%; max-width:420px;">
             <input id="token-input" type="password" placeholder="Your token..." style="flex:1; padding:0.75rem 1rem; background:var(--panel2); border:1px solid var(--border2); border-radius:var(--r); color:var(--text); font-family:var(--mono); font-size:0.9rem;" />
@@ -1801,8 +1831,8 @@ _HTML_SPA = r"""<!DOCTYPE html>
         <div id="sidebar">
             <button class="sb-toggle" onclick="toggleSidebar()">☰</button>
             <div class="logo">
-                <span style="font-size: 1.2rem;">⚡</span>
-                <span>Deploy<span style="color: var(--teal);">rr</span></span>
+                <span style="font-size: 1.2rem;">🚀</span>
+                <span>Deploy<span style="color: var(--orange);">rr</span></span>
             </div>
 
             <div class="ns">
@@ -1871,8 +1901,9 @@ _HTML_SPA = r"""<!DOCTYPE html>
         <div id="main">
             <div id="topbar">
                 <div class="topbar-title" id="title">Overview</div>
-                <div style="font-size: 0.9rem; color: var(--text2);">
-                    <span id="time">--:--</span>
+                <div style="display:flex; align-items:center; gap:1.5rem;">
+                    <div class="live-badge"><div class="live-dot"></div><span>Live</span></div>
+                    <span style="font-size:0.9rem; color:var(--text2);" id="time">--:--</span>
                 </div>
             </div>
 
@@ -2237,16 +2268,20 @@ _HTML_SPA = r"""<!DOCTYPE html>
                 list.innerHTML = '';
                 for (const [mount, info] of Object.entries(data.disks || {})) {
                     const percent = info.percent || 0;
+                    const pctColor = percent < 60 ? 'var(--green)' : percent < 80 ? 'var(--orange)' : 'var(--red)';
+                    const pctBg = percent < 60 ? 'rgba(34,197,94,0.12)' : percent < 80 ? 'rgba(249,115,22,0.12)' : 'rgba(239,68,68,0.12)';
+                    const barColor = percent < 60 ? 'var(--green)' : percent < 80 ? 'var(--orange)' : 'var(--red)';
                     list.innerHTML += `
-                        <div class="list-item">
-                            <div>
-                                <div style="font-weight: 600; color: var(--text);">${mount}</div>
-                                <div style="font-size: 0.85rem; color: var(--text2);">${info.fstype}</div>
+                        <div class="list-item" style="flex-wrap:wrap; gap:0.5rem;">
+                            <div style="flex:1; min-width:150px;">
+                                <div style="font-weight: 600; color: var(--text); font-family:var(--mono);">${mount}</div>
+                                <div style="font-size: 0.8rem; color: var(--text3);">${info.fstype}</div>
                             </div>
-                            <div style="text-align: right;">
-                                <div style="font-weight: 600;">${(info.used / 1024 / 1024 / 1024).toFixed(1)} GB / ${(info.total / 1024 / 1024 / 1024).toFixed(1)} GB</div>
-                                <div style="font-size: 0.85rem; color: var(--text2);">${percent.toFixed(1)}%</div>
+                            <div style="text-align: right; display:flex; align-items:center; gap:1rem;">
+                                <div style="font-size:0.85rem; color:var(--text2); font-family:var(--mono);">${(info.used / 1024 / 1024 / 1024).toFixed(1)} / ${(info.total / 1024 / 1024 / 1024).toFixed(1)} GB</div>
+                                <span style="padding:0.3rem 0.7rem; border-radius:6px; font-size:0.75rem; font-weight:700; font-family:var(--mono); background:${pctBg}; color:${pctColor};">${percent.toFixed(0)}%</span>
                             </div>
+                            <div style="width:100%; height:4px; background:var(--border); border-radius:2px; overflow:hidden;"><div style="height:100%; width:${percent}%; background:${barColor}; border-radius:2px;"></div></div>
                         </div>
                     `;
                 }
@@ -2294,15 +2329,17 @@ _HTML_SPA = r"""<!DOCTYPE html>
 
                 list.innerHTML = '';
                 for (const c of data.containers || []) {
-                    const status = c.state.Running ? '✓ Running' : '⊗ Stopped';
-                    const statusColor = c.state.Running ? 'var(--green)' : 'var(--red)';
+                    const isRunning = c.state.Running;
+                    const badgeBg = isRunning ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)';
+                    const badgeColor = isRunning ? 'var(--green)' : 'var(--red)';
+                    const badgeText = isRunning ? 'RUNNING' : 'STOPPED';
                     list.innerHTML += `
                         <div class="list-item">
                             <div>
-                                <div style="font-weight: 600; color: var(--text);">${c.name}</div>
-                                <div style="font-size: 0.85rem; color: var(--text2);">${c.image}</div>
+                                <div style="font-weight: 600; color: var(--text); font-family: var(--mono);">${c.name}</div>
+                                <div style="font-size: 0.8rem; color: var(--text3); margin-top:0.2rem;">${c.image}</div>
                             </div>
-                            <div style="color: ${statusColor}; font-weight: 600;">${status}</div>
+                            <span style="padding:0.3rem 0.8rem; border-radius:6px; font-size:0.7rem; font-weight:700; letter-spacing:0.5px; background:${badgeBg}; color:${badgeColor};">${badgeText}</span>
                         </div>
                     `;
                 }
@@ -2458,19 +2495,19 @@ _HTML_SPA = r"""<!DOCTYPE html>
                 return;
             }
             grid.innerHTML = apps.map(a => `
-                <div style="background:var(--panel2); border:1px solid var(--border); border-radius:var(--r); padding:1.2rem; display:flex; flex-direction:column; gap:0.75rem;">
+                <div style="background:var(--panel); border:1px solid var(--border); border-radius:var(--r); padding:1.2rem; display:flex; flex-direction:column; gap:0.75rem; border-top:3px solid ${a.deployed ? 'var(--green)' : 'var(--border2)'}; transition:all 0.2s;">
                     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem;">
                         <div>
                             <div style="font-weight:600; font-size:0.95rem;">${a.icon || ''} ${a.name}</div>
-                            <div style="font-size:0.8rem; color:var(--teal); margin-top:0.2rem;">${a.category}</div>
+                            <div style="font-size:0.75rem; color:var(--text3); margin-top:0.3rem; text-transform:uppercase; letter-spacing:0.5px;">${a.category}</div>
                         </div>
-                        <span style="font-size:0.75rem; padding:0.2rem 0.6rem; border-radius:999px; background:${a.deployed ? 'rgba(46,204,113,0.15)' : 'rgba(78,104,128,0.2)'}; color:${a.deployed ? 'var(--green)' : 'var(--text2)'}; flex-shrink:0;">${a.deployed ? '✓ Running' : '○ Not deployed'}</span>
+                        <span style="font-size:0.7rem; padding:0.3rem 0.7rem; border-radius:6px; font-weight:700; letter-spacing:0.5px; background:${a.deployed ? 'rgba(34,197,94,0.12)' : 'rgba(100,116,139,0.15)'}; color:${a.deployed ? 'var(--green)' : 'var(--text3)'}; flex-shrink:0;">${a.deployed ? 'RUNNING' : 'AVAILABLE'}</span>
                     </div>
                     <div style="font-size:0.85rem; color:var(--text2); flex:1;">${a.description}</div>
-                    <div style="font-size:0.75rem; color:var(--text3); font-family:var(--mono);">${a.image}</div>
+                    <div style="font-size:0.75rem; color:var(--text3); font-family:var(--mono); background:var(--bg2); padding:0.4rem 0.6rem; border-radius:6px;">${a.image}</div>
                     ${(a.ports||[]).length ? `<div style="font-size:0.75rem; color:var(--text2);">Ports: ${a.ports.join(', ')}</div>` : ''}
                     <button onclick="deployApp('${a.id}', '${a.name}')"
-                            style="padding:0.5rem; background:${a.deployed ? 'rgba(78,104,128,0.2)' : 'var(--teal)'}; color:${a.deployed ? 'var(--text2)' : 'var(--bg)'}; border:none; border-radius:calc(var(--r) - 2px); cursor:pointer; font-weight:600; font-size:0.85rem; margin-top:auto;">
+                            style="padding:0.6rem; background:${a.deployed ? 'var(--panel2)' : 'var(--teal)'}; color:${a.deployed ? 'var(--text2)' : 'white'}; border:${a.deployed ? '1px solid var(--border)' : 'none'}; border-radius:8px; cursor:pointer; font-weight:600; font-size:0.85rem; margin-top:auto; transition:all 0.2s;">
                         ${a.deployed ? '↻ Redeploy' : '🚀 Deploy'}
                     </button>
                 </div>
@@ -2535,14 +2572,14 @@ _HTML_SPA = r"""<!DOCTYPE html>
                 return;
             }
             el.innerHTML = data.history.map(h => `
-                <div style="background:var(--panel2); border:1px solid var(--border); border-radius:var(--r); padding:0.75rem 1rem; display:flex; justify-content:space-between; align-items:center; font-size:0.85rem;">
+                <div style="background:var(--panel); border:1px solid var(--border); border-radius:var(--r); padding:0.85rem 1.1rem; display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; border-left:3px solid ${h.status === 'success' ? 'var(--green)' : 'var(--red)'};">
                     <div>
-                        <span style="font-weight:600;">${h.app_name}</span>
-                        <span style="color:var(--text2); margin-left:0.5rem;">${h.action}</span>
+                        <span style="font-weight:600; font-family:var(--mono);">${h.app_name}</span>
+                        <span style="color:var(--text3); margin-left:0.5rem;">${h.action}</span>
                     </div>
-                    <div style="display:flex; gap:1rem; align-items:center;">
-                        <span style="color:${h.status === 'success' ? 'var(--green)' : 'var(--red)'};">${h.status === 'success' ? '✓' : '✗'} ${h.status}</span>
-                        <span style="color:var(--text3); font-size:0.8rem;">${h.timestamp.split('T')[0] || h.timestamp}</span>
+                    <div style="display:flex; gap:0.8rem; align-items:center;">
+                        <span style="padding:0.2rem 0.6rem; border-radius:6px; font-size:0.7rem; font-weight:700; background:${h.status === 'success' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${h.status === 'success' ? 'var(--green)' : 'var(--red)'};">${h.status.toUpperCase()}</span>
+                        <span style="color:var(--text3); font-size:0.8rem; font-family:var(--mono);">${h.timestamp.split('T')[0] || h.timestamp}</span>
                     </div>
                 </div>
             `).join('');
@@ -2563,14 +2600,14 @@ _HTML_SPA = r"""<!DOCTYPE html>
                 return;
             }
             el.innerHTML = data.containers.map(c => `
-                <div style="background:var(--panel2); border:1px solid var(--border); border-radius:var(--r); padding:0.9rem 1.1rem; display:flex; justify-content:space-between; align-items:center; gap:1rem;">
+                <div style="background:var(--panel); border:1px solid var(--border); border-radius:var(--r); padding:1rem 1.2rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; border-left:3px solid ${c.status === 'running' ? 'var(--green)' : 'var(--red)'};">
                     <div>
-                        <div style="font-weight:600; font-size:0.9rem;">${c.name}</div>
-                        <div style="font-family:var(--mono); font-size:0.75rem; color:var(--text3); margin-top:0.2rem;">${c.image}</div>
+                        <div style="font-weight:600; font-size:0.9rem; font-family:var(--mono);">${c.name}</div>
+                        <div style="font-size:0.75rem; color:var(--text3); margin-top:0.2rem;">${c.image}</div>
                     </div>
                     <div style="display:flex; gap:0.75rem; align-items:center; flex-shrink:0;">
-                        <span style="font-size:0.8rem; color:${c.status === 'running' ? 'var(--green)' : 'var(--text2)'};">${c.status}</span>
-                        <button onclick="pullUpdate('${c.name}')" style="padding:0.4rem 0.9rem; background:var(--teal); color:var(--bg); border:none; border-radius:calc(var(--r) - 2px); cursor:pointer; font-size:0.8rem; font-weight:600;">Pull & Restart</button>
+                        <span style="padding:0.25rem 0.6rem; border-radius:6px; font-size:0.7rem; font-weight:700; background:${c.status === 'running' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'}; color:${c.status === 'running' ? 'var(--green)' : 'var(--red)'};">${c.status.toUpperCase()}</span>
+                        <button onclick="pullUpdate('${c.name}')" style="padding:0.45rem 1rem; background:var(--teal); color:white; border:none; border-radius:8px; cursor:pointer; font-size:0.8rem; font-weight:600; transition:all 0.2s;">Pull & Restart</button>
                     </div>
                 </div>
             `).join('');
@@ -2595,11 +2632,12 @@ _HTML_SPA = r"""<!DOCTYPE html>
             }
             const fmt = b => (b.size / 1e6).toFixed(1) + ' MB';
             el.innerHTML = data.backups.map(b => `
-                <div style="background:var(--panel2); border:1px solid var(--border); border-radius:var(--r); padding:0.9rem 1.1rem; display:flex; justify-content:space-between; align-items:center; gap:1rem;">
+                <div style="background:var(--panel); border:1px solid var(--border); border-radius:var(--r); padding:1rem 1.2rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; border-left:3px solid var(--green);">
                     <div>
-                        <div style="font-weight:600; font-size:0.85rem; font-family:var(--mono);">${b.name}</div>
-                        <div style="font-size:0.8rem; color:var(--text2); margin-top:0.2rem;">${fmt(b)} · ${b.created.split('T')[0]}</div>
+                        <div style="font-weight:600; font-size:0.85rem; font-family:var(--mono); color:var(--text);">${b.name}</div>
+                        <div style="font-size:0.8rem; color:var(--text3); margin-top:0.3rem;">${fmt(b)} · ${b.created.split('T')[0]}</div>
                     </div>
+                    <span style="padding:0.3rem 0.7rem; border-radius:6px; font-size:0.7rem; font-weight:700; background:rgba(34,197,94,0.12); color:var(--green);">SAVED</span>
                 </div>
             `).join('');
         }

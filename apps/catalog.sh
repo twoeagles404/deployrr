@@ -6,7 +6,7 @@
 # =============================================================================
 
 # All app IDs (space-separated)
-CATALOG_IDS=("qbittorrent" "transmission" "deluge" "sabnzbd" "nzbget" "jdownloader2" "pyload" "aria2" "pinchflat" "qbitrr" "prowlarr" "radarr" "sonarr" "lidarr" "bazarr" "whisparr" "readarr" "mylar3" "doplarr" "boxarr" "recyclarr" "unpackerr" "notifiarr" "jellyfin" "plex" "emby" "navidrome" "kavita" "komga" "audiobookshelf" "tdarr" "fileflows" "handbrake" "kometa" "wizarr" "jellystat" "seerr" "ombi" "requestrr" "tautulli" "flaresolverr" "grafana" "prometheus" "uptime_kuma" "netdata" "glances" "dozzle" "portainer" "watchtower" "scrutiny" "speedtest" "homer" "homarr" "dasherr" "flame" "heimdall" "organizr" "traefik" "npm" "caddy" "swag" "wireguard" "tailscale" "gluetun" "wg_easy" "adguardhome" "pihole" "technitium" "n8n" "huginn" "changedetection" "node_red" "activepieces" "nextcloud" "filebrowser" "syncthing" "paperless_ngx" "immich" "photoprism" "stirling_pdf" "vaultwarden" "authentik" "authelia" "crowdsec" "ntfy" "gotify" "matrix_synapse" "gitea" "code_server" "drone" "mariadb" "postgres" "redis" "mongodb" "mealie" "grocy" "freshrss" "wallabag" "linkding" "calibre_web" "actual_budget" "cyberchef" "deployrr_webui")
+CATALOG_IDS=("qbittorrent" "transmission" "deluge" "sabnzbd" "nzbget" "jdownloader2" "pyload" "aria2" "pinchflat" "qbitrr" "prowlarr" "radarr" "sonarr" "lidarr" "bazarr" "whisparr" "readarr" "mylar3" "doplarr" "boxarr" "recyclarr" "unpackerr" "notifiarr" "jellyfin" "plex" "emby" "navidrome" "kavita" "komga" "audiobookshelf" "tdarr" "fileflows" "handbrake" "kometa" "wizarr" "jellystat" "seerr" "ombi" "requestrr" "tautulli" "flaresolverr" "grafana" "prometheus" "uptime_kuma" "netdata" "glances" "dozzle" "portainer" "watchtower" "scrutiny" "speedtest" "homer" "homarr" "dasherr" "flame" "heimdall" "organizr" "traefik" "npm" "caddy" "swag" "wireguard" "tailscale" "gluetun" "wg_easy" "adguardhome" "pihole" "technitium" "n8n" "huginn" "changedetection" "node_red" "activepieces" "nextcloud" "filebrowser" "syncthing" "paperless_ngx" "immich" "photoprism" "stirling_pdf" "vaultwarden" "authentik" "authelia" "crowdsec" "ntfy" "gotify" "matrix_synapse" "gitea" "code_server" "drone" "mariadb" "postgres" "redis" "mongodb" "mealie" "grocy" "freshrss" "wallabag" "linkding" "calibre_web" "actual_budget" "cyberchef" "arrhub_webui")
 
 # Associative arrays — one entry per app
 declare -A APP_NAME APP_CATEGORY APP_IMAGE APP_DESCRIPTION APP_PORTS APP_ICON APP_NOTES
@@ -827,13 +827,13 @@ APP_PORTS["cyberchef"]="8098:8000"
 APP_ICON["cyberchef"]="\ud83d\udce6"
 APP_NOTES["cyberchef"]=""
 
-APP_NAME["deployrr_webui"]="Deployrr WebUI"
-APP_CATEGORY["deployrr_webui"]="Deployrr"
-APP_IMAGE["deployrr_webui"]="deployrr-webui:local"
-APP_DESCRIPTION["deployrr_webui"]="Built-in server monitoring and Docker management dashboard on port 9999."
-APP_PORTS["deployrr_webui"]="9999:9999"
-APP_ICON["deployrr_webui"]="\ud83d\udce6"
-APP_NOTES["deployrr_webui"]="Built from local Dockerfile. Run 'media \u2192 WebUI Control \u2192 Rebuild' after updates."
+APP_NAME["arrhub_webui"]="ArrHub WebUI"
+APP_CATEGORY["arrhub_webui"]="ArrHub"
+APP_IMAGE["arrhub_webui"]="arrhub-webui:local"
+APP_DESCRIPTION["arrhub_webui"]="Built-in server monitoring and Docker management dashboard on port 9999."
+APP_PORTS["arrhub_webui"]="9999:9999"
+APP_ICON["arrhub_webui"]="\ud83d\udce6"
+APP_NOTES["arrhub_webui"]="Built from local Dockerfile. Run 'media \u2192 WebUI Control \u2192 Rebuild' after updates."
 
 # Helper: get all apps in a category
 catalog_apps_in_category() {

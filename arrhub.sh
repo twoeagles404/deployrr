@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# Deployrr v3.0.0 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.3.0 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
-# GitHub: https://github.com/twoeagles404/deployrr
+# GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
 
 set -uo pipefail
@@ -12,16 +12,16 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.0.0"
+VERSION="3.3.0"
 GITHUB_USER="twoeagles404"
-GITHUB_REPO="deployrr"
+GITHUB_REPO="arrhub"
 GITHUB_BRANCH="main"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
-BACKTITLE="Deployrr v${VERSION} — ARR Suite Deployment Tool"
+BACKTITLE="ArrHub v${VERSION} — ARR Suite Deployment Tool"
 CONFIG_DIR="${CONFIG_DIR:-/docker}"
 MEDIA_DIR="${MEDIA_DIR:-/mnt/media}"
 TZ_VAL="${TZ:-America/New_York}"
@@ -29,10 +29,15 @@ PUID_VAL="0"
 PGID_VAL="0"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 
-LOG_FILE="/var/log/deployrr.log"
-ERR_FILE="/var/log/deployrr-errors.log"
+# Per-app compose — each app gets its own /docker/<appname>/docker-compose.yml
+# Use: app_compose <id>   to get the path
+# (COMPOSE_FILE kept as backwards-compat alias for dashboard ops on existing stacks)
+app_compose() { echo "${CONFIG_DIR}/${1}/docker-compose.yml"; }
 
-TMP_DIR="$(mktemp -d /tmp/deployrr.XXXXXX)"
+LOG_FILE="/var/log/arrhub.log"
+ERR_FILE="/var/log/arrhub-errors.log"
+
+TMP_DIR="$(mktemp -d /tmp/arrhub.XXXXXX)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 # ---------------------------------------------------------------------------
@@ -174,6 +179,9 @@ load_catalog() {
     define_app jdownloader2 "JDownloader2" "jlesage/jdownloader-2:latest"            "Downloaders"  "5800:5800"
     define_app pyload       "pyLoad"       "ghcr.io/pyload/pyload:latest"            "Downloaders"  "8000:8000"
     define_app aria2        "Aria2"        "p3terx/aria2-pro:latest"                 "Downloaders"  "6800:6800 6888:6888 6888:6888/udp"
+    define_app pinchflat    "Pinchflat"    "ghcr.io/kieraneglin/pinchflat:latest"    "Downloaders"  "8945:8945"
+    define_app qbitrr       "qbitrr"       "feramance/qbitrr:latest"                 "Downloaders"  "6969:6969"
+    APP_CUSTOM_SVC[qbitrr]="yes"
 
     # -- ARR Suite --
     define_app prowlarr   "Prowlarr"    "lscr.io/linuxserver/prowlarr:latest"   "ARR Suite"  "9696:9696"
@@ -182,14 +190,12 @@ load_catalog() {
     define_app lidarr     "Lidarr"      "lscr.io/linuxserver/lidarr:latest"     "ARR Suite"  "8686:8686"
     define_app bazarr     "Bazarr"      "lscr.io/linuxserver/bazarr:latest"     "ARR Suite"  "6767:6767"
     define_app whisparr   "Whisparr"    "ghcr.io/hotio/whisparr:nightly"        "ARR Suite"  "6969:6969"
-    define_app readarr    "Readarr"     "lscr.io/linuxserver/readarr:develop"   "ARR Suite"  "8787:8787"
+    define_app readarr    "Readarr"     "ghcr.io/hotio/readarr:nightly"   "ARR Suite"  "8787:8787"
     define_app mylar3     "Mylar3"      "lscr.io/linuxserver/mylar3:latest"     "ARR Suite"  "8090:8090"
-    define_app huntarr    "Huntarr (opt)" "ghcr.io/plexguide/huntarr:latest"    "ARR Suite"  "9705:9705"
-    APP_CUSTOM_SVC[huntarr]="yes"
-    define_app cleanuparr "Cleanuparr*" "ghcr.io/flmorg/cleanuperr:latest"      "ARR Suite"  ""
     define_app doplarr    "Doplarr"     "lscr.io/linuxserver/doplarr:latest"     "ARR Suite"  ""
     APP_CUSTOM_SVC[doplarr]="yes"
-    define_app boxarr     "Boxarr"      "nicholasammann/boxarr:latest"           "ARR Suite"  "3579:3000"
+    define_app boxarr     "Boxarr"      "ghcr.io/iongpt/boxarr:latest"           "ARR Suite"  "8888:8888"
+    APP_CUSTOM_SVC[boxarr]="yes"
     define_app recyclarr  "Recyclarr"   "ghcr.io/recyclarr/recyclarr:latest"    "ARR Suite"  ""
     define_app unpackerr  "Unpackerr"   "golift/unpackerr:latest"               "ARR Suite"  ""
     define_app notifiarr  "Notifiarr"   "golift/notifiarr:latest"               "ARR Suite"  "5454:5454"
@@ -230,8 +236,10 @@ load_catalog() {
     define_app netdata    "Netdata"     "netdata/netdata:latest"              "Monitoring"  "19999:19999"  "true"
     define_app glances    "Glances"     "nicolargo/glances:latest"            "Monitoring"  "61208:61208"
     define_app dozzle     "Dozzle"      "amir20/dozzle:latest"                "Monitoring"  "8888:8080"
+    APP_CUSTOM_SVC[dozzle]="yes"
     define_app portainer  "Portainer"   "portainer/portainer-ce:latest"       "Monitoring"  "9000:9000 9443:9443"
     define_app watchtower "Watchtower"  "containrrr/watchtower:latest"        "Monitoring"  ""
+    APP_CUSTOM_SVC[watchtower]="yes"
     define_app scrutiny   "Scrutiny"    "ghcr.io/analogj/scrutiny:master-omnibus" "Monitoring" "8080:8080" "true"
     define_app speedtest  "Speedtest"   "lscr.io/linuxserver/speedtest-tracker:latest" "Monitoring" "8765:80"
 
@@ -315,16 +323,16 @@ load_catalog() {
     define_app actual_budget   "Actual Budget"  "actualbudget/actual-server:latest"        "Home & Misc"  "5006:5006"
     define_app cyberchef       "CyberChef"     "mpepping/cyberchef:latest"                 "Home & Misc"  "8098:8000"
 
-    # -- Deployrr --
-    define_app deployrr_webui "Deployrr WebUI" "deployrr-webui:local" "Deployrr" "9999:9999"
-    APP_CUSTOM_SVC[deployrr_webui]="yes"
+    # -- ArrHub --
+    define_app arrhub_webui "ArrHub WebUI" "arrhub-webui:local" "ArrHub" "9999:9999"
+    APP_CUSTOM_SVC[arrhub_webui]="yes"
 }
 
 ALL_APPS=(
     # Downloaders
-    qbittorrent transmission deluge sabnzbd nzbget jdownloader2 pyload aria2
+    qbittorrent transmission deluge sabnzbd nzbget jdownloader2 pyload aria2 pinchflat qbitrr
     # ARR Suite
-    prowlarr radarr sonarr lidarr bazarr whisparr readarr mylar3 huntarr cleanuparr doplarr boxarr recyclarr unpackerr notifiarr
+    prowlarr radarr sonarr lidarr bazarr whisparr readarr mylar3 doplarr boxarr recyclarr unpackerr notifiarr
     # Media Servers
     jellyfin plex emby navidrome kavita komga audiobookshelf
     # Media Tools
@@ -352,18 +360,18 @@ ALL_APPS=(
     mariadb postgres redis mongodb
     # Home & Misc
     mealie grocy freshrss wallabag linkding calibre_web actual_budget cyberchef
-    # Deployrr
-    deployrr_webui
+    # ArrHub
+    arrhub_webui
 )
 
-LOCAL_IMAGE_APPS=(deployrr_webui)
+LOCAL_IMAGE_APPS=(arrhub_webui)
 
 # Full Stack Presets
-MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr deployrr_webui)
-ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr readarr qbittorrent deployrr_webui)
-MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr readarr seerr tautulli homer deployrr_webui)
-FULL_STACK_ARR=(prowlarr radarr sonarr lidarr bazarr whisparr readarr doplarr boxarr recyclarr unpackerr notifiarr)
-FULL_STACK_TOOLS=(seerr tautulli flaresolverr homer homarr deployrr_webui)
+MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr arrhub_webui)
+ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr readarr qbittorrent seerr boxarr arrhub_webui)
+MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr readarr seerr boxarr tautulli homer arrhub_webui)
+FULL_STACK_ARR=(prowlarr radarr sonarr lidarr bazarr whisparr readarr doplarr boxarr seerr recyclarr unpackerr notifiarr)
+FULL_STACK_TOOLS=(seerr tautulli flaresolverr homer homarr arrhub_webui)
 FULL_STACK_MONITORING=(grafana prometheus uptime_kuma dozzle watchtower scrutiny speedtest)
 
 # ---------------------------------------------------------------------------
@@ -425,10 +433,23 @@ ensure_dirs() {
 init_compose() {
     mkdir -p "${CONFIG_DIR}"
     {
-        echo "# Generated by Deployrr v${VERSION} on $(date)"
+        echo "# Generated by ArrHub v${VERSION} on $(date)"
         echo "services:"
     } > "${COMPOSE_FILE}"
     log INFO "Compose initialised: ${COMPOSE_FILE}"
+}
+
+# Per-app compose initialiser — creates /docker/<id>/docker-compose.yml
+init_app_compose() {
+    local id="$1"
+    local f; f="$(app_compose "${id}")"
+    mkdir -p "${CONFIG_DIR}/${id}"
+    {
+        echo "# Generated by ArrHub v${VERSION} on $(date)"
+        echo "# App: ${APP_NAME[$id]:-$id}"
+        echo "services:"
+    } > "${f}"
+    log INFO "Per-app compose initialised: ${f}"
 }
 
 # Generic service block
@@ -436,11 +457,11 @@ add_service() {
     local id="$1"
 
     if [[ -n "${APP_CUSTOM_SVC[$id]:-}" ]]; then
-        "add_service_${id}"
+        "add_service_${id}" "${id}"
         return
     fi
 
-    local f="${COMPOSE_FILE}"
+    local f; f="$(app_compose "${id}")"
     local image="${APP_IMAGE[$id]}"
     local ports="${APP_PORTS[$id]:-}"
     local priv="${APP_PRIV[$id]:-false}"
@@ -478,27 +499,9 @@ add_service() {
 # Custom service writers
 # ---------------------------------------------------------------------------
 
-add_service_huntarr() {
-    local f="${COMPOSE_FILE}"
-    {
-        echo ""
-        echo "  huntarr:"
-        echo "    image: ghcr.io/plexguide/huntarr:latest"
-        echo "    container_name: huntarr"
-        echo "    restart: always"
-        echo "    environment:"
-        echo "      - TZ=${TZ_VAL}"
-        echo "      - PUID=${PUID_VAL}"
-        echo "      - PGID=${PGID_VAL}"
-        echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/huntarr:/config"
-        echo "    ports:"
-        echo "      - \"9705:9705\""
-    } >> "${f}"
-}
-
 add_service_doplarr() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-doplarr}"
+    local f; f="$(app_compose "${id}")"
     {
         echo ""
         echo "  doplarr:"
@@ -533,64 +536,40 @@ add_service_doplarr() {
 }
 
 add_service_boxarr() {
-    local f="${COMPOSE_FILE}"
-    local db_pass="boxarrdb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c12 || echo 'changeme')"
+    local id="${1:-boxarr}"
+    local f; f="$(app_compose "${id}")"
+    mkdir -p "${CONFIG_DIR}/boxarr/config" 2>/dev/null || true
     {
         echo ""
-        echo "  boxarr-db:"
-        echo "    image: lscr.io/linuxserver/mariadb:latest"
-        echo "    container_name: boxarr-db"
-        echo "    restart: unless-stopped"
-        echo "    environment:"
-        echo "      - PUID=${PUID_VAL}"
-        echo "      - PGID=${PGID_VAL}"
-        echo "      - TZ=${TZ_VAL}"
-        echo "      - MYSQL_ROOT_PASSWORD=${db_pass}"
-        echo "      - MYSQL_DATABASE=bookstackapp"
-        echo "      - MYSQL_USER=bookstack"
-        echo "      - MYSQL_PASSWORD=${db_pass}"
-        echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/boxarr-db:/config"
-        echo ""
         echo "  boxarr:"
-        echo "    image: lscr.io/linuxserver/bookstack:latest"
+        echo "    image: ghcr.io/iongpt/boxarr:latest"
         echo "    container_name: boxarr"
         echo "    restart: unless-stopped"
-        echo "    depends_on:"
-        echo "      - boxarr-db"
         echo "    environment:"
-        echo "      - PUID=${PUID_VAL}"
-        echo "      - PGID=${PGID_VAL}"
         echo "      - TZ=${TZ_VAL}"
-        echo "      - APP_URL=http://localhost:6875"
-        echo "      - DB_HOST=boxarr-db"
-        echo "      - DB_PORT=3306"
-        echo "      - DB_USER=bookstack"
-        echo "      - DB_PASS=${db_pass}"
-        echo "      - DB_DATABASE=bookstackapp"
         echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/boxarr:/config"
+        echo "      - ${CONFIG_DIR}/boxarr/config:/config"
         echo "    ports:"
-        echo "      - \"6875:80\""
+        echo "      - \"8888:8888\""
     } >> "${f}"
-    mkdir -p "${CONFIG_DIR}/boxarr-db" 2>/dev/null || true
-    log INFO "Boxarr DB password: ${db_pass}"
+    log INFO "Boxarr configured on port 8888 (ghcr.io/iongpt/boxarr)"
 }
 
-add_service_deployrr_webui() {
-    local f="${COMPOSE_FILE}"
-    local webui_dir="${SCRIPT_DIR}/deployrr-webui"
+add_service_arrhub_webui() {
+    local id="${1:-arrhub_webui}"
+    local f; f="$(app_compose "${id}")"
+    local webui_dir="${SCRIPT_DIR}/arrhub-webui"
 
     if [[ -d "${webui_dir}" ]]; then
-        log INFO "Building deployrr-webui image from ${webui_dir}"
-        if docker build -q -t deployrr-webui:local "${webui_dir}" >> "${LOG_FILE}" 2>&1; then
-            log INFO "deployrr-webui image built OK"
+        log INFO "Building arrhub-webui image from ${webui_dir}"
+        if docker build -q -t arrhub-webui:local "${webui_dir}" >> "${LOG_FILE}" 2>&1; then
+            log INFO "arrhub-webui image built OK"
         else
             log_err "WEBUI_BUILD" "docker build failed — WebUI may not start"
         fi
     else
-        if docker image inspect deployrr-webui:local &>/dev/null 2>&1; then
-            log INFO "deployrr-webui source dir not found but image already exists — reusing"
+        if docker image inspect arrhub-webui:local &>/dev/null 2>&1; then
+            log INFO "arrhub-webui source dir not found but image already exists — reusing"
         else
             log_err "WEBUI_BUILD" "Source dir not found: ${webui_dir} — image missing too"
         fi
@@ -598,10 +577,10 @@ add_service_deployrr_webui() {
 
     {
         echo ""
-        echo "  deployrr_webui:"
-        echo "    image: deployrr-webui:local"
+        echo "  arrhub_webui:"
+        echo "    image: arrhub-webui:local"
         echo "    pull_policy: never"
-        echo "    container_name: deployrr_webui"
+        echo "    container_name: arrhub_webui"
         echo "    restart: unless-stopped"
         echo "    pid: host"
         echo "    ports:"
@@ -612,7 +591,8 @@ add_service_deployrr_webui() {
 }
 
 add_service_pihole() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-pihole}"
+    local f; f="$(app_compose "${id}")"
     local webpass="changeme"
     {
         echo ""
@@ -639,7 +619,8 @@ add_service_pihole() {
 }
 
 add_service_nextcloud() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-nextcloud}"
+    local f; f="$(app_compose "${id}")"
     local db_pass="nextclouddb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     local root_pass="nextcloudroot_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     {
@@ -684,7 +665,8 @@ add_service_nextcloud() {
 }
 
 add_service_immich() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-immich}"
+    local f; f="$(app_compose "${id}")"
     local db_pass="immichdb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     {
         echo ""
@@ -733,7 +715,8 @@ add_service_immich() {
 }
 
 add_service_authentik() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-authentik}"
+    local f; f="$(app_compose "${id}")"
     local db_pass="authentikdb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     local secret_key="authentik_$(tr -dc 'a-zA-Z0-9' < /dev/urandom 2>/dev/null | head -c32 || echo 'changeme')"
     {
@@ -784,9 +767,10 @@ add_service_authentik() {
 }
 
 add_service_mariadb() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-mariadb}"
+    local f; f="$(app_compose "${id}")"
     local root_pass="mariadb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
-    local user_pass="deployrr_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
+    local user_pass="arrhub_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     {
         echo ""
         echo "  mariadb:"
@@ -798,18 +782,19 @@ add_service_mariadb() {
         echo "      - PGID=${PGID_VAL}"
         echo "      - TZ=${TZ_VAL}"
         echo "      - MYSQL_ROOT_PASSWORD=${root_pass}"
-        echo "      - MYSQL_DATABASE=deployrr"
-        echo "      - MYSQL_USER=deployrr"
+        echo "      - MYSQL_DATABASE=arrhub"
+        echo "      - MYSQL_USER=arrhub"
         echo "      - MYSQL_PASSWORD=${user_pass}"
         echo "    volumes:"
         echo "      - ${CONFIG_DIR}/mariadb:/config"
     } >> "${f}"
     log INFO "MariaDB root password: ${root_pass}"
-    log INFO "MariaDB user (deployrr) password: ${user_pass}"
+    log INFO "MariaDB user (arrhub) password: ${user_pass}"
 }
 
 add_service_postgres() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-postgres}"
+    local f; f="$(app_compose "${id}")"
     local pass="postgres_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     {
         echo ""
@@ -818,9 +803,9 @@ add_service_postgres() {
         echo "    container_name: postgres"
         echo "    restart: unless-stopped"
         echo "    environment:"
-        echo "      - POSTGRES_USER=deployrr"
+        echo "      - POSTGRES_USER=arrhub"
         echo "      - POSTGRES_PASSWORD=${pass}"
-        echo "      - POSTGRES_DB=deployrr"
+        echo "      - POSTGRES_DB=arrhub"
         echo "    volumes:"
         echo "      - ${CONFIG_DIR}/postgres:/var/lib/postgresql/data"
         echo "    ports:"
@@ -830,7 +815,8 @@ add_service_postgres() {
 }
 
 add_service_redis() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-redis}"
+    local f; f="$(app_compose "${id}")"
     {
         echo ""
         echo "  redis:"
@@ -846,7 +832,8 @@ add_service_redis() {
 }
 
 add_service_mongodb() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-mongodb}"
+    local f; f="$(app_compose "${id}")"
     local pass="mongodb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     {
         echo ""
@@ -865,12 +852,12 @@ add_service_mongodb() {
     log INFO "MongoDB admin password: ${pass}"
 }
 
-
 # ---------------------------------------------------------------------------
 # New custom service writers for pre-configured apps
 # ---------------------------------------------------------------------------
 add_service_qbittorrent() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-qbittorrent}"
+    local f; f="$(app_compose "${id}")"
     {
         echo ""
         echo "  qbittorrent:"
@@ -895,8 +882,11 @@ add_service_qbittorrent() {
 }
 
 add_service_prometheus() {
-    local f="${COMPOSE_FILE}"
-    mkdir -p "${CONFIG_DIR}/prometheus" 2>/dev/null || true
+    local id="${1:-prometheus}"
+    local f; f="$(app_compose "${id}")"
+    mkdir -p "${CONFIG_DIR}/prometheus/data" 2>/dev/null || true
+    # UID 65534 (nobody) is what the prom/prometheus image runs as — fix ownership
+    chown -R 65534:65534 "${CONFIG_DIR}/prometheus/data" 2>/dev/null || true
     cat > "${CONFIG_DIR}/prometheus/prometheus.yml" << 'PROM_EOF'
 global:
   scrape_interval: 15s
@@ -925,6 +915,7 @@ PROM_EOF
         echo "    image: prom/prometheus:latest"
         echo "    container_name: prometheus"
         echo "    restart: unless-stopped"
+        echo "    user: \"65534:65534\""
         echo "    command:"
         echo "      - '--config.file=/etc/prometheus/prometheus.yml'"
         echo "      - '--storage.tsdb.path=/prometheus'"
@@ -935,7 +926,7 @@ PROM_EOF
         echo "      - ${CONFIG_DIR}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
         echo "      - ${CONFIG_DIR}/prometheus/data:/prometheus"
         echo "    ports:"
-        echo "      - "9090:9090""
+        echo "      - \"9090:9090\""
         echo "    extra_hosts:"
         echo "      - host.docker.internal:host-gateway"
     } >> "${f}"
@@ -943,11 +934,15 @@ PROM_EOF
 }
 
 add_service_grafana() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-grafana}"
+    local f; f="$(app_compose "${id}")"
     local grafana_pass="admin"
+    mkdir -p "${CONFIG_DIR}/grafana/data" 2>/dev/null || true
     mkdir -p "${CONFIG_DIR}/grafana/provisioning/datasources" 2>/dev/null || true
     mkdir -p "${CONFIG_DIR}/grafana/provisioning/dashboards" 2>/dev/null || true
     mkdir -p "${CONFIG_DIR}/grafana/dashboards" 2>/dev/null || true
+    # UID 472 is grafana's default user inside the container — fix ownership upfront
+    chown -R 472:472 "${CONFIG_DIR}/grafana" 2>/dev/null || true
 
     cat > "${CONFIG_DIR}/grafana/provisioning/datasources/prometheus.yaml" << 'GRAFANA_DS_EOF'
 apiVersion: 1
@@ -978,32 +973,77 @@ GRAFANA_DB_EOF
         echo "    image: grafana/grafana:latest"
         echo "    container_name: grafana"
         echo "    restart: unless-stopped"
+        echo "    user: \"472\""
         echo "    environment:"
         echo "      - GF_SECURITY_ADMIN_USER=admin"
         echo "      - GF_SECURITY_ADMIN_PASSWORD=${grafana_pass}"
         echo "      - GF_USERS_ALLOW_SIGN_UP=false"
+        echo "      - GF_PATHS_DATA=/var/lib/grafana"
+        echo "      - GF_PATHS_LOGS=/var/log/grafana"
+        echo "      - GF_PATHS_PLUGINS=/var/lib/grafana/plugins"
         echo "      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource"
         echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/grafana:/var/lib/grafana"
+        echo "      - ${CONFIG_DIR}/grafana/data:/var/lib/grafana"
         echo "      - ${CONFIG_DIR}/grafana/provisioning:/etc/grafana/provisioning"
         echo "      - ${CONFIG_DIR}/grafana/dashboards:/var/lib/grafana/dashboards"
         echo "    ports:"
-        echo "      - "3000:3000""
+        echo "      - \"3000:3000\""
     } >> "${f}"
     log INFO "Grafana configured with Prometheus datasource pre-wired (admin/${grafana_pass})"
     printf '\n\033[1;33m  ▶ Grafana credentials: admin / %s\n  ▶ Prometheus datasource is pre-configured\033[0m\n' "${grafana_pass}"
 }
 
+# Dozzle — requires Docker socket; without it the container fatals immediately
+add_service_dozzle() {
+    local id="${1:-dozzle}"
+    local f; f="$(app_compose "${id}")"
+    {
+        echo ""
+        echo "  dozzle:"
+        echo "    image: amir20/dozzle:latest"
+        echo "    container_name: dozzle"
+        echo "    restart: unless-stopped"
+        echo "    volumes:"
+        echo "      - /var/run/docker.sock:/var/run/docker.sock:ro"
+        echo "    ports:"
+        echo "      - \"8888:8080\""
+    } >> "${f}"
+    log INFO "Dozzle configured with Docker socket (read-only)"
+}
+
+# Watchtower — requires Docker socket to poll registries and restart containers
+add_service_watchtower() {
+    local id="${1:-watchtower}"
+    local f; f="$(app_compose "${id}")"
+    {
+        echo ""
+        echo "  watchtower:"
+        echo "    image: containrrr/watchtower:latest"
+        echo "    container_name: watchtower"
+        echo "    restart: unless-stopped"
+        echo "    volumes:"
+        echo "      - /var/run/docker.sock:/var/run/docker.sock"
+        echo "    environment:"
+        echo "      - WATCHTOWER_CLEANUP=true"
+        echo "      - WATCHTOWER_POLL_INTERVAL=86400"
+        echo "      - WATCHTOWER_INCLUDE_STOPPED=false"
+        echo "      - DOCKER_API_VERSION=1.44"
+        echo "      - TZ=${TZ_VAL}"
+    } >> "${f}"
+    log INFO "Watchtower configured — will poll for updates every 24h"
+}
+
 add_service_homer() {
-    local f="${COMPOSE_FILE}"
+    local id="${1:-homer}"
+    local f; f="$(app_compose "${id}")"
     mkdir -p "${CONFIG_DIR}/homer/assets" 2>/dev/null || true
     
     cat > "${CONFIG_DIR}/homer/config.yml" << 'HOMER_EOF'
 title: "My Homelab"
-subtitle: "Powered by Deployrr"
+subtitle: "Powered by ArrHub"
 logo: "assets/logo.png"
 header: true
-footer: '<p>Deployrr — <a href="https://github.com">GitHub</a></p>'
+footer: '<p>ArrHub — <a href="https://github.com">GitHub</a></p>'
 
 theme: default
 colors:
@@ -1056,7 +1096,7 @@ services:
   - name: "Tools"
     icon: "fas fa-tools"
     items:
-      - name: "Deployrr"
+      - name: "ArrHub"
         icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/docker.png"
         url: "http://HOST_IP:9999"
         subtitle: "Server Dashboard"
@@ -1138,16 +1178,16 @@ self_update() {
     local script_path
     script_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 
-    d_infobox "Deployrr Update" "Downloading latest version from GitHub...\n\nThis may take a moment."
+    d_infobox "ArrHub Update" "Downloading latest version from GitHub...\n\nThis may take a moment."
 
-    local tmp_file="${TMP_DIR}/deployrr_latest.sh"
+    local tmp_file="${TMP_DIR}/arrhub_latest.sh"
 
-    if curl -fsSL "${GITHUB_RAW}/deployrr.sh" -o "${tmp_file}" 2>/dev/null; then
+    if curl -fsSL "${GITHUB_RAW}/arrhub.sh" -o "${tmp_file}" 2>/dev/null; then
         if [[ -s "${tmp_file}" ]]; then
             chmod +x "${tmp_file}"
             cp "${tmp_file}" "${script_path}"
             log INFO "Self-update completed successfully"
-            d_msgbox "Update Complete" "Deployrr has been updated to the latest version.\n\nPlease restart the script."
+            d_msgbox "Update Complete" "ArrHub has been updated to the latest version.\n\nPlease restart the script."
             exit 0
         else
             log_err "UPDATE" "Downloaded file is empty"
@@ -1155,7 +1195,7 @@ self_update() {
         fi
     else
         log_err "UPDATE" "Failed to download from GitHub"
-        d_msgbox "Update Failed" "Could not download from:\n${GITHUB_RAW}/deployrr.sh\n\nCheck your internet connection."
+        d_msgbox "Update Failed" "Could not download from:\n${GITHUB_RAW}/arrhub.sh\n\nCheck your internet connection."
     fi
 }
 
@@ -1170,8 +1210,8 @@ about_menu() {
     local compose_version
     compose_version=$(docker compose version 2>/dev/null | grep -oP '(?<=, version )[^,]+' || echo "Unknown")
 
-    d_msgbox "About Deployrr" \
-"Deployrr v${VERSION}
+    d_msgbox "About ArrHub" \
+"ArrHub v${VERSION}
 Production-ready Docker-based media server deployment
 
 GitHub: https://github.com/${GITHUB_USER}/${GITHUB_REPO}
@@ -1221,14 +1261,12 @@ deploy_apps() {
 
     log_section
 
-    d_infobox "Deployrr" "Writing docker-compose.yml...\n\nServices: ${total}"
-    init_compose
+    d_infobox "ArrHub" "Writing per-app compose files...\n\nApps: ${total}"
     for id in "${apps[@]}"; do
+        init_app_compose "${id}"
         add_service "${id}"
-        mkdir -p "${CONFIG_DIR}/${id}" 2>/dev/null || true
     done
-    log INFO "Compose written with ${total} services"
-    log_raw "docker-compose.yml" "${COMPOSE_FILE}"
+    log INFO "Per-app compose files written for ${total} apps"
 
     log INFO "Starting pull phase (${total} images)"
 
@@ -1237,7 +1275,7 @@ deploy_apps() {
     mkfifo "${gauge_fifo}"
 
     dialog --clear --backtitle "${BACKTITLE}" \
-           --title "Deployrr — Pulling Images" \
+           --title "ArrHub — Pulling Images" \
            --gauge "Preparing..." 10 70 0 < "${gauge_fifo}" &
     local gauge_pid=$!
 
@@ -1270,7 +1308,7 @@ deploy_apps() {
                 printf '%d\n# [LOCAL OK] %s\n' "${pct}" "${label}" >&9
             else
                 log_err "PULL" "${id} SKIPPED — local image ${image} not found (build failed or not yet built)"
-                fail_pull+=("${id}  [local image missing — run: docker build -t ${image} ${SCRIPT_DIR}/deployrr-webui]")
+                fail_pull+=("${id}  [local image missing — run: docker build -t ${image} ${SCRIPT_DIR}/arrhub-webui]")
                 printf '%d\n# [LOCAL MISSING] %s\n' "${pct}" "${label}" >&9
             fi
             continue
@@ -1279,7 +1317,7 @@ deploy_apps() {
         log INFO "Pull [${idx}/${total}] ${id}  image=${image}"
 
         local pull_exit=0
-        docker compose -f "${COMPOSE_FILE}" pull "${id}" > "${pull_out}" 2>&1 || pull_exit=$?
+        docker compose -f "$(app_compose "${id}")" pull > "${pull_out}" 2>&1 || pull_exit=$?
 
         log_raw "pull:${id}" "${pull_out}"
 
@@ -1313,7 +1351,7 @@ deploy_apps() {
 
     local start_msg="Starting containers...\n\nPulled OK: ${#ok_pull[@]} of ${total}"
     [[ ${#fail_pull[@]} -gt 0 ]] && start_msg+="\nFailed pulls: ${#fail_pull[@]} (skipped)"
-    d_infobox "Deployrr — Starting" "${start_msg}"
+    d_infobox "ArrHub — Starting" "${start_msg}"
 
     local compose_out="${TMP_DIR}/compose_up.log"
 
@@ -1325,28 +1363,40 @@ deploy_apps() {
         return
     fi
 
-    log INFO "Running: docker compose up -d ${ok_pull[*]}"
+    log INFO "Starting per-app compose up for ${#ok_pull[@]} apps"
 
+    local any_compose_fail=false
     for _cid in "${ok_pull[@]}"; do
+        local _f; _f="$(app_compose "${_cid}")"
+        local _up_out="${TMP_DIR}/up_${_cid}.log"
+
+        # Pre-remove any stale container with same name
         if docker inspect "${_cid}" &>/dev/null 2>&1; then
-            log INFO "Pre-removing existing container before compose up: ${_cid}"
+            log INFO "Pre-removing existing container: ${_cid}"
             docker rm -f "${_cid}" >> "${LOG_FILE}" 2>&1 || true
+        fi
+
+        local _up_exit=0
+        docker compose -f "${_f}" up -d > "${_up_out}" 2>&1 || _up_exit=$?
+        log_raw "compose_up:${_cid}" "${_up_out}"
+        cat "${_up_out}" >> "${compose_out}" || true
+
+        if [[ ${_up_exit} -ne 0 ]]; then
+            log_err "COMPOSE" "docker compose up failed for ${_cid} (exit ${_up_exit})"
+            log_raw_err "compose_up:${_cid}:failed" "${_up_out}"
+            any_compose_fail=true
+        else
+            log INFO "docker compose up OK: ${_cid}"
         fi
     done
 
-    local compose_exit=0
-    docker compose -f "${COMPOSE_FILE}" up -d "${ok_pull[@]}" > "${compose_out}" 2>&1 || compose_exit=$?
-
-    log_raw "compose_up" "${compose_out}"
-
-    if [[ ${compose_exit} -ne 0 ]]; then
-        log_err "COMPOSE" "docker compose up exited ${compose_exit}"
-        log_raw_err "compose_up:failed" "${compose_out}"
+    if ${any_compose_fail}; then
+        log_err "COMPOSE" "One or more apps failed to start — see error log"
     else
-        log INFO "docker compose up completed (exit 0)"
+        log INFO "All per-app compose ups completed successfully"
     fi
 
-    d_infobox "Deployrr" "Verifying container states...\n\nPlease wait (5 seconds)."
+    d_infobox "ArrHub" "Verifying container states...\n\nPlease wait (5 seconds)."
     sleep 5
 
     for id in "${apps[@]}"; do
@@ -1484,7 +1534,8 @@ deploy_media_wizard() {
         "whisparr"  "Whisparr (adult content)" "off"
         "readarr"   "Readarr (ebooks)" "off"
         "mylar3"    "Mylar3 (comics)" "off"
-        "huntarr"   "Huntarr (dashboard)" "off"
+        "boxarr"    "Boxarr (media database browser)" "on"
+           "Huntarr (dashboard)" "off"
         "recyclarr" "Recyclarr (config management)" "off"
         "unpackerr" "Unpackerr (archive extraction)" "on"
         "notifiarr" "Notifiarr (notifications)" "off"
@@ -1667,13 +1718,12 @@ deploy_menu() {
 dashboard_menu() {
     while true; do
         local ps_out
-        if ! ps_out=$(docker compose -f "${COMPOSE_FILE}" ps \
-                --format '{{.Name}}\t{{.Status}}' 2>/dev/null); then
-            d_msgbox "No Stack" \
-"No compose stack at:\n${COMPOSE_FILE}\n\nDeploy a stack first."
+        # List all running/stopped containers (per-app compose + any legacy stack)
+        if ! ps_out=$(docker ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null); then
+            d_msgbox "Docker Error" "Could not list containers. Is Docker running?"
             return
         fi
-        [[ -z "${ps_out}" ]] && { d_msgbox "No Containers" "No containers in the current stack."; return; }
+        [[ -z "${ps_out}" ]] && { d_msgbox "No Containers" "No containers found. Deploy apps first."; return; }
 
         local items=()
         while IFS=$'\t' read -r name status; do
@@ -1705,7 +1755,12 @@ dashboard_menu() {
             start)
                 _live_header "Starting: ${selected}"
                 log INFO "Dashboard start: ${selected}"
-                docker compose -f "${COMPOSE_FILE}" up -d "${selected}" 2>&1 | tee "${op_out}"
+                local _cf; _cf="$(app_compose "${selected}")"
+                if [[ -f "${_cf}" ]]; then
+                    docker compose -f "${_cf}" up -d 2>&1 | tee "${op_out}"
+                else
+                    docker start "${selected}" 2>&1 | tee "${op_out}"
+                fi
                 op_exit=${PIPESTATUS[0]}
                 log_raw "start:${selected}" "${op_out}"
                 if [[ ${op_exit} -eq 0 ]]; then
@@ -1722,7 +1777,7 @@ dashboard_menu() {
             stop)
                 _live_header "Stopping: ${selected}"
                 log INFO "Dashboard stop: ${selected}"
-                docker compose -f "${COMPOSE_FILE}" stop "${selected}" 2>&1 | tee "${op_out}"
+                docker stop "${selected}" 2>&1 | tee "${op_out}"
                 op_exit=${PIPESTATUS[0]}
                 log_raw "stop:${selected}" "${op_out}"
                 if [[ ${op_exit} -eq 0 ]]; then
@@ -1739,7 +1794,7 @@ dashboard_menu() {
             restart)
                 _live_header "Restarting: ${selected}"
                 log INFO "Dashboard restart: ${selected}"
-                docker compose -f "${COMPOSE_FILE}" restart "${selected}" 2>&1 | tee "${op_out}"
+                docker restart "${selected}" 2>&1 | tee "${op_out}"
                 op_exit=${PIPESTATUS[0]}
                 log_raw "restart:${selected}" "${op_out}"
                 if [[ ${op_exit} -eq 0 ]]; then
@@ -1754,7 +1809,7 @@ dashboard_menu() {
                 ;;
 
             logs)
-                docker compose -f "${COMPOSE_FILE}" logs --tail=150 "${selected}" \
+                docker logs --tail=150 "${selected}" \
                     > "${op_out}" 2>&1 || true
                 d_textbox "Logs: ${selected}" "${op_out}"
                 ;;
@@ -1764,7 +1819,7 @@ dashboard_menu() {
 "Remove '${selected}'?\n\nConfig in ${CONFIG_DIR}/${selected}\nwill NOT be deleted."; then
                     _live_header "Removing: ${selected}"
                     log INFO "Dashboard remove: ${selected}"
-                    docker compose -f "${COMPOSE_FILE}" rm -fs "${selected}" 2>&1 | tee "${op_out}"
+                    docker rm -fs "${selected}" 2>&1 | tee "${op_out}"
                     log INFO "Removed: ${selected}"
                     printf '\n\033[1;32m✓ %s removed.\033[0m\n' "${selected}"
                     _live_wait_return
@@ -1855,7 +1910,7 @@ utilities_menu() {
             1) { uname -a; echo; df -h; echo; free -h; } > "${tmp}"; d_textbox "System Info" "${tmp}" ;;
             2) docker info > "${tmp}" 2>&1; d_textbox "Docker Info" "${tmp}" ;;
             3)
-                local bk="/root/deployrr_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+                local bk="/root/arrhub_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
                 d_infobox "Backup" "Creating backup of ${CONFIG_DIR}..."
                 if tar -czf "${bk}" "${CONFIG_DIR}" 2>"${tmp}"; then
                     log INFO "Backup: ${bk}"; d_msgbox "Backup Complete" "Saved to:\n${bk}"
@@ -2019,8 +2074,8 @@ cleanup_nuclear_menu() {
 # WebUI control
 # ---------------------------------------------------------------------------
 webui_menu() {
-    local webui_dir="${SCRIPT_DIR}/deployrr-webui"
-    local container="deployrr_webui"
+    local webui_dir="${SCRIPT_DIR}/arrhub-webui"
+    local container="arrhub_webui"
 
     while true; do
         local state
@@ -2039,7 +2094,7 @@ webui_menu() {
         choice=$(dialog --clear --backtitle "${BACKTITLE}" \
             --title "WebUI Control" \
             --colors \
-            --menu "${status_line}\n\nManage the Deployrr Monitor web dashboard:" \
+            --menu "${status_line}\n\nManage the ArrHub Monitor web dashboard:" \
             18 68 8 \
             "1" "Start  WebUI" \
             "2" "Stop   WebUI" \
@@ -2057,12 +2112,12 @@ webui_menu() {
                 if [[ "${state}" == "not found" ]]; then
                     d_infobox "WebUI" "Building image and starting WebUI..."
                     docker rm -f "${container}" >> "${LOG_FILE}" 2>&1 || true
-                    if docker build -q -t deployrr-webui:local "${webui_dir}" >> "${LOG_FILE}" 2>&1; then
+                    if docker build -q -t arrhub-webui:local "${webui_dir}" >> "${LOG_FILE}" 2>&1; then
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
                             --pid=host \
-                            deployrr-webui:local >> "${LOG_FILE}" 2>&1
+                            arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI started (fresh install)"
                         d_msgbox "WebUI Started" "Running at:\nhttp://$(hostname -I | awk '{print $1}'):9999"
                     else
@@ -2096,12 +2151,12 @@ webui_menu() {
                 if [[ -d "${webui_dir}" ]]; then
                     _live_header "Rebuilding WebUI Image" "This may take a minute..."
                     docker rm -f "${container}" 2>/dev/null || true
-                    if docker build -t deployrr-webui:local "${webui_dir}" 2>&1 | tee "${tmp}"; then
+                    if docker build -t arrhub-webui:local "${webui_dir}" 2>&1 | tee "${tmp}"; then
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
                             --pid=host \
-                            deployrr-webui:local >> "${LOG_FILE}" 2>&1
+                            arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI rebuilt and restarted"
                         printf '\n\033[1;32m✓ WebUI rebuilt and running.\033[0m\n'
                     else
@@ -2141,6 +2196,11 @@ settings_menu() {
                 local val
                 val=$(d_inputbox "Config Directory" "Enter path:" "${CONFIG_DIR}") || continue
                 CONFIG_DIR="${val}"; COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
+
+# Per-app compose — each app gets its own /docker/<appname>/docker-compose.yml
+# Use: app_compose <id>   to get the path
+# (COMPOSE_FILE kept as backwards-compat alias for dashboard ops on existing stacks)
+app_compose() { echo "${CONFIG_DIR}/${1}/docker-compose.yml"; }
                 mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
                 log INFO "CONFIG_DIR=${CONFIG_DIR}"; d_msgbox "Saved" "Config dir:\n${CONFIG_DIR}"
                 ;;
@@ -2200,7 +2260,7 @@ show_logs_menu() {
 update_help_menu() {
     while true; do
         local choice
-        choice=$(d_menu "Update & Help" "Deployrr v${VERSION}" \
+        choice=$(d_menu "Update & Help" "ArrHub v${VERSION}" \
             "1" "Check for updates    — Pull latest version from GitHub" \
             "2" "Self-update          — Download and apply update" \
             "3" "Help & Documentation — Usage guide" \
@@ -2218,7 +2278,7 @@ update_help_menu() {
 
 # Check for updates (non-blocking)
 self_update_check() {
-    d_infobox "Deployrr Update Check" "Checking GitHub for updates...
+    d_infobox "ArrHub Update Check" "Checking GitHub for updates...
 
 This may take a moment."
     
@@ -2244,7 +2304,7 @@ Select 'Self-update' to download and apply."
 }
 
 show_help() {
-    d_msgbox "Help — Deployrr v${VERSION}" \
+    d_msgbox "Help — ArrHub v${VERSION}" \
 "DEPLOYMENT GUIDE
 
 Quick Preset: Fast setup with pre-configured stacks
@@ -2265,7 +2325,7 @@ LOGS: Check Error Log first if something fails
 NETWORK: Test ports, check IPs
 UTILITIES: Backup, cleanup, system info
 SETTINGS: Configure paths, TZ, PUID/PGID
-WEBUI: Deployrr Monitor dashboard (:9999)
+WEBUI: ArrHub Monitor dashboard (:9999)
 ABOUT: System & version information
 
 App Categories:
@@ -2274,7 +2334,7 @@ App Categories:
   Dashboards (6)  Reverse Proxies (4)  VPN & Network (7)
   Automation (5)  File & Cloud (7)  Security (4)
   Communication (3)  Development (3)  Databases (4)
-  Home & Misc (8)  Deployrr (1)
+  Home & Misc (8)  ArrHub (1)
 
 Total: 110+ container images"
 }
@@ -2481,7 +2541,7 @@ tailscale_lxc_install() {
     if ${needs_tun}; then
         printf '\033[1;33m[1/5]\033[0m Patching LXC config for TUN device access...\n'
         {
-            printf '\n# Tailscale TUN device — added by Deployrr\n'
+            printf '\n# Tailscale TUN device — added by ArrHub\n'
             printf 'lxc.cgroup2.devices.allow: c 10:200 rwm\n'
             printf 'lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\n'
         } >> "${ct_conf}" 2>"${tmp}" || { printf '\033[1;31mFAILED\033[0m — could not write to %s\n' "${ct_conf}"; ok=false; }
@@ -2563,6 +2623,20 @@ tailscale_menu() {
             2)
                 _live_header "Install Tailscale — Native"
                 curl -fsSL https://tailscale.com/install.sh | sh
+                # Ensure tailscaled daemon is running after install (needed in LXC / non-systemd hosts)
+                if ! pgrep -x tailscaled &>/dev/null; then
+                    printf '\033[1;33m  Starting tailscaled daemon...\033[0m\n'
+                    if command -v systemctl &>/dev/null && systemctl start tailscaled 2>/dev/null; then
+                        printf '\033[1;32m  tailscaled started via systemctl\033[0m\n'
+                    else
+                        mkdir -p /var/lib/tailscale /run/tailscale
+                        tailscaled --state=/var/lib/tailscale/tailscaled.state \
+                            --socket=/run/tailscale/tailscaled.sock &>/dev/null &
+                        sleep 3
+                        printf '\033[1;32m  tailscaled started in background\033[0m\n'
+                    fi
+                fi
+                printf '\033[1;32m  Tailscale installed. Use menu option 2 (Connect) to authenticate.\033[0m\n'
                 _live_wait_return
                 return
                 ;;
@@ -2613,6 +2687,22 @@ tailscale_menu() {
                 local flags
                 flags=$(d_inputbox "tailscale up flags" \
 "Optional flags (leave blank for defaults):\n\nExamples:\n  --accept-routes\n  --advertise-exit-node\n  --shields-up\n  --exit-node=<ip>" "") || { _live_wait_return; continue; }
+                # Ensure tailscaled daemon is running (needed in LXC containers)
+                if ! systemctl is-active --quiet tailscaled 2>/dev/null; then
+                    printf '[1;33m  tailscaled not running — attempting to start...[0m
+'
+                    if systemctl start tailscaled 2>/dev/null; then
+                        printf '[1;32m  tailscaled started via systemctl[0m
+'
+                        sleep 2
+                    elif ! pgrep -x tailscaled &>/dev/null; then
+                        printf '[1;33m  Starting tailscaled in background...[0m
+'
+                        tailscaled --state=/var/lib/tailscale/tailscaled.state \
+                            --socket=/run/tailscale/tailscaled.sock &>/dev/null &
+                        sleep 3
+                    fi
+                fi
                 ${ts_cmd} up ${flags} 2>&1 | tee "${tmp}" || true
                 log INFO "Tailscale up: ${flags}"
                 _live_wait_return
@@ -2727,15 +2817,77 @@ tailscale_menu() {
 }
 
 # ---------------------------------------------------------------------------
+# Uninstall ArrHub
+# ---------------------------------------------------------------------------
+uninstall_arrhub() {
+    if ! d_yesno "Uninstall ArrHub" \
+"This will remove:
+
+  • All ArrHub Docker containers
+  • ArrHub Docker images
+  • /opt/arrhub/ (install dir)
+  • /usr/local/bin/media (alias)
+
+Your app configs in ${CONFIG_DIR} will NOT be deleted.
+
+Proceed with uninstall?"; then
+        return
+    fi
+
+    _live_header "Uninstalling ArrHub" "Stopping and removing containers..."
+
+    # Stop and remove all containers managed by ArrHub
+    local container_ids
+    container_ids=$(docker ps -aq --filter "label=com.docker.compose.project" 2>/dev/null || true)
+    if [[ -n "${container_ids}" ]]; then
+        printf '[1;33m  Stopping all ArrHub-managed containers...[0m
+'
+        for compose_f in "${CONFIG_DIR}"/*/docker-compose.yml; do
+            [[ -f "${compose_f}" ]] || continue
+            docker compose -f "${compose_f}" down --remove-orphans 2>/dev/null || true
+        done
+        [[ -f "${COMPOSE_FILE}" ]] && docker compose -f "${COMPOSE_FILE}" down --remove-orphans 2>/dev/null || true
+    fi
+
+    printf '[1;33m  Removing ArrHub WebUI image...[0m
+'
+    docker image rm arrhub-webui:local 2>/dev/null || true
+    docker image rm "ghcr.io/${GITHUB_USER}/${GITHUB_REPO}:latest" 2>/dev/null || true
+
+    printf '[1;33m  Removing /opt/arrhub/...[0m
+'
+    rm -rf /opt/arrhub 2>/dev/null || true
+
+    printf '[1;33m  Removing /usr/local/bin/media...[0m
+'
+    rm -f /usr/local/bin/media 2>/dev/null || true
+
+    rm -f "${LOG_FILE}" "${ERR_FILE}" 2>/dev/null || true
+
+    log INFO "ArrHub uninstalled"
+    printf '
+[1;32m✓ ArrHub has been uninstalled successfully.[0m
+'
+    printf '[0;37m  App configs in %s were NOT deleted.[0m
+' "${CONFIG_DIR}"
+    printf '[0;37m  To remove app configs:  rm -rf %s[0m
+
+' "${CONFIG_DIR}"
+    _live_wait_return
+    clear
+    exit 0
+}
+
+# ---------------------------------------------------------------------------
 # Main menu
 # ---------------------------------------------------------------------------
 main_menu() {
     while true; do
         local container_count
-        container_count=$(docker compose -f "${COMPOSE_FILE}" ps --quiet 2>/dev/null | wc -l || echo "0")
+        container_count=$(docker ps --quiet 2>/dev/null | wc -l || echo "0")
 
         local choice
-        choice=$(d_menu "Main Menu — Deployrr v${VERSION}" \
+        choice=$(d_menu "Main Menu — ArrHub v${VERSION}" \
 "Media: ${MEDIA_DIR}   Config: ${CONFIG_DIR}   Containers: ${container_count}" \
             "1"  "Deploy          — Install & manage apps (110+)" \
             "2"  "Containers      — Manage running containers" \
@@ -2745,8 +2897,9 @@ main_menu() {
             "6"  "Tailscale       — Mesh VPN management" \
             "7"  "Logs            — Error & activity logs" \
             "8"  "Update/Help     — Update tool, help & about" \
+            "10" "Uninstall       — Remove ArrHub completely" \
             "9"  "Exit") || {
-            if d_yesno "Exit" "Exit Deployrr?"; then
+            if d_yesno "Exit" "Exit ArrHub?"; then
                 log INFO "Exiting"; clear; exit 0
             fi
             continue
@@ -2762,8 +2915,9 @@ main_menu() {
             6)  tailscale_menu ;;
             7)  show_logs_menu ;;
             8)  update_help_menu ;;
+                        10) uninstall_arrhub ;;
             9)
-                if d_yesno "Exit" "Exit Deployrr?"; then
+                if d_yesno "Exit" "Exit ArrHub?"; then
                     log INFO "Exiting"; clear; exit 0
                 fi
                 ;;
@@ -2785,7 +2939,7 @@ install_media_alias() {
 
     {
         printf '#!/bin/bash\n'
-        printf '# Deployrr media shortcut — auto-generated\n'
+        printf '# ArrHub media shortcut — auto-generated\n'
         printf 'exec bash "%s" "$@"\n' "${script_path}"
     } > "${target}" 2>/dev/null && chmod +x "${target}" 2>/dev/null || {
         log_err "ALIAS" "Could not write ${target}"
@@ -2795,7 +2949,55 @@ install_media_alias() {
 }
 
 # ---------------------------------------------------------------------------
+# Pinchflat service
+# ---------------------------------------------------------------------------
+add_service_pinchflat() {
+    local id="${1:-pinchflat}"
+    local f; f="$(app_compose "${id}")"
+    {
+        echo ""
+        echo "  pinchflat:"
+        echo "    image: ghcr.io/kieraneglin/pinchflat:latest"
+        echo "    container_name: pinchflat"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/pinchflat:/config"
+        echo "      - ${MEDIA_DIR}/downloads:/downloads"
+        echo "    ports:"
+        echo "      - "8945:8945""
+    } >> "${f}"
+    log INFO "Pinchflat configured — YouTube/media downloader on port 8945"
+}
+
+# ---------------------------------------------------------------------------
+# qbitrr service
+# ---------------------------------------------------------------------------
+add_service_qbitrr() {
+    local id="${1:-qbitrr}"
+    local f; f="$(app_compose "${id}")"
+    {
+        echo ""
+        echo "  qbitrr:"
+        echo "    image: feramance/qbitrr:latest"
+        echo "    container_name: qbitrr"
+        echo "    restart: unless-stopped"
+        echo "    tty: true"
+        echo "    environment:"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/qbitrr:/config"
+        echo "      - ${MEDIA_DIR}/downloads:/completed_downloads:rw"
+        echo "    ports:"
+        echo "      - "6969:6969""
+    } >> "${f}"
+    log INFO "qbitrr configured — qBittorrent/ARR companion on port 6969"
+}
+
+# ---------------------------------------------------------------------------
 # Entry point
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 main() {
     # Check for update command

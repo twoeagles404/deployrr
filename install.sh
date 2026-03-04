@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# Deployrr — Master Installer v3.3.0
+# ArrHub — Master Installer v3.3.0
 # =============================================================================
 #
 # ONE-COMMAND INSTALL:
-#   curl -fsSL https://raw.githubusercontent.com/twoeagles404/deployrr/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/main/install.sh | sudo bash
 #
 # LOCAL INSTALL (from cloned repo):
 #   sudo bash install.sh
@@ -12,7 +12,7 @@
 # After install:
 #   Type  media            → open the TUI menu
 #   Open  http://<ip>:9999 → web dashboard
-#   Run   media update     → self-update Deployrr
+#   Run   media update     → self-update ArrHub
 #
 # =============================================================================
 
@@ -20,7 +20,7 @@ set -euo pipefail
 
 # ── GitHub source — update to match your fork ────────────────────────────────
 GITHUB_USER="twoeagles404"
-GITHUB_REPO="deployrr"
+GITHUB_REPO="arrhub"
 GITHUB_BRANCH="main"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
@@ -29,8 +29,8 @@ VERSION="3.3.0"
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Install paths ─────────────────────────────────────────────────────────────
-DEST="/opt/deployrr"
-LOG="/tmp/deployrr-install.log"
+DEST="/opt/arrhub"
+LOG="/tmp/arrhub-install.log"
 MEDIA_CMD="/usr/local/bin/media"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
 else
     warn "Docker not found or not running"
     echo
-    printf "  ${C}Docker is required for Deployrr to function.${N}\n"
+    printf "  ${C}Docker is required for ArrHub to function.${N}\n"
     printf "  ${B}Auto-install Docker now?${N} [Y/n]: "
     read -r answer </dev/tty 2>/dev/null || answer="y"
     echo
@@ -204,7 +204,7 @@ fi
 # =============================================================================
 step "Setting up directories"
 
-mkdir -p "${DEST}/deployrr-webui"
+mkdir -p "${DEST}/arrhub-webui"
 mkdir -p "${DEST}/apps"
 ok "Created: ${DEST}"
 
@@ -219,9 +219,9 @@ done
 ok "Media directory structure ready"
 
 # =============================================================================
-# STEP 5 — Download Deployrr files
+# STEP 5 — Download ArrHub files
 # =============================================================================
-step "Downloading Deployrr files"
+step "Downloading ArrHub files"
 
 # Detect local source directory (supports local install from cloned repo)
 SELF_DIR=""
@@ -249,23 +249,23 @@ download_file() {
     fi
 }
 
-# ── deployrr.sh — main TUI script
-download_file "deployrr.sh" \
-    "deployrr.sh" \
-    "${DEST}/deployrr.sh" \
-    "$([[ -f "${SELF_DIR}/deployrr.sh" ]] && echo "${SELF_DIR}/deployrr.sh" || echo "")"
-chmod +x "${DEST}/deployrr.sh"
+# ── arrhub.sh — main TUI script
+download_file "arrhub.sh" \
+    "arrhub.sh" \
+    "${DEST}/arrhub.sh" \
+    "$([[ -f "${SELF_DIR}/arrhub.sh" ]] && echo "${SELF_DIR}/arrhub.sh" || echo "")"
+chmod +x "${DEST}/arrhub.sh"
 
 # ── app.py — Flask WebUI backend
 download_file "app.py" \
     "app.py" \
-    "${DEST}/deployrr-webui/app.py" \
+    "${DEST}/arrhub-webui/app.py" \
     "$([[ -f "${SELF_DIR}/app.py" ]] && echo "${SELF_DIR}/app.py" || echo "")"
 
 # ── Dockerfile — for the WebUI container
 download_file "Dockerfile" \
     "Dockerfile" \
-    "${DEST}/deployrr-webui/Dockerfile" \
+    "${DEST}/arrhub-webui/Dockerfile" \
     "$([[ -f "${SELF_DIR}/Dockerfile" ]] && echo "${SELF_DIR}/Dockerfile" || echo "")"
 
 # ── catalog.json — app catalog (used by WebUI)
@@ -281,10 +281,10 @@ step "Installing 'media' CLI command"
 
 cat > "${MEDIA_CMD}" << 'MEDIA_EOF'
 #!/bin/bash
-# Deployrr — 'media' CLI shortcut
+# ArrHub — 'media' CLI shortcut
 # Installed automatically by install.sh
-# To update Deployrr: media update
-exec bash /opt/deployrr/deployrr.sh "$@"
+# To update ArrHub: media update
+exec bash /opt/arrhub/arrhub.sh "$@"
 MEDIA_EOF
 chmod +x "${MEDIA_CMD}"
 ok "'media' command installed → ${MEDIA_CMD}"
@@ -298,14 +298,14 @@ ok "Usage: media [update|help]"
 # The catalog.json is ALWAYS mounted at runtime — never baked into the image.
 
 WEBUI_IMAGE="ghcr.io/${GITHUB_USER}/${GITHUB_REPO}:latest"
-WEBUI_LOCAL_TAG="deployrr-webui:local"
+WEBUI_LOCAL_TAG="arrhub-webui:local"
 
 if [[ "${DOCKER_OK}" == "true" ]]; then
 
     IMAGE_READY=false
 
     # ── Try 1: pull pre-built image from GitHub Container Registry ──
-    step "Pulling Deployrr WebUI image"
+    step "Pulling ArrHub WebUI image"
     info "Trying: docker pull ${WEBUI_IMAGE}"
     if docker pull "${WEBUI_IMAGE}" >> "${LOG}" 2>&1; then
         docker tag "${WEBUI_IMAGE}" "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1 || true
@@ -317,9 +317,9 @@ if [[ "${DOCKER_OK}" == "true" ]]; then
 
     # ── Try 2: local build as fallback ──
     if [[ "${IMAGE_READY}" != "true" ]]; then
-        step "Building Deployrr WebUI image locally"
-        info "Building from ${DEST}/deployrr-webui (may take 60-90 seconds)..."
-        if docker build -q -t "${WEBUI_LOCAL_TAG}" "${DEST}/deployrr-webui" >> "${LOG}" 2>&1; then
+        step "Building ArrHub WebUI image locally"
+        info "Building from ${DEST}/arrhub-webui (may take 60-90 seconds)..."
+        if docker build -q -t "${WEBUI_LOCAL_TAG}" "${DEST}/arrhub-webui" >> "${LOG}" 2>&1; then
             ok "Image built: ${WEBUI_LOCAL_TAG}"
             IMAGE_READY=true
         else
@@ -331,16 +331,16 @@ if [[ "${DOCKER_OK}" == "true" ]]; then
     # ── Start the container ──
     if [[ "${IMAGE_READY}" == "true" ]]; then
         # Remove any stale container (prevents port conflict on reinstall)
-        docker rm -f deployrr_webui >> "${LOG}" 2>&1 || true
+        docker rm -f arrhub_webui >> "${LOG}" 2>&1 || true
 
-        step "Starting Deployrr WebUI"
+        step "Starting ArrHub WebUI"
         info "Starting container on port 9999..."
         if docker run -d \
-            --name deployrr_webui \
+            --name arrhub_webui \
             --restart unless-stopped \
             -p 9999:9999 \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${DEST}/apps:/opt/deployrr/apps:ro" \
+            -v "${DEST}/apps:/opt/arrhub/apps:ro" \
             -v "${DEST}/data:/data" \
             --pid=host \
             "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1
@@ -376,7 +376,7 @@ SERVER_IP="$(hostname -I | awk '{print $1}' 2>/dev/null || echo 'your-server-ip'
 
 echo
 printf "${C}${B}%s${N}\n" "$(printf '═%.0s' {1..64})"
-printf "${G}${B}\n  ✓  Deployrr v${VERSION} installed successfully!\n${N}"
+printf "${G}${B}\n  ✓  ArrHub v${VERSION} installed successfully!\n${N}"
 printf "${C}${B}%s${N}\n\n" "$(printf '═%.0s' {1..64})"
 
 printf "  ${B}Install path   ${N}:  ${DEST}\n"

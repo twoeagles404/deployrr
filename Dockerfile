@@ -1,14 +1,14 @@
 # =============================================================================
-# Deployrr — WebUI Dockerfile
+# ArrHub — WebUI Dockerfile
 # =============================================================================
 # Builds the lightweight Flask monitoring and management dashboard.
 # Serves on port 9999 via gunicorn (4 workers, threaded).
 #
-# Build:  docker build -t deployrr-webui:local .
+# Build:  docker build -t arrhub-webui:local .
 # Run:    docker run -d -p 9999:9999 \
 #           -v /var/run/docker.sock:/var/run/docker.sock \
 #           --pid=host \
-#           deployrr-webui:local
+#           arrhub-webui:local
 # =============================================================================
 
 FROM python:3.12-slim
@@ -16,8 +16,8 @@ FROM python:3.12-slim
 # ── Labels ────────────────────────────────────────────────────────────────────
 LABEL maintainer="twoeagles404"
 LABEL version="3.3.0"
-LABEL description="Deployrr — Server monitoring and Docker management dashboard"
-LABEL org.opencontainers.image.source="https://github.com/twoeagles404/deployrr"
+LABEL description="ArrHub — Server monitoring and Docker management dashboard"
+LABEL org.opencontainers.image.source="https://github.com/twoeagles404/arrhub"
 
 WORKDIR /app
 
@@ -62,10 +62,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:9999/ || exit 1
 
 # ── Volume documentation ─────────────────────────────────────────────────────
-# Volume: -v /opt/deployrr/data:/data  (SQLite DB + settings)
+# Volume: -v /opt/arrhub/data:/data  (SQLite DB + settings)
 # Volume: -v /var/run/docker.sock:/var/run/docker.sock  (Docker access)
-# Env: DEPLOYRR_TOKEN=your-secret-token  (optional auth token)
-# Env: DEPLOYRR_NO_AUTH=true  (disable auth for LAN-only use)
+# Env: ARRHUB_TOKEN=your-secret-token  (optional auth token)
+# Env: ARRHUB_NO_AUTH=true  (disable auth for LAN-only use)
 
 # ── Launch command ────────────────────────────────────────────────────────────
 # gunicorn with 4 workers, 2 threads each = 8 concurrent requests

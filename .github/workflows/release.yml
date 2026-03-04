@@ -1,5 +1,5 @@
 # =============================================================================
-# Deployrr Max — Auto-Release GitHub Actions Workflow
+# ArrHub — Auto-Release GitHub Actions Workflow
 # =============================================================================
 #
 # Triggers on: git tag push matching v*  (e.g., v2.0.0, v2.1.0)
@@ -64,7 +64,7 @@ jobs:
           APP_COUNT=$(python3 -c "import json; d=json.load(open('apps/catalog.json')); print(len(d.get('apps',[])))" 2>/dev/null || echo "110+")
 
           cat > release_notes.md << EOF
-          ## Deployrr Max ${{ steps.version.outputs.TAG }}
+          ## ArrHub ${{ steps.version.outputs.TAG }}
 
           **One-command install:**
           \`\`\`bash
@@ -99,13 +99,13 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Deployrr Max ${{ steps.version.outputs.TAG }}"
+          name: "ArrHub ${{ steps.version.outputs.TAG }}"
           body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
           files: |
             install.sh
-            deployrr.sh
+            arrhub.sh
             app.py
             Dockerfile
             apps/catalog.json
@@ -138,13 +138,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/deployrr
+          images: ghcr.io/${{ github.repository_owner }}/arrhub
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
           labels: |
-            org.opencontainers.image.title=Deployrr Max WebUI
+            org.opencontainers.image.title=ArrHub WebUI
             org.opencontainers.image.description=Server monitoring and Docker management dashboard
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
@@ -177,8 +177,8 @@ jobs:
       - name: Lint install.sh
         run: shellcheck --severity=warning install.sh || true
 
-      - name: Lint deployrr.sh
-        run: shellcheck --severity=error deployrr.sh || true
+      - name: Lint arrhub.sh
+        run: shellcheck --severity=error arrhub.sh || true
 
       - name: Validate catalog.json
         run: |

@@ -1,20 +1,20 @@
-# Deployrr — Authentication & HTTPS Setup Guide
+# ArrHub — Authentication & HTTPS Setup Guide
 
-This guide explains how to configure authentication and run Deployrr behind HTTPS.
+This guide explains how to configure authentication and run ArrHub behind HTTPS.
 
 ---
 
 ## 1. Default Behavior
 
-When the WebUI container starts for the first time with no `DEPLOYRR_TOKEN` set:
+When the WebUI container starts for the first time with no `ARRHUB_TOKEN` set:
 
 1. A random 32-character token is automatically generated
 2. It is printed to container logs:
    ```bash
-   docker logs deployrr_webui | grep "DEPLOYRR TOKEN"
+   docker logs arrhub_webui | grep "ARRHUB TOKEN"
    ```
 3. The WebUI shows a login screen — enter the token to access
-4. The token is stored (hashed) in SQLite at `/data/deployrr.db`
+4. The token is stored (hashed) in SQLite at `/data/arrhub.db`
 
 ---
 
@@ -24,22 +24,22 @@ When the WebUI container starts for the first time with no `DEPLOYRR_TOKEN` set:
 ```bash
 docker run -d \
   -p 9999:9999 \
-  -e DEPLOYRR_TOKEN="your-secret-token-here" \
-  -v /opt/deployrr/data:/data \
+  -e ARRHUB_TOKEN="your-secret-token-here" \
+  -v /opt/arrhub/data:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  --name deployrr_webui \
-  ghcr.io/twoeagles404/deployrr:latest
+  --name arrhub_webui \
+  ghcr.io/twoeagles404/arrhub:latest
 ```
 
 **Option 2: In docker-compose.yml**
 ```yaml
 services:
-  deployrr_webui:
-    image: ghcr.io/twoeagles404/deployrr:latest
+  arrhub_webui:
+    image: ghcr.io/twoeagles404/arrhub:latest
     environment:
-      - DEPLOYRR_TOKEN=your-secret-token-here
+      - ARRHUB_TOKEN=your-secret-token-here
     volumes:
-      - /opt/deployrr/data:/data
+      - /opt/arrhub/data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "9999:9999"
@@ -47,8 +47,8 @@ services:
 
 **Option 3: After install, edit the .env file**
 ```bash
-echo "DEPLOYRR_TOKEN=your-secret-token-here" >> /opt/deployrr/data/.env
-docker restart deployrr_webui
+echo "ARRHUB_TOKEN=your-secret-token-here" >> /opt/arrhub/data/.env
+docker restart arrhub_webui
 ```
 
 ---
@@ -58,33 +58,33 @@ docker restart deployrr_webui
 ```bash
 docker run -d \
   -p 9999:9999 \
-  -e DEPLOYRR_NO_AUTH=true \
-  -v /opt/deployrr/data:/data \
+  -e ARRHUB_NO_AUTH=true \
+  -v /opt/arrhub/data:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  --name deployrr_webui \
-  ghcr.io/twoeagles404/deployrr:latest
+  --name arrhub_webui \
+  ghcr.io/twoeagles404/arrhub:latest
 ```
 
 > ⚠️ **Warning:** Only use this if the port is NOT exposed to the internet.
 
 ---
 
-## 4. Putting Deployrr Behind HTTPS
+## 4. Putting ArrHub Behind HTTPS
 
-For production use, always put Deployrr behind a reverse proxy with HTTPS.
+For production use, always put ArrHub behind a reverse proxy with HTTPS.
 
 ### 4A. Nginx
 
 ```nginx
 server {
     listen 80;
-    server_name deployrr.yourdomain.com;
+    server_name arrhub.yourdomain.com;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name deployrr.yourdomain.com;
+    server_name arrhub.yourdomain.com;
 
     ssl_certificate     /etc/ssl/certs/your.crt;
     ssl_certificate_key /etc/ssl/private/your.key;
@@ -114,7 +114,7 @@ server {
 ### 4B. Caddy
 
 ```caddyfile
-deployrr.yourdomain.com {
+arrhub.yourdomain.com {
     reverse_proxy localhost:9999 {
         flush_interval -1
     }
@@ -139,7 +139,7 @@ Caddy handles HTTPS automatically via Let's Encrypt. The `flush_interval -1` dir
 ## 5. Token Security Notes
 
 - The token is stored as an Argon2-hashed value in SQLite — it cannot be recovered if lost
-- If you forget your token, delete `/opt/deployrr/data/deployrr.db` and restart — a new token will be generated
+- If you forget your token, delete `/opt/arrhub/data/arrhub.db` and restart — a new token will be generated
 - Tokens are transmitted as `Authorization: Bearer <token>` headers over HTTPS
 - On LAN-only setups, HTTP is acceptable; for internet-exposed deployments, HTTPS is mandatory
 
@@ -151,16 +151,16 @@ To change your token:
 
 ```bash
 # Set new token via environment variable and restart
-docker stop deployrr_webui
+docker stop arrhub_webui
 docker run -d \
-  -e DEPLOYRR_TOKEN="new-token-here" \
+  -e ARRHUB_TOKEN="new-token-here" \
   ... (other flags) ...
-  --name deployrr_webui \
-  ghcr.io/twoeagles404/deployrr:latest
+  --name arrhub_webui \
+  ghcr.io/twoeagles404/arrhub:latest
 ```
 
 Or via Settings tab in the WebUI (if you know the current token).
 
 ---
 
-*Deployrr — MIT Licensed · https://github.com/twoeagles404/deployrr*
+*ArrHub — MIT Licensed · https://github.com/twoeagles404/arrhub*

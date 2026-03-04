@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Deployrr Max Monitor — Enhanced Server Administration Dashboard
+ArrHub Monitor — Enhanced Server Administration Dashboard
 Version: 3.3.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
@@ -40,7 +40,7 @@ CACHE_CATALOG = 300   # 5 minutes
 # ── Catalog ───────────────────────────────────────────────────────────────────
 # Check multiple locations: volume mount first, then local (for development/baked-in)
 _catalog_candidates = [
-    "/opt/deployrr/apps/catalog.json",                          # runtime volume mount
+    "/opt/arrhub/apps/catalog.json",                          # runtime volume mount
     os.path.join(os.path.dirname(__file__), "apps", "catalog.json"),  # baked into image
 ]
 CATALOG_PATH = next((p for p in _catalog_candidates if os.path.isfile(p)),
@@ -69,7 +69,7 @@ def _catalog_to_registry():
 APP_REGISTRY = _catalog_to_registry()
 
 # ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = os.environ.get("DEPLOYRR_DB", "/data/deployrr.db")
+DB_PATH = os.environ.get("ARRHUB_DB", "/data/arrhub.db")
 os.makedirs(os.path.dirname(DB_PATH) or "/data", exist_ok=True)
 
 def _db_init():
@@ -539,7 +539,7 @@ def api_deploy_app():
         snippet += f"    environment:\n{env_yaml}\n"
 
     # Write to /tmp compose file and run
-    compose_path = f"/tmp/deployrr_{app_id}.yml"
+    compose_path = f"/tmp/arrhub_{app_id}.yml"
     compose_content = f"services:\n{snippet}"
 
     try:
@@ -709,7 +709,7 @@ def api_backup_create():
     backup_dir = "/data/backups"
     os.makedirs(backup_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_name = f"deployrr_backup_{timestamp}.tar.gz"
+    backup_name = f"arrhub_backup_{timestamp}.tar.gz"
     backup_path = os.path.join(backup_dir, backup_name)
     try:
         result = subprocess.run(
@@ -808,7 +808,7 @@ def api_stack_add():
 
 @app.route("/api/update/check")
 def api_update_check():
-    """Check for Deployrr updates."""
+    """Check for ArrHub updates."""
     return jsonify({"update_available": False, "version": "3.1.0"})
 
 @app.route("/api/update/all", methods=["POST"])
@@ -1355,13 +1355,13 @@ _HTML_SPA = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Deployrr</title>
+<title>ArrHub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /* =====================================================================
-   DEPLOYRR — PegaProx-inspired dark dashboard
+   ARRHUB — PegaProx-inspired dark dashboard
    ===================================================================== */
 :root{
   --bg:       #0d1117;
@@ -1748,10 +1748,10 @@ tbody tr:last-child{border-bottom:none;}
 ═══════════════════════════════════════════════════════════ -->
 <nav id="sidebar">
   <div class="sb-brand">
-    <div class="sb-logo">D</div>
+    <div class="sb-logo">A</div>
     <div>
-      <div class="sb-title">Deployrr</div>
-      <div class="sb-version">v3.2.0</div>
+      <div class="sb-title">ArrHub</div>
+      <div class="sb-version">v3.3.0</div>
     </div>
   </div>
 
@@ -2082,7 +2082,7 @@ tbody tr:last-child{border-bottom:none;}
       </div>
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>Deployrr Version</span><span>3.2.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.3.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -2130,7 +2130,7 @@ tbody tr:last-child{border-bottom:none;}
 
 <script>
 /* =====================================================================
-   DEPLOYRR FRONTEND — no auth, pure vanilla JS
+   ARRHUB FRONTEND — no auth, pure vanilla JS
    ===================================================================== */
 
 const API = '';

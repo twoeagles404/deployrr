@@ -1,8 +1,8 @@
 {
   "meta": {
     "version": "1.0.0",
-    "generated_by": "Deployrr (converted from YAML)",
-    "github": "https://github.com/twoeagles404/deployrr",
+    "generated_by": "ArrHub (converted from YAML)",
+    "github": "https://github.com/twoeagles404/arrhub",
     "total_apps": 103
   },
   "apps": [
@@ -228,7 +228,7 @@
         "PUID={PUID}",
         "PGID={PGID}",
         "TZ={TZ}",
-        "RPC_SECRET=deployrr_change_me"
+        "RPC_SECRET=arrhub_change_me"
       ],
       "privileged": false,
       "restart": "unless-stopped",
@@ -2721,10 +2721,10 @@
       "notes": ""
     },
     {
-      "id": "deployrr_webui",
-      "name": "Deployrr WebUI",
-      "category": "Deployrr",
-      "image": "deployrr-webui:local",
+      "id": "arrhub_webui",
+      "name": "ArrHub WebUI",
+      "category": "ArrHub",
+      "image": "arrhub-webui:local",
       "description": "Built-in server monitoring and Docker management dashboard on port 9999.",
       "ports": [
         "9999:9999"

@@ -1,11 +1,11 @@
-# Deployrr
+# ArrHub
 
 > A dead-simple, fully open-source homelab Docker deployment tool.
 > One `curl | sudo bash` install. Pure Bash TUI + beautiful Flask WebUI. 104+ apps. MIT licensed.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![GitHub Release](https://img.shields.io/github/v/release/twoeagles404/deployrr)](https://github.com/twoeagles404/deployrr/releases)
-[![Docker Image](https://img.shields.io/badge/ghcr.io-twoeagles404%2Fdeployrr-blue)](https://github.com/twoeagles404/deployrr/pkgs/container/deployrr)
+[![GitHub Release](https://img.shields.io/github/v/release/twoeagles404/arrhub)](https://github.com/twoeagles404/arrhub/releases)
+[![Docker Image](https://img.shields.io/badge/ghcr.io-twoeagles404%2Farrhub-blue)](https://github.com/twoeagles404/arrhub/pkgs/container/arrhub)
 
 ---
 
@@ -25,7 +25,7 @@
 - **Port conflict detection** — checks for port collisions before deploying
 - **Settings tab** — persist config dir, media dir, timezone, PUID/PGID
 - **No auth required** — designed for trusted LAN use (optional bearer token available)
-- **SQLite persistence** — settings and history stored at `/data/deployrr.db`
+- **SQLite persistence** — settings and history stored at `/data/arrhub.db`
 - **No PHP, no Node, no NPM** — Python + Bash, fully self-contained
 - **MIT licensed** — no paid tiers, fork it, use it, do whatever
 
@@ -34,10 +34,10 @@
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/twoeagles404/deployrr/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/main/install.sh | sudo bash
 ```
 
-The installer downloads all files to `/opt/deployrr/`, pulls the Docker image from `ghcr.io` (or builds locally as fallback), starts the WebUI on port `9999`, and installs the `media` TUI alias.
+The installer downloads all files to `/opt/arrhub/`, pulls the Docker image from `ghcr.io` (or builds locally as fallback), starts the WebUI on port `9999`, and installs the `media` TUI alias.
 
 ---
 
@@ -54,7 +54,7 @@ Open `http://your-server-ip:9999` in your browser. No login required by default.
 
 To enable token auth:
 ```bash
-docker run -e DEPLOYRR_TOKEN=your-secret-token ...
+docker run -e ARRHUB_TOKEN=your-secret-token ...
 ```
 
 ---
@@ -86,9 +86,9 @@ docker run -e DEPLOYRR_TOKEN=your-secret-token ...
 ## Architecture
 
 ```
-deployrr/
+arrhub/
 ├── install.sh           ← One-command installer
-├── deployrr.sh          ← Bash TUI (run via `media`)
+├── arrhub.sh            ← Bash TUI (run via `media`)
 ├── app.py               ← Flask WebUI (all HTML/CSS/JS embedded)
 ├── Dockerfile           ← WebUI container (python:3.12-slim)
 ├── apps/
@@ -113,17 +113,17 @@ python3 scripts/gen_catalog_sh.py
 
 ```bash
 docker run -d \
-  --name deployrr_webui \
+  --name arrhub_webui \
   -p 9999:9999 \
-  -v /opt/deployrr/data:/data \
-  -v /opt/deployrr/apps:/opt/deployrr/apps \
+  -v /opt/arrhub/data:/data \
+  -v /opt/arrhub/apps:/opt/arrhub/apps \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --pid=host \
   --restart unless-stopped \
-  ghcr.io/twoeagles404/deployrr:latest
+  ghcr.io/twoeagles404/arrhub:latest
 ```
 
-To enable auth, add `-e DEPLOYRR_TOKEN=your-secret-token`.
+To enable auth, add `-e ARRHUB_TOKEN=your-secret-token`.
 
 ---
 

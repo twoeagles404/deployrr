@@ -194,7 +194,8 @@ load_catalog() {
     define_app mylar3     "Mylar3"      "lscr.io/linuxserver/mylar3:latest"     "ARR Suite"  "8090:8090"
     define_app doplarr    "Doplarr"     "lscr.io/linuxserver/doplarr:latest"     "ARR Suite"  ""
     APP_CUSTOM_SVC[doplarr]="yes"
-    define_app boxarr     "Boxarr"      "nicholasammann/boxarr:latest"           "ARR Suite"  "3579:3000"
+    define_app boxarr     "Boxarr"      "ghcr.io/iongpt/boxarr:latest"           "ARR Suite"  "8888:8888"
+    APP_CUSTOM_SVC[boxarr]="yes"
     define_app recyclarr  "Recyclarr"   "ghcr.io/recyclarr/recyclarr:latest"    "ARR Suite"  ""
     define_app unpackerr  "Unpackerr"   "golift/unpackerr:latest"               "ARR Suite"  ""
     define_app notifiarr  "Notifiarr"   "golift/notifiarr:latest"               "ARR Suite"  "5454:5454"
@@ -235,8 +236,10 @@ load_catalog() {
     define_app netdata    "Netdata"     "netdata/netdata:latest"              "Monitoring"  "19999:19999"  "true"
     define_app glances    "Glances"     "nicolargo/glances:latest"            "Monitoring"  "61208:61208"
     define_app dozzle     "Dozzle"      "amir20/dozzle:latest"                "Monitoring"  "8888:8080"
+    APP_CUSTOM_SVC[dozzle]="yes"
     define_app portainer  "Portainer"   "portainer/portainer-ce:latest"       "Monitoring"  "9000:9000 9443:9443"
     define_app watchtower "Watchtower"  "containrrr/watchtower:latest"        "Monitoring"  ""
+    APP_CUSTOM_SVC[watchtower]="yes"
     define_app scrutiny   "Scrutiny"    "ghcr.io/analogj/scrutiny:master-omnibus" "Monitoring" "8080:8080" "true"
     define_app speedtest  "Speedtest"   "lscr.io/linuxserver/speedtest-tracker:latest" "Monitoring" "8765:80"
 
@@ -535,47 +538,21 @@ add_service_doplarr() {
 add_service_boxarr() {
     local id="${1:-boxarr}"
     local f; f="$(app_compose "${id}")"
-    local db_pass="boxarrdb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c12 || echo 'changeme')"
+    mkdir -p "${CONFIG_DIR}/boxarr/config" 2>/dev/null || true
     {
         echo ""
-        echo "  boxarr-db:"
-        echo "    image: lscr.io/linuxserver/mariadb:latest"
-        echo "    container_name: boxarr-db"
-        echo "    restart: unless-stopped"
-        echo "    environment:"
-        echo "      - PUID=${PUID_VAL}"
-        echo "      - PGID=${PGID_VAL}"
-        echo "      - TZ=${TZ_VAL}"
-        echo "      - MYSQL_ROOT_PASSWORD=${db_pass}"
-        echo "      - MYSQL_DATABASE=bookstackapp"
-        echo "      - MYSQL_USER=bookstack"
-        echo "      - MYSQL_PASSWORD=${db_pass}"
-        echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/boxarr-db:/config"
-        echo ""
         echo "  boxarr:"
-        echo "    image: lscr.io/linuxserver/bookstack:latest"
+        echo "    image: ghcr.io/iongpt/boxarr:latest"
         echo "    container_name: boxarr"
         echo "    restart: unless-stopped"
-        echo "    depends_on:"
-        echo "      - boxarr-db"
         echo "    environment:"
-        echo "      - PUID=${PUID_VAL}"
-        echo "      - PGID=${PGID_VAL}"
         echo "      - TZ=${TZ_VAL}"
-        echo "      - APP_URL=http://localhost:6875"
-        echo "      - DB_HOST=boxarr-db"
-        echo "      - DB_PORT=3306"
-        echo "      - DB_USER=bookstack"
-        echo "      - DB_PASS=${db_pass}"
-        echo "      - DB_DATABASE=bookstackapp"
         echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/boxarr:/config"
+        echo "      - ${CONFIG_DIR}/boxarr/config:/config"
         echo "    ports:"
-        echo "      - \"6875:80\""
+        echo "      - \"8888:8888\""
     } >> "${f}"
-    mkdir -p "${CONFIG_DIR}/boxarr-db" 2>/dev/null || true
-    log INFO "Boxarr DB password: ${db_pass}"
+    log INFO "Boxarr configured on port 8888 (ghcr.io/iongpt/boxarr)"
 }
 
 add_service_deployrr_webui() {
@@ -907,7 +884,9 @@ add_service_qbittorrent() {
 add_service_prometheus() {
     local id="${1:-prometheus}"
     local f; f="$(app_compose "${id}")"
-    mkdir -p "${CONFIG_DIR}/prometheus" 2>/dev/null || true
+    mkdir -p "${CONFIG_DIR}/prometheus/data" 2>/dev/null || true
+    # UID 65534 (nobody) is what the prom/prometheus image runs as — fix ownership
+    chown -R 65534:65534 "${CONFIG_DIR}/prometheus/data" 2>/dev/null || true
     cat > "${CONFIG_DIR}/prometheus/prometheus.yml" << 'PROM_EOF'
 global:
   scrape_interval: 15s
@@ -936,6 +915,7 @@ PROM_EOF
         echo "    image: prom/prometheus:latest"
         echo "    container_name: prometheus"
         echo "    restart: unless-stopped"
+        echo "    user: \"65534:65534\""
         echo "    command:"
         echo "      - '--config.file=/etc/prometheus/prometheus.yml'"
         echo "      - '--storage.tsdb.path=/prometheus'"
@@ -946,7 +926,7 @@ PROM_EOF
         echo "      - ${CONFIG_DIR}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
         echo "      - ${CONFIG_DIR}/prometheus/data:/prometheus"
         echo "    ports:"
-        echo "      - "9090:9090""
+        echo "      - \"9090:9090\""
         echo "    extra_hosts:"
         echo "      - host.docker.internal:host-gateway"
     } >> "${f}"
@@ -957,9 +937,12 @@ add_service_grafana() {
     local id="${1:-grafana}"
     local f; f="$(app_compose "${id}")"
     local grafana_pass="admin"
+    mkdir -p "${CONFIG_DIR}/grafana/data" 2>/dev/null || true
     mkdir -p "${CONFIG_DIR}/grafana/provisioning/datasources" 2>/dev/null || true
     mkdir -p "${CONFIG_DIR}/grafana/provisioning/dashboards" 2>/dev/null || true
     mkdir -p "${CONFIG_DIR}/grafana/dashboards" 2>/dev/null || true
+    # UID 472 is grafana's default user inside the container — fix ownership upfront
+    chown -R 472:472 "${CONFIG_DIR}/grafana" 2>/dev/null || true
 
     cat > "${CONFIG_DIR}/grafana/provisioning/datasources/prometheus.yaml" << 'GRAFANA_DS_EOF'
 apiVersion: 1
@@ -990,20 +973,63 @@ GRAFANA_DB_EOF
         echo "    image: grafana/grafana:latest"
         echo "    container_name: grafana"
         echo "    restart: unless-stopped"
+        echo "    user: \"472\""
         echo "    environment:"
         echo "      - GF_SECURITY_ADMIN_USER=admin"
         echo "      - GF_SECURITY_ADMIN_PASSWORD=${grafana_pass}"
         echo "      - GF_USERS_ALLOW_SIGN_UP=false"
+        echo "      - GF_PATHS_DATA=/var/lib/grafana"
+        echo "      - GF_PATHS_LOGS=/var/log/grafana"
+        echo "      - GF_PATHS_PLUGINS=/var/lib/grafana/plugins"
         echo "      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource"
         echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/grafana:/var/lib/grafana"
+        echo "      - ${CONFIG_DIR}/grafana/data:/var/lib/grafana"
         echo "      - ${CONFIG_DIR}/grafana/provisioning:/etc/grafana/provisioning"
         echo "      - ${CONFIG_DIR}/grafana/dashboards:/var/lib/grafana/dashboards"
         echo "    ports:"
-        echo "      - "3000:3000""
+        echo "      - \"3000:3000\""
     } >> "${f}"
     log INFO "Grafana configured with Prometheus datasource pre-wired (admin/${grafana_pass})"
     printf '\n\033[1;33m  ▶ Grafana credentials: admin / %s\n  ▶ Prometheus datasource is pre-configured\033[0m\n' "${grafana_pass}"
+}
+
+# Dozzle — requires Docker socket; without it the container fatals immediately
+add_service_dozzle() {
+    local id="${1:-dozzle}"
+    local f; f="$(app_compose "${id}")"
+    {
+        echo ""
+        echo "  dozzle:"
+        echo "    image: amir20/dozzle:latest"
+        echo "    container_name: dozzle"
+        echo "    restart: unless-stopped"
+        echo "    volumes:"
+        echo "      - /var/run/docker.sock:/var/run/docker.sock:ro"
+        echo "    ports:"
+        echo "      - \"8888:8080\""
+    } >> "${f}"
+    log INFO "Dozzle configured with Docker socket (read-only)"
+}
+
+# Watchtower — requires Docker socket to poll registries and restart containers
+add_service_watchtower() {
+    local id="${1:-watchtower}"
+    local f; f="$(app_compose "${id}")"
+    {
+        echo ""
+        echo "  watchtower:"
+        echo "    image: containrrr/watchtower:latest"
+        echo "    container_name: watchtower"
+        echo "    restart: unless-stopped"
+        echo "    volumes:"
+        echo "      - /var/run/docker.sock:/var/run/docker.sock"
+        echo "    environment:"
+        echo "      - WATCHTOWER_CLEANUP=true"
+        echo "      - WATCHTOWER_POLL_INTERVAL=86400"
+        echo "      - WATCHTOWER_INCLUDE_STOPPED=false"
+        echo "      - TZ=${TZ_VAL}"
+    } >> "${f}"
+    log INFO "Watchtower configured — will poll for updates every 24h"
 }
 
 add_service_homer() {

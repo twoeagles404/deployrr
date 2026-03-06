@@ -8,7 +8,7 @@ Dependencies:
   pip install flask psutil requests docker
 
 """
-import json, os, re, subprocess, time, glob, threading, xml.etree.ElementTree as ET, sqlite3
+import json, os, re, subprocess, time, glob, threading, xml.etree.ElementTree as ET, sqlite3, socket
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -265,7 +265,7 @@ def api_network():
             stats = stats_by_name.get(name, None)
             io = io_by_name.get(name, None)
 
-            addresses = [{"family": str(addr.family), "address": addr.address, "netmask": addr.netmask} for addr in addrs]
+            addresses = [addr.address for addr in addrs if addr.address]
 
             interfaces.append({
                 "name": name,
@@ -436,17 +436,51 @@ def api_hardware():
 
 @app.route("/api/logs")
 def api_logs():
-    """System logs from journalctl."""
+    """System logs from Docker containers and host."""
     try:
-        lines = request.args.get('lines', 100, type=int)
+        lines_count = request.args.get('lines', 100, type=int)
         unit = request.args.get('unit', '')
 
-        cmd = ["journalctl", "-n", str(lines), "--no-pager"]
-        if unit:
-            cmd.extend(["-u", unit])
+        log_lines = []
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        log_lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        if unit and DOCKER_OK:
+            # Get logs for specific container
+            try:
+                c = _dc.containers.get(unit)
+                logs = c.logs(tail=lines_count, timestamps=True).decode('utf-8', errors='replace')
+                log_lines = logs.strip().split('\n') if logs.strip() else []
+            except Exception:
+                pass
+        elif DOCKER_OK:
+            # Get recent logs from all containers
+            try:
+                for c in _dc.containers.list():
+                    try:
+                        logs = c.logs(tail=10, timestamps=True).decode('utf-8', errors='replace')
+                        for line in logs.strip().split('\n'):
+                            if line.strip():
+                                log_lines.append(f"[{c.name}] {line}")
+                    except Exception:
+                        pass
+                # Sort by timestamp and limit
+                log_lines.sort()
+                log_lines = log_lines[-lines_count:]
+            except Exception:
+                pass
+
+        # Also try dmesg as fallback
+        if not log_lines:
+            try:
+                result = subprocess.run(["dmesg", "--time-format=iso", "-T"],
+                    capture_output=True, text=True, timeout=5)
+                if result.stdout.strip():
+                    log_lines = result.stdout.strip().split('\n')[-lines_count:]
+            except Exception:
+                pass
+
+        if not log_lines:
+            log_lines = ["No logs available. Container logs will appear here when Docker is running."]
+
         return jsonify({"lines": log_lines})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -491,6 +525,43 @@ def api_catalog_categories():
     catalog = _load_catalog()
     cats = sorted(set(a.get("category","") for a in catalog.get("apps", [])))
     return jsonify({"categories": cats})
+
+# ── Port conflict detection ──────────────────────────────────────────────────
+def _port_in_use(port: int) -> bool:
+    """Check if a TCP port is in use on the host."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex(("0.0.0.0", port)) == 0
+    except Exception:
+        return False
+
+def _find_free_port(start_port: int, max_tries: int = 50) -> int:
+    """Find next available port starting from start_port."""
+    for offset in range(max_tries):
+        candidate = start_port + offset
+        if not _port_in_use(candidate):
+            return candidate
+    # Fallback: random high port
+    import random
+    return random.randint(20000, 30000)
+
+def _resolve_port_mapping(mapping: str) -> tuple:
+    """Resolve a port mapping like '8080:80' to avoid conflicts.
+    Returns (resolved_mapping, original_host_port, new_host_port, changed)."""
+    parts = mapping.split(":")
+    if len(parts) != 2:
+        return mapping, None, None, False
+    try:
+        host_port = int(parts[0])
+        container_port = parts[1]
+    except ValueError:
+        return mapping, None, None, False
+
+    if _port_in_use(host_port):
+        new_port = _find_free_port(host_port + 1)
+        return f"{new_port}:{container_port}", host_port, new_port, True
+    return mapping, host_port, host_port, False
 
 @app.route("/api/deploy", methods=["POST"])
 @require_auth
@@ -538,21 +609,83 @@ def api_deploy_app():
     if env_yaml:
         snippet += f"    environment:\n{env_yaml}\n"
 
-    # Write to /tmp compose file and run
-    compose_path = f"/tmp/arrhub_{app_id}.yml"
+    # Write to config directory and deploy using Docker SDK
     compose_content = f"services:\n{snippet}"
 
     try:
+        # Write compose to the app's config directory
+        app_dir = os.path.join(config_dir, app_id)
+        os.makedirs(app_dir, exist_ok=True)
+        compose_path = os.path.join(app_dir, "docker-compose.yml")
+
         with open(compose_path, "w") as f:
             f.write(compose_content)
 
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_path, "up", "-d"],
-            capture_output=True, text=True, timeout=120
-        )
+        status = "success"
+        error = None
 
-        status = "success" if result.returncode == 0 else "failed"
-        error = result.stderr if result.returncode != 0 else None
+        if DOCKER_OK:
+            try:
+                # Use docker SDK to pull image and create container
+                image = app_data['image']
+                try:
+                    _dc.images.pull(image)
+                except Exception:
+                    pass  # May already exist
+
+                # Parse ports, volumes, environment from app_data
+                port_bindings = {}
+                port_changes = []  # Track any reassignments
+                for p in app_data.get("ports", []):
+                    resolved, orig, new, changed = _resolve_port_mapping(str(p))
+                    if changed:
+                        port_changes.append({"original": orig, "assigned": new, "container_port": p.split(":")[-1] if ":" in str(p) else p})
+                    parts = resolved.split(":")
+                    if len(parts) == 2:
+                        try:
+                            port_bindings[int(parts[1])] = int(parts[0])
+                        except ValueError:
+                            pass
+
+                volumes_dict = {}
+                for v in app_data.get("volumes", []):
+                    v = replace_placeholders(v)
+                    parts = v.split(":")
+                    if len(parts) >= 2:
+                        host_path = parts[0]
+                        container_path = parts[1]
+                        mode = parts[2] if len(parts) > 2 else "rw"
+                        os.makedirs(host_path, exist_ok=True)
+                        volumes_dict[host_path] = {"bind": container_path, "mode": mode}
+
+                env_list = [replace_placeholders(e) for e in app_data.get("environment", [])]
+
+                # Remove existing container if present
+                try:
+                    old = _dc.containers.get(app_id)
+                    old.stop(timeout=10)
+                    old.remove()
+                except Exception:
+                    pass
+
+                container = _dc.containers.run(
+                    image,
+                    name=app_id,
+                    detach=True,
+                    ports=port_bindings if port_bindings else None,
+                    volumes=volumes_dict if volumes_dict else None,
+                    environment=env_list if env_list else None,
+                    restart_policy={"Name": app_data.get("restart", "unless-stopped")},
+                )
+
+                status = "success"
+                error = None
+            except Exception as deploy_err:
+                status = "failed"
+                error = str(deploy_err)
+        else:
+            status = "warning"
+            error = "Docker SDK not available; compose file saved but container not created"
 
         # Log to history
         try:
@@ -568,8 +701,9 @@ def api_deploy_app():
         return jsonify({
             "status": status,
             "app_id": app_id,
-            "stdout": result.stdout[-2000:],
-            "stderr": result.stderr[-2000:] if error else ""
+            "compose_path": compose_path,
+            "port_changes": port_changes if 'port_changes' in locals() else [],
+            "error": error
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -603,6 +737,55 @@ def api_deploy_history():
         ]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ports/map")
+def api_ports_map():
+    """Get a complete map of all port assignments across all containers."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+
+    port_map = []
+    used_ports = set()
+
+    try:
+        for c in _dc.containers.list(all=True):
+            container_ports = c.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+            for container_port, bindings in container_ports.items():
+                if bindings:
+                    for binding in bindings:
+                        host_port = binding.get("HostPort")
+                        host_ip = binding.get("HostIp", "0.0.0.0")
+                        if host_port:
+                            port_map.append({
+                                "container": c.name,
+                                "status": c.status,
+                                "host_port": int(host_port),
+                                "host_ip": host_ip,
+                                "container_port": container_port,
+                                "image": c.image.tags[0] if c.image.tags else "unknown",
+                            })
+                            used_ports.add(int(host_port))
+                else:
+                    # Port exposed but not bound to host
+                    port_map.append({
+                        "container": c.name,
+                        "status": c.status,
+                        "host_port": None,
+                        "host_ip": None,
+                        "container_port": container_port,
+                        "image": c.image.tags[0] if c.image.tags else "unknown",
+                    })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    # Sort by host port (None last)
+    port_map.sort(key=lambda x: (x["host_port"] is None, x["host_port"] or 99999))
+
+    return jsonify({
+        "ports": port_map,
+        "used_ports": sorted(list(used_ports)),
+        "total_bindings": len([p for p in port_map if p["host_port"]]),
+    })
 
 @app.route("/api/stack/compose")
 def api_stack_compose():
@@ -763,25 +946,54 @@ def api_stacks():
     """Get available docker-compose stacks."""
     stacks = []
     config_dir = _db_get("config_dir", "/docker")
-    try:
-        # Search for docker-compose.yml files in subdirectories
-        for item in glob.glob(os.path.join(config_dir, "*", "docker-compose.yml")):
-            try:
-                stack_dir = os.path.dirname(item)
-                stack_name = os.path.basename(stack_dir)
-                # Count services in the compose file
-                with open(item) as f:
-                    content = f.read()
-                service_count = content.count(":")
-                stacks.append({
-                    "name": stack_name,
-                    "path": item,
-                    "services": service_count
-                })
-            except Exception:
-                pass
-    except Exception:
-        pass
+    search_dirs = [config_dir, "/docker", "/opt/arrhub/docker"]
+    searched = set()
+
+    for sdir in search_dirs:
+        if sdir in searched or not os.path.exists(sdir):
+            continue
+        searched.add(sdir)
+        try:
+            for item in glob.glob(os.path.join(sdir, "*", "docker-compose.yml")):
+                try:
+                    stack_dir = os.path.dirname(item)
+                    stack_name = os.path.basename(stack_dir)
+                    with open(item) as f:
+                        content = f.read()
+                    # Count actual services by looking for "image:" lines
+                    service_count = content.count("image:")
+                    stacks.append({
+                        "name": stack_name,
+                        "path": item,
+                        "services": service_count
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Also list running compose projects from Docker
+    if DOCKER_OK and not stacks:
+        try:
+            for c in _dc.containers.list(all=True):
+                project = c.labels.get("com.docker.compose.project", "")
+                if project and project not in [s["name"] for s in stacks]:
+                    stacks.append({
+                        "name": project,
+                        "path": c.labels.get("com.docker.compose.project.working_dir", ""),
+                        "services": 1
+                    })
+            # Deduplicate and count services per project
+            projects = {}
+            for s in stacks:
+                if s["name"] in projects:
+                    projects[s["name"]]["services"] += 1
+                else:
+                    projects[s["name"]] = s
+            stacks = list(projects.values())
+        except Exception:
+            pass
+
     return jsonify({"stacks": stacks})
 
 @app.route("/api/stack/add", methods=["POST"])
@@ -920,6 +1132,45 @@ def api_weather():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/docker/info")
+def api_docker_info():
+    """Docker system information."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+    try:
+        info = _dc.info()
+        images = len(_dc.images.list())
+        volumes = len(_dc.volumes.list())
+        networks = len(_dc.networks.list())
+
+        # Calculate disk usage from Docker
+        disk_usage = "—"
+        try:
+            df = _dc.df()
+            total_size = sum(img.get("Size", 0) for img in df.get("Images", []))
+            total_size += sum(vol.get("UsageData", {}).get("Size", 0) for vol in df.get("Volumes", []))
+            if total_size > 0:
+                if total_size >= 1e9:
+                    disk_usage = f"{total_size/1e9:.1f} GB"
+                elif total_size >= 1e6:
+                    disk_usage = f"{total_size/1e6:.1f} MB"
+                else:
+                    disk_usage = f"{total_size/1e3:.1f} KB"
+        except Exception:
+            pass
+
+        return jsonify({
+            "images": images,
+            "volumes": volumes,
+            "networks": networks,
+            "containers_running": info.get("ContainersRunning", 0),
+            "containers_total": info.get("Containers", 0),
+            "docker_version": info.get("ServerVersion", ""),
+            "disk_usage": disk_usage
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/rss/feeds")
 def api_rss_feeds():
     """Fetch RSS feeds with categories."""
@@ -934,19 +1185,43 @@ def api_rss_feeds():
         feeds = {
             "news": {
                 "Reuters": "https://www.reutersagency.com/feed/?taxonomy=best-topics&output=rss",
-                "BBC": "http://feeds.bbc.co.uk/news/rss.xml"
-            },
-            "soccer": {
-                "ESPN FC": "https://www.espn.com/espn/rss/soccer/news",
-                "Guardian Football": "https://www.theguardian.com/football/rss"
+                "AP News": "https://apnews.com/apf-services/v2/rss/hub?hub_id=top-news",
+                "BBC World": "http://feeds.bbc.co.uk/news/world/rss.xml",
+                "Al Jazeera": "https://www.aljazeera.com/xml/rss/all.xml",
+                "NPR": "https://feeds.npr.org/1001/rss.xml"
             },
             "tech": {
                 "Hacker News": "https://news.ycombinator.com/rss",
-                "r/selfhosted": "https://www.reddit.com/r/selfhosted/.rss"
+                "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
+                "The Verge": "https://www.theverge.com/rss/index.xml",
+                "TechCrunch": "https://techcrunch.com/feed/",
+                "Wired": "https://www.wired.com/feed/rss"
+            },
+            "soccer": {
+                "BBC Sport Football": "http://feeds.bbc.co.uk/sport/football/rss.xml",
+                "ESPN FC": "https://www.espn.com/espn/rss/soccer/news",
+                "Goal.com": "https://www.goal.com/en/feeds/news?ICID=RSS_FEEDS",
+                "Sky Sports": "https://www.skysports.com/feeds/rss/football.xml"
             },
             "reddit": {
+                "r/selfhosted": "https://www.reddit.com/r/selfhosted/.rss",
                 "r/homelab": "https://www.reddit.com/r/homelab/.rss",
-                "r/docker": "https://www.reddit.com/r/docker/.rss"
+                "r/docker": "https://www.reddit.com/r/docker/.rss",
+                "r/linux": "https://www.reddit.com/r/linux/.rss",
+                "r/datahoarder": "https://www.reddit.com/r/datahoarder/.rss"
+            },
+            "youtube": {
+                "Linus Tech Tips": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw",
+                "NetworkChuck": "https://www.youtube.com/feeds/videos.xml?channel_id=UC9x0AN7BWHpCDHSm9NiJFJQ",
+                "Jeff Geerling": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg",
+                "Techno Tim": "https://www.youtube.com/feeds/videos.xml?channel_id=UCOk-gHyjcWZNj3Br4oxwh0A",
+                "Hardware Unboxed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCI8iQa1hv7oV_Z8D35vVuSg"
+            },
+            "linux": {
+                "OMG Ubuntu": "https://www.omgubuntu.co.uk/feed",
+                "Phoronix": "https://www.phoronix.com/rss.php",
+                "LWN.net": "https://lwn.net/headlines/newrss",
+                "It's FOSS": "https://itsfoss.com/feed/"
             }
         }
 
@@ -1774,6 +2049,10 @@ tbody tr:last-child{border-bottom:none;}
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/></svg>
       Network
     </div>
+    <div class="sb-item" onclick="showTab('ports',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      Port Map
+    </div>
     <div class="sb-item" onclick="showTab('hardware',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
       Hardware
@@ -1956,6 +2235,48 @@ tbody tr:last-child{border-bottom:none;}
           <div class="stat-card"><div class="stat-card-val" id="si-python">—</div><div class="stat-card-label">Python</div></div>
         </div>
       </div>
+
+      <!-- Weather Widget -->
+      <div class="panel">
+        <div class="panel-title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
+          Weather
+        </div>
+        <div id="weather-widget" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="stat-card" style="grid-column:1/-1">
+            <div style="display:flex;align-items:center;gap:12px">
+              <div id="weather-icon" style="font-size:32px">🌤️</div>
+              <div>
+                <div id="weather-temp" style="font-size:24px;font-weight:600;color:var(--text1)">—</div>
+                <div id="weather-desc" style="font-size:12px;color:var(--text3)">Loading weather...</div>
+                <div id="weather-location" style="font-size:11px;color:var(--text3)"></div>
+              </div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-val" id="weather-humidity">—</div>
+            <div class="stat-card-label">Humidity</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-val" id="weather-wind">—</div>
+            <div class="stat-card-label">Wind</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Docker Info -->
+      <div class="panel">
+        <div class="panel-title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+          Docker
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+          <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
+          <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
+          <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
+          <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Disk Used</div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ── CONTAINERS ── -->
@@ -1994,6 +2315,31 @@ tbody tr:last-child{border-bottom:none;}
         <div class="panel-title">Interfaces</div>
         <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Status</th></tr></thead>
         <tbody id="net-table"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── PORT MAP ─────────────────────────────── -->
+    <div id="tab-ports" class="tab-panel">
+      <div class="section-header">
+        <div class="section-title">Port Assignments</div>
+        <button class="btn-primary" onclick="loadPortMap()">Refresh</button>
+      </div>
+      <div id="port-summary" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap"></div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:rgba(88,166,255,0.08);border-bottom:1px solid var(--border)">
+              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Host Port</th>
+              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Container</th>
+              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Container Port</th>
+              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Status</th>
+              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Quick Link</th>
+            </tr>
+          </thead>
+          <tbody id="port-table-body">
+            <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Click Refresh to load port assignments</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -2103,6 +2449,8 @@ tbody tr:last-child{border-bottom:none;}
         <div class="filter-pill" onclick="filterRSS('tech',this)">Tech</div>
         <div class="filter-pill" onclick="filterRSS('soccer',this)">Soccer</div>
         <div class="filter-pill" onclick="filterRSS('reddit',this)">Reddit</div>
+        <div class="filter-pill" onclick="filterRSS('youtube',this)">YouTube</div>
+        <div class="filter-pill" onclick="filterRSS('linux',this)">Linux</div>
       </div>
       <div id="rss-grid" class="cat-grid">
         <div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Click a category to load feeds...</div></div>
@@ -2161,11 +2509,13 @@ function showTab(name, el) {
     if (name === 'containers') loadContainers();
     else if (name === 'storage') loadStorage();
     else if (name === 'network') loadNetwork();
+    else if (name === 'ports') loadPortMap();
     else if (name === 'hardware') loadHardware();
     else if (name === 'logs') loadLogs();
     else if (name === 'deploy') loadCatalog();
     else if (name === 'stack') { loadStackManager(); loadDeployHistory(); }
     else if (name === 'backup') loadBackups();
+    else if (name === 'updates') checkUpdates();
     else if (name === 'settings') loadSettings();
     else if (name === 'rss') loadRSSFeeds();
 }
@@ -2375,16 +2725,26 @@ function renderContainers() {
     <div class="ctr-row"><span>ID</span><span>${c.id}</span></div>
     <div class="ctr-row"><span>Ports</span><span class="ctr-ports">${ports}</span></div>
   </div>
-  <div class="ctr-stats">
-    <div class="ctr-stat-item">
-      <div class="ctr-stat-label">CPU</div>
-      <div class="ctr-stat-val" id="stat-cpu-${c.name}">—</div>
-      <div class="pbar-wrap" style="margin-top:3px"><div class="pbar blue" id="pb-cpu-${c.name}" style="width:0%"></div></div>
+  <div class="ctr-stats" style="display:flex;gap:16px;justify-content:center;padding:8px 0">
+    <div style="text-align:center">
+      <svg width="48" height="48" viewBox="0 0 48 48">
+        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--border)" stroke-width="4"/>
+        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--blue)" stroke-width="4"
+          stroke-dasharray="113.1" stroke-dashoffset="113.1"
+          id="donut-cpu-${c.name}" transform="rotate(-90 24 24)" stroke-linecap="round"/>
+        <text x="24" y="26" text-anchor="middle" fill="var(--text2)" font-size="9" font-family="var(--mono)" id="stat-cpu-${c.name}">—</text>
+      </svg>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">CPU</div>
     </div>
-    <div class="ctr-stat-item">
-      <div class="ctr-stat-label">Memory</div>
-      <div class="ctr-stat-val" id="stat-mem-${c.name}">—</div>
-      <div class="pbar-wrap" style="margin-top:3px"><div class="pbar" id="pb-mem-${c.name}" style="width:0%;background:var(--purple)"></div></div>
+    <div style="text-align:center">
+      <svg width="48" height="48" viewBox="0 0 48 48">
+        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--border)" stroke-width="4"/>
+        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--purple)" stroke-width="4"
+          stroke-dasharray="113.1" stroke-dashoffset="113.1"
+          id="donut-mem-${c.name}" transform="rotate(-90 24 24)" stroke-linecap="round"/>
+        <text x="24" y="26" text-anchor="middle" fill="var(--text2)" font-size="9" font-family="var(--mono)" id="stat-mem-${c.name}">—</text>
+      </svg>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">MEM</div>
     </div>
   </div>
   <div class="ctr-footer">
@@ -2417,12 +2777,19 @@ async function loadCtrStats(name) {
         if (d.error) return;
         const cpuEl = document.getElementById('stat-cpu-' + name);
         const memEl = document.getElementById('stat-mem-' + name);
-        const cpuPb = document.getElementById('pb-cpu-' + name);
-        const memPb = document.getElementById('pb-mem-' + name);
+        const cpuDonut = document.getElementById('donut-cpu-' + name);
+        const memDonut = document.getElementById('donut-mem-' + name);
+        const circumference = 113.1;
         if (cpuEl) cpuEl.textContent = d.cpu_pct + '%';
         if (memEl) memEl.textContent = d.mem_usage_mb + ' MB';
-        if (cpuPb) { cpuPb.style.width = Math.min(d.cpu_pct,100) + '%'; }
-        if (memPb) { memPb.style.width = Math.min(d.mem_pct,100) + '%'; }
+        if (cpuDonut) {
+            cpuDonut.style.strokeDashoffset = circumference - (Math.min(d.cpu_pct,100)/100)*circumference;
+            cpuDonut.style.stroke = d.cpu_pct < 50 ? 'var(--blue)' : d.cpu_pct < 80 ? 'var(--orange)' : 'var(--red)';
+        }
+        if (memDonut) {
+            memDonut.style.strokeDashoffset = circumference - (Math.min(d.mem_pct,100)/100)*circumference;
+            memDonut.style.stroke = d.mem_pct < 50 ? 'var(--purple)' : d.mem_pct < 80 ? 'var(--orange)' : 'var(--red)';
+        }
     } catch(e) {}
 }
 
@@ -2483,6 +2850,62 @@ async function loadNetwork() {
             <td><span class="ctr-status ${i.is_up?'running':'exited'}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${i.is_up?'Up':'Down'}</span></td>
           </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text3)">No interfaces</td></tr>';
     } catch(e) {}
+}
+
+// ── Port Map ──────────────────────────────────────────────────────────
+async function loadPortMap() {
+    const tbody = document.getElementById('port-table-body');
+    const summary = document.getElementById('port-summary');
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Loading port assignments...</td></tr>';
+    try {
+        const r = await fetch(API + '/api/ports/map');
+        const d = await r.json();
+        const ports = d.ports || [];
+
+        // Summary cards
+        const running = ports.filter(p => p.status === 'running' && p.host_port);
+        const stopped = ports.filter(p => p.status !== 'running' && p.host_port);
+        const unbound = ports.filter(p => !p.host_port);
+        summary.innerHTML = `
+            <div class="stat-card" style="flex:1;min-width:120px">
+                <div class="stat-card-val" style="color:var(--green)">${running.length}</div>
+                <div class="stat-card-label">Active Ports</div>
+            </div>
+            <div class="stat-card" style="flex:1;min-width:120px">
+                <div class="stat-card-val" style="color:var(--orange)">${stopped.length}</div>
+                <div class="stat-card-label">Stopped</div>
+            </div>
+            <div class="stat-card" style="flex:1;min-width:120px">
+                <div class="stat-card-val" style="color:var(--text3)">${unbound.length}</div>
+                <div class="stat-card-label">Unbound</div>
+            </div>
+            <div class="stat-card" style="flex:1;min-width:120px">
+                <div class="stat-card-val" style="color:var(--blue)">${d.total_bindings || 0}</div>
+                <div class="stat-card-label">Total Bindings</div>
+            </div>`;
+
+        if (!ports.length) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">No port assignments found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = ports.map(p => {
+            const sc = p.status === 'running' ? 'running' : 'exited';
+            const icon = ctrIcon(p.container);
+            const hostPort = p.host_port || '—';
+            const isWeb = p.host_port && !String(p.container_port).includes('/udp');
+            const link = isWeb ? `<a href="#" onclick="openExternalLink('http://localhost:${p.host_port}');return false" style="color:var(--blue);text-decoration:none;font-size:12px">Open :${p.host_port} ↗</a>` : '<span style="color:var(--text3);font-size:11px">non-HTTP</span>';
+            return `<tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:10px 14px;font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green)">${hostPort}</td>
+                <td style="padding:10px 14px"><span style="margin-right:6px">${icon}</span>${p.container}</td>
+                <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--text2)">${p.container_port}</td>
+                <td style="padding:10px 14px"><span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${p.status}</span></td>
+                <td style="padding:10px 14px">${link}</td>
+            </tr>`;
+        }).join('');
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--red)">Failed to load port map</td></tr>';
+    }
 }
 
 // ── Hardware ─────────────────────────────────────────────────────────
@@ -2674,6 +3097,40 @@ async function saveSettings() {
     } catch(e) { alert('Save failed'); }
 }
 
+// ── Weather & Docker Info ─────────────────────────────────────────────
+const WEATHER_ICONS = {'113':'☀️','116':'⛅','119':'☁️','122':'☁️','143':'🌫️','176':'🌦️','179':'🌨️','182':'🌧️','185':'🌧️','200':'⛈️','227':'🌨️','230':'❄️','248':'🌫️','260':'🌫️','263':'🌦️','266':'🌧️','281':'🌧️','284':'🌧️','293':'🌦️','296':'🌧️','299':'🌧️','302':'🌧️','305':'🌧️','308':'🌧️','311':'🌧️','314':'🌧️','317':'🌧️','320':'🌨️','323':'🌨️','326':'🌨️','329':'❄️','332':'❄️','335':'❄️','338':'❄️','350':'🌧️','353':'🌦️','356':'🌧️','359':'🌧️','362':'🌧️','365':'🌧️','368':'🌨️','371':'❄️','374':'🌧️','377':'🌧️','386':'⛈️','389':'⛈️','392':'⛈️','395':'❄️'};
+
+async function loadWeather() {
+    try {
+        const r = await fetch(API + '/api/weather');
+        const d = await r.json();
+        if (d.error) return;
+        if (!d.daily || d.daily.length === 0) return;
+        const w = d.daily[0];
+        const city = d.location || '';
+        const temp = w.temp_max !== undefined ? Math.round(w.temp_max) : '—';
+        setEl('weather-temp', temp + '°C');
+        setEl('weather-desc', w.desc || 'Clear');
+        setEl('weather-location', city);
+        setEl('weather-humidity', '—');
+        setEl('weather-wind', '—');
+        const iconEl = document.getElementById('weather-icon');
+        if (iconEl && w.icon) iconEl.textContent = WEATHER_ICONS[String(w.icon)] || '🌤️';
+    } catch(e) {}
+}
+
+async function loadDockerInfo() {
+    try {
+        const r = await fetch(API + '/api/docker/info');
+        const d = await r.json();
+        if (d.error) return;
+        setEl('docker-images', d.images || '—');
+        setEl('docker-volumes', d.volumes || '—');
+        setEl('docker-networks', d.networks || '—');
+        setEl('docker-disk', d.disk_usage || '—');
+    } catch(e) {}
+}
+
 // ── RSS Feeds ─────────────────────────────────────────────────────────
 let allFeeds = [];
 let rssFilter = 'all';
@@ -2730,6 +3187,8 @@ setInterval(() => {
 // ── Boot ──────────────────────────────────────────────────────────────
 loadOverview();
 loadContainers();
+loadWeather();
+loadDockerInfo();
 startSSE();
 </script>
 </body>

@@ -170,7 +170,7 @@ define_app() {
 
 load_catalog() {
     # -- Downloaders --
-    define_app qbittorrent  "qBittorrent"  "lscr.io/linuxserver/qbittorrent:latest"  "Downloaders"  "8080:8080 6881:6881 6881:6881/udp"
+    define_app qbittorrent  "qBittorrent"  "lscr.io/linuxserver/qbittorrent:latest"  "Downloaders"  "8090:8080 6881:6881 6881:6881/udp"
     APP_CUSTOM_SVC[qbittorrent]="yes"
     define_app transmission "Transmission" "lscr.io/linuxserver/transmission:latest" "Downloaders"  "9091:9091 51413:51413 51413:51413/udp"
     define_app deluge       "Deluge"       "lscr.io/linuxserver/deluge:latest"       "Downloaders"  "8112:8112 6881:6881 6881:6881/udp"
@@ -190,11 +190,10 @@ load_catalog() {
     define_app lidarr     "Lidarr"      "lscr.io/linuxserver/lidarr:latest"     "ARR Suite"  "8686:8686"
     define_app bazarr     "Bazarr"      "lscr.io/linuxserver/bazarr:latest"     "ARR Suite"  "6767:6767"
     define_app whisparr   "Whisparr"    "ghcr.io/hotio/whisparr:nightly"        "ARR Suite"  "6969:6969"
-    define_app readarr    "Readarr"     "ghcr.io/hotio/readarr:nightly"   "ARR Suite"  "8787:8787"
     define_app mylar3     "Mylar3"      "lscr.io/linuxserver/mylar3:latest"     "ARR Suite"  "8090:8090"
     define_app doplarr    "Doplarr"     "lscr.io/linuxserver/doplarr:latest"     "ARR Suite"  ""
     APP_CUSTOM_SVC[doplarr]="yes"
-    define_app boxarr     "Boxarr"      "ghcr.io/iongpt/boxarr:latest"           "ARR Suite"  "8888:8888"
+    define_app boxarr     "Boxarr"      "ghcr.io/iongpt/boxarr:latest"           "ARR Suite"  "8889:8888"
     APP_CUSTOM_SVC[boxarr]="yes"
     define_app recyclarr  "Recyclarr"   "ghcr.io/recyclarr/recyclarr:latest"    "ARR Suite"  ""
     define_app unpackerr  "Unpackerr"   "golift/unpackerr:latest"               "ARR Suite"  ""
@@ -222,6 +221,7 @@ load_catalog() {
     # Successor to Jellyseerr and Overseerr. GitHub: seerr-team/seerr
     # Seerr replaces Overseerr and Jellyseerr (both phased out)
     define_app seerr      "Seerr"      "ghcr.io/seerr-team/seerr:latest"      "Request & Tools"  "5055:5055"
+    APP_CUSTOM_SVC[seerr]="yes"
     define_app ombi       "Ombi"       "lscr.io/linuxserver/ombi:latest"      "Request & Tools"  "3579:3579"
     define_app requestrr  "Requestrr"  "lscr.io/linuxserver/requestrr:latest" "Request & Tools"  "4545:4545"
     define_app tautulli   "Tautulli"   "lscr.io/linuxserver/tautulli:latest"  "Request & Tools"  "8181:8181"
@@ -332,7 +332,7 @@ ALL_APPS=(
     # Downloaders
     qbittorrent transmission deluge sabnzbd nzbget jdownloader2 pyload aria2 pinchflat qbitrr
     # ARR Suite
-    prowlarr radarr sonarr lidarr bazarr whisparr readarr mylar3 doplarr boxarr recyclarr unpackerr notifiarr
+    prowlarr radarr sonarr lidarr bazarr whisparr mylar3 doplarr boxarr recyclarr unpackerr notifiarr
     # Media Servers
     jellyfin plex emby navidrome kavita komga audiobookshelf
     # Media Tools
@@ -368,9 +368,9 @@ LOCAL_IMAGE_APPS=(arrhub_webui)
 
 # Full Stack Presets
 MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr arrhub_webui)
-ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr readarr qbittorrent seerr boxarr arrhub_webui)
-MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr readarr seerr boxarr tautulli homer arrhub_webui)
-FULL_STACK_ARR=(prowlarr radarr sonarr lidarr bazarr whisparr readarr doplarr boxarr seerr recyclarr unpackerr notifiarr)
+ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr qbittorrent seerr boxarr arrhub_webui)
+MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr seerr boxarr tautulli homer arrhub_webui)
+FULL_STACK_ARR=(prowlarr radarr sonarr lidarr bazarr whisparr doplarr boxarr seerr recyclarr unpackerr notifiarr)
 FULL_STACK_TOOLS=(seerr tautulli flaresolverr homer homarr arrhub_webui)
 FULL_STACK_MONITORING=(grafana prometheus uptime_kuma dozzle watchtower scrutiny speedtest)
 
@@ -452,6 +452,82 @@ init_app_compose() {
     log INFO "Per-app compose initialised: ${f}"
 }
 
+# ---------------------------------------------------------------------------
+# Port conflict detection & auto-resolution
+# ---------------------------------------------------------------------------
+
+# Check if a TCP port is in use on the host
+port_in_use() {
+    local port="$1"
+    # Try ss first (faster), fall back to netstat
+    if command -v ss &>/dev/null; then
+        ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "(:${port}$)"
+    elif command -v netstat &>/dev/null; then
+        netstat -tlnp 2>/dev/null | awk '{print $4}' | grep -qE "(:${port}$)"
+    else
+        # Last resort: try to bind with bash
+        (echo >/dev/tcp/127.0.0.1/"${port}") 2>/dev/null
+    fi
+}
+
+# Find next available port starting from $1, incrementing by 1
+find_free_port() {
+    local port="$1"
+    local max_tries="${2:-50}"
+    local i=0
+    while (( i < max_tries )); do
+        if ! port_in_use "${port}"; then
+            echo "${port}"
+            return 0
+        fi
+        (( port++ ))
+        (( i++ ))
+    done
+    # Fallback: pick a random high port
+    local rnd=$(( RANDOM % 10000 + 20000 ))
+    echo "${rnd}"
+}
+
+# Resolve port conflicts in a port mapping string like "8080:80 9090:90"
+# Returns the resolved mapping with any conflicting host ports swapped
+# Also logs any changes made
+resolve_ports() {
+    local id="$1"
+    local port_str="$2"
+    local resolved=""
+
+    for mapping in ${port_str}; do
+        # Handle protocol suffix like /udp /tcp
+        local proto=""
+        if [[ "${mapping}" == */* ]]; then
+            proto="/${mapping##*/}"
+            mapping="${mapping%/*}"
+        fi
+
+        local host_port="${mapping%%:*}"
+        local ctr_port="${mapping#*:}"
+
+        # Skip non-numeric (e.g. ranges)
+        if [[ ! "${host_port}" =~ ^[0-9]+$ ]]; then
+            resolved+="${mapping}${proto} "
+            continue
+        fi
+
+        if port_in_use "${host_port}"; then
+            local new_port
+            new_port=$(find_free_port "${host_port}")
+            log WARN "Port ${host_port} in use — reassigning ${id} to ${new_port}:${ctr_port}${proto}"
+            d_msgbox "Port Conflict" \
+                "Port ${host_port} is already in use on this host.\n\n${APP_NAME[$id]:-$id} will use port ${new_port} instead.\n\nAccess it at: http://\$(hostname -I | awk '{print \$1}'):${new_port}"
+            resolved+="${new_port}:${ctr_port}${proto} "
+        else
+            resolved+="${host_port}:${ctr_port}${proto} "
+        fi
+    done
+
+    echo "${resolved% }"  # trim trailing space
+}
+
 # Generic service block
 add_service() {
     local id="$1"
@@ -465,6 +541,11 @@ add_service() {
     local image="${APP_IMAGE[$id]}"
     local ports="${APP_PORTS[$id]:-}"
     local priv="${APP_PRIV[$id]:-false}"
+
+    # Auto-resolve port conflicts
+    if [[ -n "${ports}" ]]; then
+        ports="$(resolve_ports "${id}" "${ports}")"
+    fi
 
     {
         echo ""
@@ -539,6 +620,14 @@ add_service_boxarr() {
     local id="${1:-boxarr}"
     local f; f="$(app_compose "${id}")"
     mkdir -p "${CONFIG_DIR}/boxarr/config" 2>/dev/null || true
+
+    # Resolve port conflict
+    local hp_8889; hp_8889=$(find_free_port 8889)
+
+    if [[ "${hp_8889}" != "8889" ]]; then
+        log WARN "Port 8889 in use — ${id} reassigned to ${hp_8889}"
+    fi
+
     {
         echo ""
         echo "  boxarr:"
@@ -550,15 +639,51 @@ add_service_boxarr() {
         echo "    volumes:"
         echo "      - ${CONFIG_DIR}/boxarr/config:/config"
         echo "    ports:"
-        echo "      - \"8888:8888\""
+        echo "      - \"${hp_8889}:8888\""
     } >> "${f}"
-    log INFO "Boxarr configured on port 8888 (ghcr.io/iongpt/boxarr)"
+    log INFO "Boxarr configured on port ${hp_8889} (ghcr.io/iongpt/boxarr)"
+}
+
+add_service_seerr() {
+    local id="${1:-seerr}"
+    local f; f="$(app_compose "${id}")"
+    mkdir -p "${CONFIG_DIR}/seerr" 2>/dev/null || true
+
+    # Resolve port conflict
+    local hp_5055; hp_5055=$(find_free_port 5055)
+
+    if [[ "${hp_5055}" != "5055" ]]; then
+        log WARN "Port 5055 in use — ${id} reassigned to ${hp_5055}"
+    fi
+
+    {
+        echo ""
+        echo "  seerr:"
+        echo "    image: ghcr.io/seerr-team/seerr:latest"
+        echo "    container_name: seerr"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - LOG_LEVEL=info"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/seerr:/app/config"
+        echo "    ports:"
+        echo "      - \"${hp_5055}:5055\""
+    } >> "${f}"
+    log INFO "Seerr configured with persistent config at ${CONFIG_DIR}/seerr (port ${hp_5055})"
 }
 
 add_service_arrhub_webui() {
     local id="${1:-arrhub_webui}"
     local f; f="$(app_compose "${id}")"
     local webui_dir="${SCRIPT_DIR}/arrhub-webui"
+
+    # Resolve port conflict
+    local hp_9999; hp_9999=$(find_free_port 9999)
+
+    if [[ "${hp_9999}" != "9999" ]]; then
+        log WARN "Port 9999 in use — ${id} reassigned to ${hp_9999}"
+    fi
 
     if [[ -d "${webui_dir}" ]]; then
         log INFO "Building arrhub-webui image from ${webui_dir}"
@@ -584,7 +709,7 @@ add_service_arrhub_webui() {
         echo "    restart: unless-stopped"
         echo "    pid: host"
         echo "    ports:"
-        echo "      - \"9999:9999\""
+        echo "      - \"${hp_9999}:9999\""
         echo "    volumes:"
         echo "      - /var/run/docker.sock:/var/run/docker.sock:ro"
     } >> "${f}"
@@ -594,6 +719,18 @@ add_service_pihole() {
     local id="${1:-pihole}"
     local f; f="$(app_compose "${id}")"
     local webpass="changeme"
+
+    # Resolve port conflicts (very likely with DNS and HTTP ports)
+    local hp_53; hp_53=$(find_free_port 53)
+    local hp_8083; hp_8083=$(find_free_port 8083)
+
+    if [[ "${hp_53}" != "53" ]]; then
+        log WARN "Port 53 in use — ${id} DNS reassigned to ${hp_53}"
+    fi
+    if [[ "${hp_8083}" != "8083" ]]; then
+        log WARN "Port 8083 in use — ${id} web reassigned to ${hp_8083}"
+    fi
+
     {
         echo ""
         echo "  pihole:"
@@ -609,13 +746,13 @@ add_service_pihole() {
         echo "      - ${CONFIG_DIR}/pihole:/etc/pihole"
         echo "      - ${CONFIG_DIR}/dnsmasq.d:/etc/dnsmasq.d"
         echo "    ports:"
-        echo "      - \"53:53/tcp\""
-        echo "      - \"53:53/udp\""
-        echo "      - \"8083:80\""
+        echo "      - \"${hp_53}:53/tcp\""
+        echo "      - \"${hp_53}:53/udp\""
+        echo "      - \"${hp_8083}:80\""
         echo "    cap_add:"
         echo "      - NET_ADMIN"
     } >> "${f}"
-    log INFO "Pi-hole password set to: ${webpass} — CHANGE THIS!"
+    log INFO "Pi-hole password set to: ${webpass} — CHANGE THIS! (DNS: port ${hp_53}, Web: port ${hp_8083})"
 }
 
 add_service_nextcloud() {
@@ -623,6 +760,14 @@ add_service_nextcloud() {
     local f; f="$(app_compose "${id}")"
     local db_pass="nextclouddb_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
     local root_pass="nextcloudroot_$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c16 || echo 'changeme')"
+
+    # Resolve port conflict
+    local hp_8093; hp_8093=$(find_free_port 8093)
+
+    if [[ "${hp_8093}" != "8093" ]]; then
+        log WARN "Port 8093 in use — ${id} reassigned to ${hp_8093}"
+    fi
+
     {
         echo ""
         echo "  nextcloud-db:"
@@ -658,10 +803,10 @@ add_service_nextcloud() {
         echo "      - ${CONFIG_DIR}/nextcloud:/config"
         echo "      - ${MEDIA_DIR}:/media"
         echo "    ports:"
-        echo "      - \"8093:80\""
+        echo "      - \"${hp_8093}:80\""
     } >> "${f}"
     mkdir -p "${CONFIG_DIR}/nextcloud-db" 2>/dev/null || true
-    log INFO "Nextcloud DB password: ${db_pass}"
+    log INFO "Nextcloud DB password: ${db_pass} (Web: port ${hp_8093})"
 }
 
 add_service_immich() {
@@ -858,6 +1003,18 @@ add_service_mongodb() {
 add_service_qbittorrent() {
     local id="${1:-qbittorrent}"
     local f; f="$(app_compose "${id}")"
+
+    # Resolve port conflicts for frequently-used ports
+    local hp_8090; hp_8090=$(find_free_port 8090)
+    local hp_6881; hp_6881=$(find_free_port 6881)
+
+    if [[ "${hp_8090}" != "8090" ]]; then
+        log WARN "Port 8090 in use — ${id} reassigned to ${hp_8090}"
+    fi
+    if [[ "${hp_6881}" != "6881" ]]; then
+        log WARN "Port 6881 in use — ${id} reassigned to ${hp_6881}"
+    fi
+
     {
         echo ""
         echo "  qbittorrent:"
@@ -873,11 +1030,11 @@ add_service_qbittorrent() {
         echo "      - ${CONFIG_DIR}/qbittorrent:/config"
         echo "      - ${MEDIA_DIR}/downloads:/downloads"
         echo "    ports:"
-        echo "      - "8080:8080""
-        echo "      - "6881:6881""
-        echo "      - "6881:6881/udp""
+        echo "      - \"${hp_8090}:8080\""
+        echo "      - \"${hp_6881}:6881\""
+        echo "      - \"${hp_6881}:6881/udp\""
     } >> "${f}"
-    log INFO "qBittorrent configured with downloads at ${MEDIA_DIR}/downloads"
+    log INFO "qBittorrent configured with downloads at ${MEDIA_DIR}/downloads (WebUI: port ${hp_8090})"
     printf '\n\033[1;33m  ▶ qBittorrent default credentials: admin / adminadmin\n  ▶ Change immediately after first login!\033[0m\n'
 }
 
@@ -887,6 +1044,14 @@ add_service_prometheus() {
     mkdir -p "${CONFIG_DIR}/prometheus/data" 2>/dev/null || true
     # UID 65534 (nobody) is what the prom/prometheus image runs as — fix ownership
     chown -R 65534:65534 "${CONFIG_DIR}/prometheus/data" 2>/dev/null || true
+
+    # Resolve port conflict
+    local hp_9090; hp_9090=$(find_free_port 9090)
+
+    if [[ "${hp_9090}" != "9090" ]]; then
+        log WARN "Port 9090 in use — ${id} reassigned to ${hp_9090}"
+    fi
+
     cat > "${CONFIG_DIR}/prometheus/prometheus.yml" << 'PROM_EOF'
 global:
   scrape_interval: 15s
@@ -926,11 +1091,11 @@ PROM_EOF
         echo "      - ${CONFIG_DIR}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
         echo "      - ${CONFIG_DIR}/prometheus/data:/prometheus"
         echo "    ports:"
-        echo "      - \"9090:9090\""
+        echo "      - \"${hp_9090}:9090\""
         echo "    extra_hosts:"
         echo "      - host.docker.internal:host-gateway"
     } >> "${f}"
-    log INFO "Prometheus configured with default scrape targets"
+    log INFO "Prometheus configured with default scrape targets (port ${hp_9090})"
 }
 
 add_service_grafana() {
@@ -943,6 +1108,13 @@ add_service_grafana() {
     mkdir -p "${CONFIG_DIR}/grafana/dashboards" 2>/dev/null || true
     # UID 472 is grafana's default user inside the container — fix ownership upfront
     chown -R 472:472 "${CONFIG_DIR}/grafana" 2>/dev/null || true
+
+    # Resolve port conflict
+    local hp_3000; hp_3000=$(find_free_port 3000)
+
+    if [[ "${hp_3000}" != "3000" ]]; then
+        log WARN "Port 3000 in use — ${id} reassigned to ${hp_3000}"
+    fi
 
     cat > "${CONFIG_DIR}/grafana/provisioning/datasources/prometheus.yaml" << 'GRAFANA_DS_EOF'
 apiVersion: 1
@@ -987,16 +1159,24 @@ GRAFANA_DB_EOF
         echo "      - ${CONFIG_DIR}/grafana/provisioning:/etc/grafana/provisioning"
         echo "      - ${CONFIG_DIR}/grafana/dashboards:/var/lib/grafana/dashboards"
         echo "    ports:"
-        echo "      - \"3000:3000\""
+        echo "      - \"${hp_3000}:3000\""
     } >> "${f}"
-    log INFO "Grafana configured with Prometheus datasource pre-wired (admin/${grafana_pass})"
-    printf '\n\033[1;33m  ▶ Grafana credentials: admin / %s\n  ▶ Prometheus datasource is pre-configured\033[0m\n' "${grafana_pass}"
+    log INFO "Grafana configured with Prometheus datasource pre-wired (admin/${grafana_pass}, port ${hp_3000})"
+    printf '\n\033[1;33m  ▶ Grafana credentials: admin / %s\n  ▶ Prometheus datasource is pre-configured\n  ▶ Access at port: %s\033[0m\n' "${grafana_pass}" "${hp_3000}"
 }
 
 # Dozzle — requires Docker socket; without it the container fatals immediately
 add_service_dozzle() {
     local id="${1:-dozzle}"
     local f; f="$(app_compose "${id}")"
+
+    # Resolve port conflict
+    local hp_8888; hp_8888=$(find_free_port 8888)
+
+    if [[ "${hp_8888}" != "8888" ]]; then
+        log WARN "Port 8888 in use — ${id} reassigned to ${hp_8888}"
+    fi
+
     {
         echo ""
         echo "  dozzle:"
@@ -1006,9 +1186,9 @@ add_service_dozzle() {
         echo "    volumes:"
         echo "      - /var/run/docker.sock:/var/run/docker.sock:ro"
         echo "    ports:"
-        echo "      - \"8888:8080\""
+        echo "      - \"${hp_8888}:8080\""
     } >> "${f}"
-    log INFO "Dozzle configured with Docker socket (read-only)"
+    log INFO "Dozzle configured with Docker socket (read-only, port ${hp_8888})"
 }
 
 # Watchtower — requires Docker socket to poll registries and restart containers
@@ -1037,7 +1217,14 @@ add_service_homer() {
     local id="${1:-homer}"
     local f; f="$(app_compose "${id}")"
     mkdir -p "${CONFIG_DIR}/homer/assets" 2>/dev/null || true
-    
+
+    # Resolve port conflict
+    local hp_8085; hp_8085=$(find_free_port 8085)
+
+    if [[ "${hp_8085}" != "8085" ]]; then
+        log WARN "Port 8085 in use — ${id} reassigned to ${hp_8085}"
+    fi
+
     cat > "${CONFIG_DIR}/homer/config.yml" << 'HOMER_EOF'
 title: "My Homelab"
 subtitle: "Powered by ArrHub"
@@ -1115,11 +1302,11 @@ HOMER_EOF
         echo "    volumes:"
         echo "      - ${CONFIG_DIR}/homer:/www/assets"
         echo "    ports:"
-        echo "      - "8085:8080""
+        echo "      - \"${hp_8085}:8080\""
         echo "    environment:"
         echo "      - INIT_ASSETS=0"
     } >> "${f}"
-    log INFO "Homer configured with auto-generated config.yml"
+    log INFO "Homer configured with auto-generated config.yml (port ${hp_8085})"
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1505,110 +1692,127 @@ _write_report() {
 # Media Server Deployment Wizard
 # ---------------------------------------------------------------------------
 deploy_media_wizard() {
-    local media_server=""
-    media_server=$(d_menu "Step 1 — Media Server" "Choose your media server:" \
-        "jellyfin"  "Jellyfin (recommended, free)" \
-        "plex"      "Plex (freemium)" \
-        "emby"      "Emby (freemium)" \
-        "none"      "None - skip media server") || return
-    
-    [[ "${media_server}" == "none" ]] && media_server=""
+    while true; do
+        local media_server=""
+        media_server=$(d_menu "Step 1 — Media Server" "Choose your media server:" \
+            "jellyfin"  "Jellyfin (recommended, free)" \
+            "plex"      "Plex (freemium)" \
+            "emby"      "Emby (freemium)" \
+            "none"      "None - skip media server") || return
 
-    local downloader=""
-    downloader=$(d_menu "Step 2 — Download Client" "Choose your download client:" \
-        "qbittorrent" "qBittorrent (recommended)" \
-        "transmission" "Transmission (lightweight)" \
-        "deluge"      "Deluge (plugin-rich)" \
-        "sabnzbd"     "SABnzbd (Usenet/NZB)" \
-        "none"        "None - skip downloader") || return
-    
-    [[ "${downloader}" == "none" ]] && downloader=""
+        [[ "${media_server}" == "none" ]] && media_server=""
 
-    # ARR Apps selection with defaults
-    local arr_items=(
-        "prowlarr"  "Prowlarr (indexer manager)" "on"
-        "radarr"    "Radarr (movies)" "on"
-        "sonarr"    "Sonarr (TV shows)" "on"
-        "lidarr"    "Lidarr (music)" "off"
-        "bazarr"    "Bazarr (subtitles)" "on"
-        "whisparr"  "Whisparr (adult content)" "off"
-        "readarr"   "Readarr (ebooks)" "off"
-        "mylar3"    "Mylar3 (comics)" "off"
-        "boxarr"    "Boxarr (media database browser)" "on"
-           "Huntarr (dashboard)" "off"
-        "recyclarr" "Recyclarr (config management)" "off"
-        "unpackerr" "Unpackerr (archive extraction)" "on"
-        "notifiarr" "Notifiarr (notifications)" "off"
-    )
+        local downloader=""
+        downloader=$(d_menu "Step 2 — Download Client" "Choose your download client:" \
+            "qbittorrent" "qBittorrent (recommended)" \
+            "transmission" "Transmission (lightweight)" \
+            "deluge"      "Deluge (plugin-rich)" \
+            "sabnzbd"     "SABnzbd (Usenet/NZB)" \
+            "none"        "None - skip downloader") || return
 
-    local sel_arr
-    sel_arr=$(d_checklist "Step 3 — ARR Suite Apps" \
-        "Select which ARR apps to deploy (adjust defaults as needed):" "${arr_items[@]}") || return
-    sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
+        [[ "${downloader}" == "none" ]] && downloader=""
 
-    # Request & Tools selection with defaults
-    local tools_items=(
-        "seerr"       "Seerr (media requests)" "on"
-        "tautulli"    "Tautulli (watch stats)" "on"
-        "flaresolverr" "FlareSolverr (captcha solver)" "on"
-        "homer"       "Homer (dashboard)" "off"
-        "homarr"      "Homarr (dashboard)" "off"
-    )
+        # ARR Apps selection with defaults
+        local arr_items=(
+            "prowlarr"  "Prowlarr (indexer manager)" "on"
+            "radarr"    "Radarr (movies)" "on"
+            "sonarr"    "Sonarr (TV shows)" "on"
+            "lidarr"    "Lidarr (music)" "off"
+            "bazarr"    "Bazarr (subtitles)" "on"
+            "whisparr"  "Whisparr (adult content)" "off"
+            "mylar3"    "Mylar3 (comics)" "off"
+            "boxarr"    "Boxarr (media database browser)" "on"
+               "Huntarr (dashboard)" "off"
+            "recyclarr" "Recyclarr (config management)" "off"
+            "unpackerr" "Unpackerr (archive extraction)" "on"
+            "notifiarr" "Notifiarr (notifications)" "off"
+        )
 
-    local sel_tools
-    sel_tools=$(d_checklist "Step 4 — Request & Tools" \
-        "Select optional request management & monitoring tools:" "${tools_items[@]}") || return
-    sel_tools=$(printf '%s' "${sel_tools}" | tr -d '"')
+        local sel_arr
+        sel_arr=$(d_checklist "Step 3 — ARR Suite Apps" \
+            "Select which ARR apps to deploy (adjust defaults as needed):" "${arr_items[@]}") || return
+        sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
 
-    # Combine selections
-    local final_selection=()
-    [[ -n "${media_server}" ]] && final_selection+=("${media_server}")
-    [[ -n "${downloader}" ]] && final_selection+=("${downloader}")
-    [[ -n "${sel_arr}" ]] && final_selection+=(${sel_arr})
-    [[ -n "${sel_tools}" ]] && final_selection+=(${sel_tools})
-    
-    # Build summary
-    local summary="Media Server: ${media_server:-<none>}
+        # Request & Tools selection with defaults
+        local tools_items=(
+            "seerr"       "Seerr (media requests)" "on"
+            "tautulli"    "Tautulli (watch stats)" "on"
+            "flaresolverr" "FlareSolverr (captcha solver)" "on"
+            "homer"       "Homer (dashboard)" "off"
+            "homarr"      "Homarr (dashboard)" "off"
+        )
+
+        local sel_tools
+        sel_tools=$(d_checklist "Step 4 — Request & Tools" \
+            "Select optional request management & monitoring tools:" "${tools_items[@]}") || return
+        sel_tools=$(printf '%s' "${sel_tools}" | tr -d '"')
+
+        # Combine selections
+        local final_selection=()
+        [[ -n "${media_server}" ]] && final_selection+=("${media_server}")
+        [[ -n "${downloader}" ]] && final_selection+=("${downloader}")
+        [[ -n "${sel_arr}" ]] && final_selection+=(${sel_arr})
+        [[ -n "${sel_tools}" ]] && final_selection+=(${sel_tools})
+
+        # Build summary
+        local summary="Media Server: ${media_server:-<none>}
 Download Client: ${downloader:-<none>}
 
 ARR Apps: ${sel_arr:-<none>}
 Tools: ${sel_tools:-<none>}"
-    
-    if d_yesno "Confirm Deployment" "Review your selections:
+
+        if d_yesno "Confirm Deployment" "Review your selections:
 
 ${summary}
 
 Proceed?"; then
-        log INFO "Media wizard: deploying ${#final_selection[@]} apps"
-        deploy_apps "${final_selection[@]}"
-    fi
+            log INFO "Media wizard: deploying ${#final_selection[@]} apps"
+            deploy_apps "${final_selection[@]}"
+        fi
+    done
 }
 
 deploy_quick_preset() {
-    local preset
-    preset=$(d_menu "Quick Deploy Preset" "Choose a preset stack:" \
-        "1" "Minimal — Jellyfin + qBit + basic ARR" \
-        "2" "ARR Only — all ARR apps + downloader" \
-        "3" "Media + ARR — full media stack" \
-        "4" "Full Stack — everything (no VPN)" \
-        "5" "Monitoring — Grafana, Prometheus, etc." \
-        "6" "Back") || return
+    while true; do
+        local preset
+        preset=$(d_menu "Quick Deploy Preset" "Choose a preset stack:" \
+            "1" "Minimal — Jellyfin + qBit + basic ARR" \
+            "2" "ARR Only — all ARR apps + downloader" \
+            "3" "Media + ARR — full media stack" \
+            "4" "Full Stack — everything (no VPN)" \
+            "5" "Monitoring — Grafana, Prometheus, etc." \
+            "6" "Back") || return
 
-    local selected=()
-    case "${preset}" in
-        1) selected=("${MINIMAL_STACK[@]}") ;;
-        2) selected=("${ARR_ONLY_STACK[@]}") ;;
-        3) selected=("${MEDIA_ARR_STACK[@]}") ;;
-        4)
-            selected=("${FULL_STACK_ARR[@]}" "${FULL_STACK_TOOLS[@]}")
-            selected+=(jellyfin qbittorrent)
-            ;;
-        5) selected=("${FULL_STACK_MONITORING[@]}") ;;
-        6) return ;;
-    esac
-
-    log INFO "Quick preset ${preset}: ${selected[*]}"
-    deploy_apps "${selected[@]}"
+        case "${preset}" in
+            1)
+                local selected=("${MINIMAL_STACK[@]}")
+                log INFO "Quick preset ${preset}: ${selected[*]}"
+                deploy_apps "${selected[@]}"
+                ;;
+            2)
+                local selected=("${ARR_ONLY_STACK[@]}")
+                log INFO "Quick preset ${preset}: ${selected[*]}"
+                deploy_apps "${selected[@]}"
+                ;;
+            3)
+                local selected=("${MEDIA_ARR_STACK[@]}")
+                log INFO "Quick preset ${preset}: ${selected[*]}"
+                deploy_apps "${selected[@]}"
+                ;;
+            4)
+                local selected=("${FULL_STACK_ARR[@]}" "${FULL_STACK_TOOLS[@]}")
+                selected+=(jellyfin qbittorrent)
+                log INFO "Quick preset ${preset}: ${selected[*]}"
+                deploy_apps "${selected[@]}"
+                ;;
+            5)
+                local selected=("${FULL_STACK_MONITORING[@]}")
+                log INFO "Quick preset ${preset}: ${selected[*]}"
+                deploy_apps "${selected[@]}"
+                ;;
+            6) return ;;
+        esac
+    done
 }
 
 deploy_by_category() {

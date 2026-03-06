@@ -265,7 +265,7 @@ def api_network():
             stats = stats_by_name.get(name, None)
             io = io_by_name.get(name, None)
 
-            addresses = [{"family": str(addr.family), "address": addr.address, "netmask": addr.netmask} for addr in addrs]
+            addresses = [addr.address for addr in addrs if addr.address and isinstance(addr.address, str)]
 
             interfaces.append({
                 "name": name,
@@ -436,17 +436,80 @@ def api_hardware():
 
 @app.route("/api/logs")
 def api_logs():
-    """System logs from journalctl."""
+    """System logs from Docker containers, ArrHub logs, and host."""
     try:
-        lines = request.args.get('lines', 100, type=int)
+        lines_count = request.args.get('lines', 100, type=int)
         unit = request.args.get('unit', '')
 
-        cmd = ["journalctl", "-n", str(lines), "--no-pager"]
-        if unit:
-            cmd.extend(["-u", unit])
+        log_lines = []
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        log_lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        if unit and DOCKER_OK:
+            # Get logs for specific container
+            try:
+                c = _dc.containers.get(unit)
+                logs = c.logs(tail=lines_count, timestamps=True).decode('utf-8', errors='replace')
+                log_lines = logs.strip().split('\n') if logs.strip() else []
+            except Exception:
+                pass
+        elif DOCKER_OK:
+            # Get recent logs from all running containers
+            try:
+                for c in _dc.containers.list():
+                    try:
+                        logs = c.logs(tail=10, timestamps=True).decode('utf-8', errors='replace')
+                        for line in logs.strip().split('\n'):
+                            if line.strip():
+                                log_lines.append(f"[{c.name}] {line}")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Read ArrHub application logs (always attempt)
+        arrhub_logs = ["/var/log/arrhub.log", "/var/log/arrhub-errors.log"]
+        for logpath in arrhub_logs:
+            if os.path.isfile(logpath):
+                try:
+                    with open(logpath, 'r') as f:
+                        lines = f.readlines()
+                        tail = lines[-min(len(lines), lines_count // 2):]
+                        for line in tail:
+                            stripped = line.strip()
+                            if stripped:
+                                tag = "[arrhub]" if "arrhub.log" in logpath else "[arrhub-errors]"
+                                log_lines.append(f"{tag} {stripped}")
+                except Exception:
+                    pass
+
+        # Try journalctl as fallback
+        if not log_lines:
+            try:
+                result = subprocess.run(
+                    ["journalctl", "--no-pager", "-n", str(lines_count), "--output=short-iso"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.stdout.strip():
+                    log_lines = result.stdout.strip().split('\n')[-lines_count:]
+            except Exception:
+                pass
+
+        # Dmesg as final fallback
+        if not log_lines:
+            try:
+                result = subprocess.run(["dmesg", "-T"],
+                    capture_output=True, text=True, timeout=5)
+                if result.stdout.strip():
+                    log_lines = result.stdout.strip().split('\n')[-lines_count:]
+            except Exception:
+                pass
+
+        if not log_lines:
+            log_lines = ["No logs available. Container logs will appear here when Docker is running."]
+
+        # Sort and return last N
+        log_lines.sort()
+        log_lines = log_lines[-lines_count:]
+
         return jsonify({"lines": log_lines})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -520,7 +583,7 @@ def api_deploy_app():
                  .replace("{PUID}", puid)
                  .replace("{PGID}", pgid))
 
-    # Build compose snippet
+    # Build compose snippet (for logging/history only)
     ports_yaml = "\n".join(f"      - \"{p}\"" for p in app_data.get("ports", []))
     vols_yaml = "\n".join(f"      - \"{replace_placeholders(v)}\"" for v in app_data.get("volumes", []))
     env_yaml = "\n".join(f"      - \"{replace_placeholders(e)}\"" for e in app_data.get("environment", []))
@@ -538,21 +601,89 @@ def api_deploy_app():
     if env_yaml:
         snippet += f"    environment:\n{env_yaml}\n"
 
-    # Write to /tmp compose file and run
-    compose_path = f"/tmp/arrhub_{app_id}.yml"
     compose_content = f"services:\n{snippet}"
 
-    try:
-        with open(compose_path, "w") as f:
-            f.write(compose_content)
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker is not available. Ensure the Docker socket is mounted."}), 500
 
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_path, "up", "-d"],
-            capture_output=True, text=True, timeout=120
+    try:
+        # Use Docker SDK to deploy directly (no subprocess needed)
+        image_name = app_data["image"]
+
+        # Pull the image first
+        try:
+            _dc.images.pull(image_name)
+        except Exception as pull_err:
+            return jsonify({"error": f"Failed to pull image {image_name}: {str(pull_err)}"}), 500
+
+        # Remove existing container with the same name
+        try:
+            existing = _dc.containers.get(app_id)
+            existing.stop()
+            existing.remove()
+        except Exception:
+            pass
+
+        # Build port bindings: {"5055/tcp": 5055}
+        port_bindings = {}
+        exposed_ports = {}
+        for port_str in app_data.get("ports", []):
+            parts = port_str.split(":")
+            if len(parts) == 2:
+                host_port = parts[0]
+                container_port = parts[1]
+                # Resolve port conflicts
+                resolved = _resolve_port_mapping(f"{host_port}:{container_port}")
+                r_parts = resolved.split(":")
+                h_port = int(r_parts[0])
+                c_port_str = r_parts[1]
+                proto = "tcp"
+                if "/" in c_port_str:
+                    c_port_str, proto = c_port_str.split("/")
+                c_port = int(c_port_str)
+                port_bindings[f"{c_port}/{proto}"] = h_port
+                exposed_ports[f"{c_port}/{proto}"] = {}
+
+        # Build volume bindings: ["/host/path:/container/path"]
+        volumes = {}
+        binds = []
+        for vol_str in app_data.get("volumes", []):
+            replaced = replace_placeholders(vol_str)
+            parts = replaced.split(":")
+            if len(parts) >= 2:
+                host_path = parts[0]
+                container_path = parts[1]
+                mode = parts[2] if len(parts) > 2 else "rw"
+                # Create host directory if it doesn't exist
+                os.makedirs(host_path, exist_ok=True)
+                binds.append(f"{host_path}:{container_path}:{mode}")
+                volumes[container_path] = {}
+
+        # Build environment
+        environment = {}
+        for env_str in app_data.get("environment", []):
+            replaced = replace_placeholders(env_str)
+            if "=" in replaced:
+                key, val = replaced.split("=", 1)
+                environment[key] = val
+
+        # Determine restart policy
+        restart_val = app_data.get("restart", "unless-stopped")
+        restart_policy = {"Name": restart_val.replace("-", "_") if restart_val != "unless-stopped" else "unless-stopped"}
+
+        # Create and start container
+        container = _dc.containers.run(
+            image_name,
+            name=app_id,
+            detach=True,
+            ports=port_bindings,
+            volumes=binds,
+            environment=environment,
+            restart_policy=restart_policy
         )
 
-        status = "success" if result.returncode == 0 else "failed"
-        error = result.stderr if result.returncode != 0 else None
+        status = "success"
+        error = None
 
         # Log to history
         try:
@@ -568,10 +699,19 @@ def api_deploy_app():
         return jsonify({
             "status": status,
             "app_id": app_id,
-            "stdout": result.stdout[-2000:],
-            "stderr": result.stderr[-2000:] if error else ""
+            "container_id": container.short_id
         })
     except Exception as e:
+        # Log failure to history
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "INSERT INTO deploy_history (app_id, app_name, action, status, compose_snapshot, error) VALUES (?,?,?,?,?,?)",
+                    (app_id, app_data["name"], "deploy", "failed", compose_content, str(e))
+                )
+                conn.commit()
+        except Exception:
+            pass
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/deploy/history")
@@ -763,25 +903,64 @@ def api_stacks():
     """Get available docker-compose stacks."""
     stacks = []
     config_dir = _db_get("config_dir", "/docker")
-    try:
-        # Search for docker-compose.yml files in subdirectories
-        for item in glob.glob(os.path.join(config_dir, "*", "docker-compose.yml")):
-            try:
-                stack_dir = os.path.dirname(item)
-                stack_name = os.path.basename(stack_dir)
-                # Count services in the compose file
-                with open(item) as f:
-                    content = f.read()
-                service_count = content.count(":")
-                stacks.append({
-                    "name": stack_name,
-                    "path": item,
-                    "services": service_count
-                })
-            except Exception:
-                pass
-    except Exception:
-        pass
+    search_dirs = [config_dir, "/docker", "/opt/arrhub/docker"]
+    searched = set()
+
+    # Search for docker-compose.yml files on disk
+    for sdir in search_dirs:
+        if sdir in searched or not os.path.exists(sdir):
+            continue
+        searched.add(sdir)
+        try:
+            for item in glob.glob(os.path.join(sdir, "*", "docker-compose.yml")):
+                try:
+                    stack_dir = os.path.dirname(item)
+                    stack_name = os.path.basename(stack_dir)
+                    with open(item) as f:
+                        content = f.read()
+                    # Count services by looking for "image:" lines
+                    service_count = content.count("image:")
+                    stacks.append({
+                        "name": stack_name,
+                        "path": item,
+                        "services": max(1, service_count),
+                        "source": "file"
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Discover running compose projects from Docker labels
+    if DOCKER_OK:
+        try:
+            projects = {}
+            for c in _dc.containers.list(all=True):
+                project = c.labels.get("com.docker.compose.project", "")
+                if project:
+                    if project not in projects:
+                        projects[project] = {
+                            "name": project,
+                            "path": c.labels.get("com.docker.compose.project.working_dir", ""),
+                            "services": 0,
+                            "source": "docker"
+                        }
+                    projects[project]["services"] += 1
+
+            # Merge: if a project was found on disk, update its service count
+            existing_names = {s["name"] for s in stacks}
+            for name, proj in projects.items():
+                if name not in existing_names:
+                    stacks.append(proj)
+                else:
+                    # Update service count from Docker to be more accurate
+                    for s in stacks:
+                        if s["name"] == name:
+                            s["services"] = max(s["services"], proj["services"])
+                            break
+        except Exception:
+            pass
+
     return jsonify({"stacks": stacks})
 
 @app.route("/api/stack/add", methods=["POST"])
@@ -934,19 +1113,68 @@ def api_rss_feeds():
         feeds = {
             "news": {
                 "Reuters": "https://www.reutersagency.com/feed/?taxonomy=best-topics&output=rss",
-                "BBC": "http://feeds.bbc.co.uk/news/rss.xml"
-            },
-            "soccer": {
-                "ESPN FC": "https://www.espn.com/espn/rss/soccer/news",
-                "Guardian Football": "https://www.theguardian.com/football/rss"
+                "AP News": "https://apnews.com/apf-services/v2/rss/hub?hub_id=top-news",
+                "BBC World": "http://feeds.bbc.co.uk/news/world/rss.xml",
+                "Al Jazeera": "https://www.aljazeera.com/xml/rss/all.xml",
+                "NPR": "https://feeds.npr.org/1001/rss.xml"
             },
             "tech": {
                 "Hacker News": "https://news.ycombinator.com/rss",
-                "r/selfhosted": "https://www.reddit.com/r/selfhosted/.rss"
+                "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
+                "The Verge": "https://www.theverge.com/rss/index.xml",
+                "TechCrunch": "https://techcrunch.com/feed/",
+                "Wired": "https://www.wired.com/feed/rss"
+            },
+            "soccer": {
+                "BBC Sport Football": "http://feeds.bbc.co.uk/sport/football/rss.xml",
+                "ESPN FC": "https://www.espn.com/espn/rss/soccer/news",
+                "Guardian Football": "https://www.theguardian.com/football/rss",
+                "Sky Sports": "https://www.skysports.com/feeds/rss/football.xml"
             },
             "reddit": {
+                "r/selfhosted": "https://www.reddit.com/r/selfhosted/.rss",
                 "r/homelab": "https://www.reddit.com/r/homelab/.rss",
-                "r/docker": "https://www.reddit.com/r/docker/.rss"
+                "r/docker": "https://www.reddit.com/r/docker/.rss",
+                "r/linux": "https://www.reddit.com/r/linux/.rss",
+                "r/datahoarder": "https://www.reddit.com/r/datahoarder/.rss"
+            },
+            "youtube": {
+                "Linus Tech Tips": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw",
+                "NetworkChuck": "https://www.youtube.com/feeds/videos.xml?channel_id=UC9x0AN7BWHpCDHSm9NiJFJQ",
+                "Jeff Geerling": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg",
+                "Techno Tim": "https://www.youtube.com/feeds/videos.xml?channel_id=UCOk-gHyjcWZNj3Br4oxwh0A",
+                "MKBHD": "https://www.youtube.com/feeds/videos.xml?channel_id=UCBJycsmduvYEL83R_U4JriQ",
+                "Fireship": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA",
+                "Level1Techs": "https://www.youtube.com/feeds/videos.xml?channel_id=UC4w1YQAJMWOz4qtxinq55LQ",
+                "Hardware Unboxed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCI8iQa1hv7oV_Z8D35vVuSg"
+            },
+            "linux": {
+                "OMG Ubuntu": "https://www.omgubuntu.co.uk/feed",
+                "Phoronix": "https://www.phoronix.com/rss.php",
+                "LWN.net": "https://lwn.net/headlines/newrss",
+                "It's FOSS": "https://itsfoss.com/feed/"
+            },
+            "gaming": {
+                "PC Gamer": "https://www.pcgamer.com/rss/",
+                "Kotaku": "https://kotaku.com/rss",
+                "Rock Paper Shotgun": "https://www.rockpapershotgun.com/feed",
+                "Eurogamer": "https://www.eurogamer.net/feed"
+            },
+            "science": {
+                "NASA": "https://www.nasa.gov/rss/dyn/breaking_news.rss",
+                "ScienceDaily": "https://www.sciencedaily.com/rss/all.xml",
+                "Phys.org": "https://phys.org/rss-feed/",
+                "Nature": "https://www.nature.com/nature.rss"
+            },
+            "crypto": {
+                "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+                "Cointelegraph": "https://cointelegraph.com/rss",
+                "Bitcoin Magazine": "https://bitcoinmagazine.com/.rss/full/"
+            },
+            "entertainment": {
+                "Variety": "https://variety.com/feed/",
+                "The Hollywood Reporter": "https://www.hollywoodreporter.com/feed/",
+                "IGN": "https://feeds.feedburner.com/ign/all"
             }
         }
 
@@ -958,22 +1186,31 @@ def api_rss_feeds():
                     root = ET.fromstring(resp.content)
 
                     articles = []
-                    for item in root.findall(".//item"):
-                        title_elem = item.find("title")
-                        link_elem = item.find("link")
-                        pubdate_elem = item.find("pubDate")
+                    # Try RSS format first, then Atom (for YouTube)
+                    items = root.findall(".//item")
+                    if not items:
+                        items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
 
-                        if title_elem is not None and link_elem is not None:
+                    for item in items:
+                        title_elem = item.find("title") or item.find("{http://www.w3.org/2005/Atom}title")
+                        link_elem = item.find("link") or item.find("{http://www.w3.org/2005/Atom}link")
+                        pubdate_elem = item.find("pubDate") or item.find("{http://www.w3.org/2005/Atom}published")
+
+                        link_text = ""
+                        if link_elem is not None:
+                            link_text = link_elem.text or link_elem.get("href", "#")
+
+                        if title_elem is not None and link_text:
                             articles.append({
                                 "title": title_elem.text or "Untitled",
-                                "link": link_elem.text or "#",
+                                "link": link_text,
                                 "pubdate": pubdate_elem.text if pubdate_elem is not None else ""
                             })
 
                     result["feeds"].append({
                         "source": source_name,
                         "category": category,
-                        "articles": articles[:5]  # Limit to 5 per source
+                        "articles": articles[:5]
                     })
                 except Exception:
                     pass
@@ -2103,6 +2340,12 @@ tbody tr:last-child{border-bottom:none;}
         <div class="filter-pill" onclick="filterRSS('tech',this)">Tech</div>
         <div class="filter-pill" onclick="filterRSS('soccer',this)">Soccer</div>
         <div class="filter-pill" onclick="filterRSS('reddit',this)">Reddit</div>
+        <div class="filter-pill" onclick="filterRSS('youtube',this)">YouTube</div>
+        <div class="filter-pill" onclick="filterRSS('linux',this)">Linux</div>
+        <div class="filter-pill" onclick="filterRSS('gaming',this)">Gaming</div>
+        <div class="filter-pill" onclick="filterRSS('science',this)">Science</div>
+        <div class="filter-pill" onclick="filterRSS('crypto',this)">Crypto</div>
+        <div class="filter-pill" onclick="filterRSS('entertainment',this)">Entertainment</div>
       </div>
       <div id="rss-grid" class="cat-grid">
         <div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Click a category to load feeds...</div></div>

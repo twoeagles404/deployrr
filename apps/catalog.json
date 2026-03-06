@@ -460,34 +460,6 @@
       "notes": ""
     },
     {
-      "id": "readarr",
-      "name": "Readarr",
-      "category": "ARR Suite",
-      "image": "ghcr.io/hotio/readarr:nightly",
-      "description": "Book/eBook collection manager. Like Sonarr but for books.",
-      "ports": [
-        "8787:8787"
-      ],
-      "volumes": [
-        "{CONFIG}/readarr:/config",
-        "{MEDIA}:/media"
-      ],
-      "environment": [
-        "PUID={PUID}",
-        "PGID={PGID}",
-        "TZ={TZ}"
-      ],
-      "privileged": false,
-      "restart": "unless-stopped",
-      "network_mode": null,
-      "custom_service": false,
-      "depends_on": [],
-      "url_path": "/",
-      "icon": "📦",
-      "full_stack": false,
-      "notes": ""
-    },
-    {
       "id": "mylar3",
       "name": "Mylar3",
       "category": "ARR Suite",

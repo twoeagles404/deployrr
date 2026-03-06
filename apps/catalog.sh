@@ -139,6 +139,11 @@ APP_PORTS["whisparr"]="6969:6969"
 APP_ICON["whisparr"]="\ud83d\udce6"
 APP_NOTES["whisparr"]=""
 
+<<<<<<< HEAD
+=======
+
+
+>>>>>>> feature/bugfixes-and-enhancements
 APP_NAME["mylar3"]="Mylar3"
 APP_CATEGORY["mylar3"]="ARR Suite"
 APP_IMAGE["mylar3"]="lscr.io/linuxserver/mylar3:latest"

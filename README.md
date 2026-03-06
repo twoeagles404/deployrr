@@ -44,15 +44,19 @@ The installer downloads all files to `/opt/arrhub/`, pulls the Docker image from
 ## Usage
 
 ### Bash TUI
+
 ```bash
 media
 ```
+
 Launches the interactive terminal UI for browsing categories, deploying apps, managing stacks, and configuring settings.
 
 ### WebUI
+
 Open `http://your-server-ip:9999` in your browser. No login required by default.
 
 To enable token auth:
+
 ```bash
 docker run -e ARRHUB_TOKEN=your-secret-token ...
 ```
@@ -63,7 +67,7 @@ docker run -e ARRHUB_TOKEN=your-secret-token ...
 
 | Category | Example Apps |
 |---|---|
-| ARR Suite | Radarr, Sonarr, Lidarr, Bazarr, Prowlarr, Readarr, Whisparr, Boxarr |
+| ARR Suite | Radarr, Sonarr, Lidarr, Bazarr, Prowlarr, Whisparr, Boxarr |
 | Downloaders | qBittorrent, Transmission, Deluge, SABnzbd, NZBGet, JDownloader2, Pinchflat, qbitrr |
 | Media Servers | Jellyfin, Plex, Emby, Navidrome, Komga, Audiobookshelf, Kavita |
 | Request Tools | Jellyseerr, Overseerr, Ombi, Doplarr |
@@ -103,6 +107,7 @@ arrhub/
 Each app deploys to its own compose file at `/docker/<appname>/docker-compose.yml`, keeping stacks isolated and independently manageable.
 
 **Adding a new app:** Edit `apps/catalog.json`, then run:
+
 ```bash
 python3 scripts/gen_catalog_sh.py
 ```

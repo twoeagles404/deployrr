@@ -1,3 +1,4 @@
+#---
 #!/bin/bash
 # =============================================================================
 # ArrHub v3.4.0 — Production-Ready ARR Suite Deployment TUI

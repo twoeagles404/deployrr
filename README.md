@@ -36,6 +36,10 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/main/install.sh | sudo bash
 ```
+Unstable
+```
+curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/dev/install.sh | sudo bash
+```
 
 The installer downloads all files to `/opt/arrhub/`, pulls the Docker image from `ghcr.io` (or builds locally as fallback), starts the WebUI on port `9999`, and installs the `media` TUI alias.
 

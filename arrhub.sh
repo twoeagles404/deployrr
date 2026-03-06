@@ -190,6 +190,10 @@ load_catalog() {
     define_app lidarr     "Lidarr"      "lscr.io/linuxserver/lidarr:latest"     "ARR Suite"  "8686:8686"
     define_app bazarr     "Bazarr"      "lscr.io/linuxserver/bazarr:latest"     "ARR Suite"  "6767:6767"
     define_app whisparr   "Whisparr"    "ghcr.io/hotio/whisparr:nightly"        "ARR Suite"  "6969:6969"
+<<<<<<< HEAD
+=======
+
+>>>>>>> feature/bugfixes-and-enhancements
     define_app mylar3     "Mylar3"      "lscr.io/linuxserver/mylar3:latest"     "ARR Suite"  "8090:8090"
     define_app doplarr    "Doplarr"     "lscr.io/linuxserver/doplarr:latest"     "ARR Suite"  ""
     APP_CUSTOM_SVC[doplarr]="yes"
@@ -1693,8 +1697,15 @@ _write_report() {
 # ---------------------------------------------------------------------------
 deploy_media_wizard() {
     while true; do
+<<<<<<< HEAD
         local media_server=""
         media_server=$(d_menu "Step 1 — Media Server" "Choose your media server:" \
+=======
+        # Step 1 — Media Server
+        local media_server=""
+        media_server=$(d_menu "Step 1 of 4 — Media Server" \
+            "Choose your media server (ESC = back to Deploy Menu):" \
+>>>>>>> feature/bugfixes-and-enhancements
             "jellyfin"  "Jellyfin (recommended, free)" \
             "plex"      "Plex (freemium)" \
             "emby"      "Emby (freemium)" \
@@ -1702,17 +1713,32 @@ deploy_media_wizard() {
 
         [[ "${media_server}" == "none" ]] && media_server=""
 
+<<<<<<< HEAD
         local downloader=""
         downloader=$(d_menu "Step 2 — Download Client" "Choose your download client:" \
+=======
+        # Step 2 — Download Client (ESC goes back to Step 1)
+        local downloader=""
+        downloader=$(d_menu "Step 2 of 4 — Download Client" \
+            "Choose your download client (ESC = back to Step 1):" \
+>>>>>>> feature/bugfixes-and-enhancements
             "qbittorrent" "qBittorrent (recommended)" \
             "transmission" "Transmission (lightweight)" \
             "deluge"      "Deluge (plugin-rich)" \
             "sabnzbd"     "SABnzbd (Usenet/NZB)" \
+<<<<<<< HEAD
             "none"        "None - skip downloader") || return
 
         [[ "${downloader}" == "none" ]] && downloader=""
 
         # ARR Apps selection with defaults
+=======
+            "none"        "None - skip downloader") || continue
+
+        [[ "${downloader}" == "none" ]] && downloader=""
+
+        # Step 3 — ARR Apps selection (ESC goes back to Step 1)
+>>>>>>> feature/bugfixes-and-enhancements
         local arr_items=(
             "prowlarr"  "Prowlarr (indexer manager)" "on"
             "radarr"    "Radarr (movies)" "on"
@@ -1722,13 +1748,17 @@ deploy_media_wizard() {
             "whisparr"  "Whisparr (adult content)" "off"
             "mylar3"    "Mylar3 (comics)" "off"
             "boxarr"    "Boxarr (media database browser)" "on"
+<<<<<<< HEAD
                "Huntarr (dashboard)" "off"
+=======
+>>>>>>> feature/bugfixes-and-enhancements
             "recyclarr" "Recyclarr (config management)" "off"
             "unpackerr" "Unpackerr (archive extraction)" "on"
             "notifiarr" "Notifiarr (notifications)" "off"
         )
 
         local sel_arr
+<<<<<<< HEAD
         sel_arr=$(d_checklist "Step 3 — ARR Suite Apps" \
             "Select which ARR apps to deploy (adjust defaults as needed):" "${arr_items[@]}") || return
         sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
@@ -1745,6 +1775,24 @@ deploy_media_wizard() {
         local sel_tools
         sel_tools=$(d_checklist "Step 4 — Request & Tools" \
             "Select optional request management & monitoring tools:" "${tools_items[@]}") || return
+=======
+        sel_arr=$(d_checklist "Step 3 of 4 — ARR Suite Apps" \
+            "Select which ARR apps to deploy (ESC = back to Step 1):" "${arr_items[@]}") || continue
+        sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
+
+        # Step 4 — Request & Tools (ESC goes back to Step 1)
+        local tools_items=(
+            "seerr"        "Seerr (media requests)" "on"
+            "tautulli"     "Tautulli (watch stats)" "on"
+            "flaresolverr" "FlareSolverr (captcha solver)" "on"
+            "homer"        "Homer (dashboard)" "off"
+            "homarr"       "Homarr (dashboard)" "off"
+        )
+
+        local sel_tools
+        sel_tools=$(d_checklist "Step 4 of 4 — Request & Tools" \
+            "Select optional request management & monitoring tools (ESC = back to Step 1):" "${tools_items[@]}") || continue
+>>>>>>> feature/bugfixes-and-enhancements
         sel_tools=$(printf '%s' "${sel_tools}" | tr -d '"')
 
         # Combine selections
@@ -1753,6 +1801,11 @@ deploy_media_wizard() {
         [[ -n "${downloader}" ]] && final_selection+=("${downloader}")
         [[ -n "${sel_arr}" ]] && final_selection+=(${sel_arr})
         [[ -n "${sel_tools}" ]] && final_selection+=(${sel_tools})
+<<<<<<< HEAD
+=======
+        # Always include WebUI
+        final_selection+=(arrhub_webui)
+>>>>>>> feature/bugfixes-and-enhancements
 
         # Build summary
         local summary="Media Server: ${media_server:-<none>}
@@ -1768,7 +1821,13 @@ ${summary}
 Proceed?"; then
             log INFO "Media wizard: deploying ${#final_selection[@]} apps"
             deploy_apps "${final_selection[@]}"
+<<<<<<< HEAD
         fi
+=======
+            return
+        fi
+        # If they say No at confirmation, loop back to Step 1
+>>>>>>> feature/bugfixes-and-enhancements
     done
 }
 
@@ -1783,6 +1842,7 @@ deploy_quick_preset() {
             "5" "Monitoring — Grafana, Prometheus, etc." \
             "6" "Back") || return
 
+<<<<<<< HEAD
         case "${preset}" in
             1)
                 local selected=("${MINIMAL_STACK[@]}")
@@ -1812,6 +1872,23 @@ deploy_quick_preset() {
                 ;;
             6) return ;;
         esac
+=======
+        local selected=()
+        case "${preset}" in
+            1) selected=("${MINIMAL_STACK[@]}") ;;
+            2) selected=("${ARR_ONLY_STACK[@]}") ;;
+            3) selected=("${MEDIA_ARR_STACK[@]}") ;;
+            4)
+                selected=("${FULL_STACK_ARR[@]}" "${FULL_STACK_TOOLS[@]}")
+                selected+=(jellyfin qbittorrent)
+                ;;
+            5) selected=("${FULL_STACK_MONITORING[@]}") ;;
+            6) return ;;
+        esac
+
+        log INFO "Quick preset ${preset}: ${selected[*]}"
+        deploy_apps "${selected[@]}"
+>>>>>>> feature/bugfixes-and-enhancements
     done
 }
 

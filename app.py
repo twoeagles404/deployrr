@@ -9,7 +9,7 @@ Dependencies:
   pip install flask psutil requests docker
 
 """
-import json, os, re, subprocess, time, glob, threading, xml.etree.ElementTree as ET, sqlite3, socket
+import json, os, re, subprocess, shutil, time, glob, threading, xml.etree.ElementTree as ET, sqlite3, socket
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -27,6 +27,21 @@ try:
 except Exception:
     _dc = None
     DOCKER_OK = False
+
+# ── Docker CLI binary discovery ───────────────────────────────────────────────
+# The WebUI runs inside a container; the docker CLI binary is copied from the
+# official docker:27-cli image in the Dockerfile so compose commands work.
+# shutil.which searches PATH; fallback list covers common install locations.
+def _find_docker_bin():
+    found = shutil.which("docker")
+    if found:
+        return found
+    for p in ["/usr/local/bin/docker", "/usr/bin/docker", "/snap/bin/docker"]:
+        if os.path.isfile(p):
+            return p
+    return "docker"   # last resort — will raise FileNotFoundError if absent
+
+_DOCKER_BIN = _find_docker_bin()
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
@@ -1063,40 +1078,92 @@ def api_stack_compose_named(name):
 
 @app.route("/api/stack/<name>/up", methods=["POST"])
 def api_stack_up(name):
-    """Start a stack with docker compose up -d."""
+    """Start a stack — uses Docker SDK to start containers belonging to this stack.
+    Falls back to `docker compose` CLI if the binary is available."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+
     config_dir = _db_get("config_dir", "/docker")
     compose_path = os.path.join(config_dir, name, "docker-compose.yml")
+
+    # ── Try CLI first (available when running via rebuilt image) ──────────────
+    if os.path.isfile(_DOCKER_BIN):
+        try:
+            result = subprocess.run(
+                [_DOCKER_BIN, "compose", "-f", compose_path, "up", "-d"],
+                capture_output=True, text=True, timeout=120
+            )
+            return jsonify({
+                "status": "ok" if result.returncode == 0 else "error",
+                "stdout": result.stdout[-2000:],
+                "stderr": result.stderr[-2000:]
+            })
+        except FileNotFoundError:
+            pass  # fall through to SDK method
+
+    # ── SDK fallback: start containers that belong to this project ────────────
     if not os.path.isfile(compose_path):
-        return jsonify({"error": "Compose file not found"}), 404
+        return jsonify({"error": "Compose file not found and docker CLI unavailable"}), 404
     try:
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_path, "up", "-d"],
-            capture_output=True, text=True, timeout=120
-        )
+        started, errors = [], []
+        for c in _dc.containers.list(all=True):
+            project = c.labels.get("com.docker.compose.project", "")
+            if project == name and c.status != "running":
+                try:
+                    c.start()
+                    started.append(c.name)
+                except Exception as ex:
+                    errors.append(f"{c.name}: {ex}")
         return jsonify({
-            "status": "ok" if result.returncode == 0 else "error",
-            "stdout": result.stdout[-2000:],
-            "stderr": result.stderr[-2000:]
+            "status": "ok" if not errors else "partial",
+            "started": started,
+            "errors": errors
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/stack/<name>/down", methods=["POST"])
 def api_stack_down(name):
-    """Stop a stack with docker compose down."""
+    """Stop a stack — uses Docker SDK to stop containers belonging to this stack.
+    Falls back to `docker compose` CLI if the binary is available."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+
     config_dir = _db_get("config_dir", "/docker")
     compose_path = os.path.join(config_dir, name, "docker-compose.yml")
-    if not os.path.isfile(compose_path):
-        return jsonify({"error": "Compose file not found"}), 404
+
+    # ── Try CLI first ─────────────────────────────────────────────────────────
+    if os.path.isfile(_DOCKER_BIN):
+        try:
+            result = subprocess.run(
+                [_DOCKER_BIN, "compose", "-f", compose_path, "down"],
+                capture_output=True, text=True, timeout=120
+            )
+            return jsonify({
+                "status": "ok" if result.returncode == 0 else "error",
+                "stdout": result.stdout[-2000:],
+                "stderr": result.stderr[-2000:]
+            })
+        except FileNotFoundError:
+            pass  # fall through to SDK method
+
+    # ── SDK fallback: stop + remove containers that belong to this project ────
     try:
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_path, "down"],
-            capture_output=True, text=True, timeout=120
-        )
+        stopped, errors = [], []
+        for c in _dc.containers.list(all=True):
+            project = c.labels.get("com.docker.compose.project", "")
+            # Also match by container name prefix (single-app stacks)
+            if project == name or c.name == name:
+                try:
+                    if c.status == "running":
+                        c.stop(timeout=10)
+                    stopped.append(c.name)
+                except Exception as ex:
+                    errors.append(f"{c.name}: {ex}")
         return jsonify({
-            "status": "ok" if result.returncode == 0 else "error",
-            "stdout": result.stdout[-2000:],
-            "stderr": result.stderr[-2000:]
+            "status": "ok" if not errors else "partial",
+            "stopped": stopped,
+            "errors": errors
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500

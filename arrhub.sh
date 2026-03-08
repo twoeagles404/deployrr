@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.4.0 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.5.0-dev — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.4.0"
+VERSION="3.5.0-dev"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 GITHUB_BRANCH="main"
@@ -191,10 +191,7 @@ load_catalog() {
     define_app lidarr     "Lidarr"      "lscr.io/linuxserver/lidarr:latest"     "ARR Suite"  "8686:8686"
     define_app bazarr     "Bazarr"      "lscr.io/linuxserver/bazarr:latest"     "ARR Suite"  "6767:6767"
     define_app whisparr   "Whisparr"    "ghcr.io/hotio/whisparr:nightly"        "ARR Suite"  "6969:6969"
-<<<<<<< HEAD
-=======
 
->>>>>>> feature/bugfixes-and-enhancements
     define_app mylar3     "Mylar3"      "lscr.io/linuxserver/mylar3:latest"     "ARR Suite"  "8090:8090"
     define_app doplarr    "Doplarr"     "lscr.io/linuxserver/doplarr:latest"     "ARR Suite"  ""
     APP_CUSTOM_SVC[doplarr]="yes"
@@ -252,6 +249,8 @@ load_catalog() {
     define_app homer     "Homer"      "ghcr.io/bastienwirtz/homer:latest"     "Dashboards"  "8085:8080"
     APP_CUSTOM_SVC[homer]="yes"
     define_app homarr    "Homarr"     "ghcr.io/ajnart/homarr:latest"          "Dashboards"  "7575:7575"
+    define_app launcharr "Launcharr"  "mickygx/launcharr:latest"              "Dashboards"  "3333:3333"  "false"
+    APP_CUSTOM_SVC[launcharr]="yes"
     define_app dasherr   "Dasherr"    "ghcr.io/erwin-kok/dasherr:latest"      "Dashboards"  "3080:3080"
     define_app flame     "Flame"      "pawelmalak/flame:latest"               "Dashboards"  "5005:5005"
     define_app heimdall  "Heimdall"   "lscr.io/linuxserver/heimdall:latest"   "Dashboards"  "8086:80 8443:443"
@@ -346,7 +345,7 @@ ALL_APPS=(
     seerr ombi requestrr tautulli flaresolverr
     grafana prometheus uptime_kuma netdata glances dozzle portainer watchtower scrutiny speedtest
     # Dashboards
-    homer homarr dasherr flame heimdall organizr
+    homer homarr launcharr dasherr flame heimdall organizr
     # Reverse Proxies
     traefik npm caddy swag
     # VPN & Network
@@ -812,6 +811,39 @@ add_service_nextcloud() {
     } >> "${f}"
     mkdir -p "${CONFIG_DIR}/nextcloud-db" 2>/dev/null || true
     log INFO "Nextcloud DB password: ${db_pass} (Web: port ${hp_8093})"
+}
+
+add_service_launcharr() {
+    local id="${1:-launcharr}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_3333; hp_3333=$(find_free_port 3333)
+    if [[ "${hp_3333}" != "3333" ]]; then
+        log WARN "Port 3333 in use — ${id} reassigned to ${hp_3333}"
+    fi
+
+    {
+        echo ""
+        echo "  launcharr:"
+        echo "    image: mickygx/launcharr:latest"
+        echo "    container_name: launcharr"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - CONFIG_PATH=/app/config/config.json"
+        echo "      - DATA_DIR=/app/data"
+        echo "      - BASE_URL=http://localhost:${hp_3333}"
+        echo "      - TRUST_PROXY=true"
+        echo "      - TRUST_PROXY_HOPS=1"
+        echo "      - SESSION_SECRET=$(tr -dc 'a-zA-Z0-9' < /dev/urandom 2>/dev/null | head -c32 || echo 'change-this-secret')"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/launcharr/config:/app/config"
+        echo "      - ${CONFIG_DIR}/launcharr/data:/app/data"
+        echo "      - ${CONFIG_DIR}/launcharr/data/icons/custom:/app/public/icons/custom"
+        echo "    ports:"
+        echo "      - \"${hp_3333}:3333\""
+    } >> "${f}"
+    mkdir -p "${CONFIG_DIR}/launcharr/config" "${CONFIG_DIR}/launcharr/data" 2>/dev/null || true
+    log INFO "Launcharr web port: ${hp_3333}"
 }
 
 add_service_immich() {
@@ -1698,15 +1730,10 @@ _write_report() {
 # ---------------------------------------------------------------------------
 deploy_media_wizard() {
     while true; do
-<<<<<<< HEAD
-        local media_server=""
-        media_server=$(d_menu "Step 1 — Media Server" "Choose your media server:" \
-=======
         # Step 1 — Media Server
         local media_server=""
         media_server=$(d_menu "Step 1 of 4 — Media Server" \
             "Choose your media server (ESC = back to Deploy Menu):" \
->>>>>>> feature/bugfixes-and-enhancements
             "jellyfin"  "Jellyfin (recommended, free)" \
             "plex"      "Plex (freemium)" \
             "emby"      "Emby (freemium)" \
@@ -1714,32 +1741,19 @@ deploy_media_wizard() {
 
         [[ "${media_server}" == "none" ]] && media_server=""
 
-<<<<<<< HEAD
-        local downloader=""
-        downloader=$(d_menu "Step 2 — Download Client" "Choose your download client:" \
-=======
         # Step 2 — Download Client (ESC goes back to Step 1)
         local downloader=""
         downloader=$(d_menu "Step 2 of 4 — Download Client" \
             "Choose your download client (ESC = back to Step 1):" \
->>>>>>> feature/bugfixes-and-enhancements
             "qbittorrent" "qBittorrent (recommended)" \
             "transmission" "Transmission (lightweight)" \
             "deluge"      "Deluge (plugin-rich)" \
             "sabnzbd"     "SABnzbd (Usenet/NZB)" \
-<<<<<<< HEAD
-            "none"        "None - skip downloader") || return
-
-        [[ "${downloader}" == "none" ]] && downloader=""
-
-        # ARR Apps selection with defaults
-=======
             "none"        "None - skip downloader") || continue
 
         [[ "${downloader}" == "none" ]] && downloader=""
 
         # Step 3 — ARR Apps selection (ESC goes back to Step 1)
->>>>>>> feature/bugfixes-and-enhancements
         local arr_items=(
             "prowlarr"  "Prowlarr (indexer manager)" "on"
             "radarr"    "Radarr (movies)" "on"
@@ -1749,34 +1763,12 @@ deploy_media_wizard() {
             "whisparr"  "Whisparr (adult content)" "off"
             "mylar3"    "Mylar3 (comics)" "off"
             "boxarr"    "Boxarr (media database browser)" "on"
-<<<<<<< HEAD
-               "Huntarr (dashboard)" "off"
-=======
->>>>>>> feature/bugfixes-and-enhancements
             "recyclarr" "Recyclarr (config management)" "off"
             "unpackerr" "Unpackerr (archive extraction)" "on"
             "notifiarr" "Notifiarr (notifications)" "off"
         )
 
         local sel_arr
-<<<<<<< HEAD
-        sel_arr=$(d_checklist "Step 3 — ARR Suite Apps" \
-            "Select which ARR apps to deploy (adjust defaults as needed):" "${arr_items[@]}") || return
-        sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
-
-        # Request & Tools selection with defaults
-        local tools_items=(
-            "seerr"       "Seerr (media requests)" "on"
-            "tautulli"    "Tautulli (watch stats)" "on"
-            "flaresolverr" "FlareSolverr (captcha solver)" "on"
-            "homer"       "Homer (dashboard)" "off"
-            "homarr"      "Homarr (dashboard)" "off"
-        )
-
-        local sel_tools
-        sel_tools=$(d_checklist "Step 4 — Request & Tools" \
-            "Select optional request management & monitoring tools:" "${tools_items[@]}") || return
-=======
         sel_arr=$(d_checklist "Step 3 of 4 — ARR Suite Apps" \
             "Select which ARR apps to deploy (ESC = back to Step 1):" "${arr_items[@]}") || continue
         sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
@@ -1786,6 +1778,7 @@ deploy_media_wizard() {
             "seerr"        "Seerr (media requests)" "on"
             "tautulli"     "Tautulli (watch stats)" "on"
             "flaresolverr" "FlareSolverr (captcha solver)" "on"
+            "launcharr"    "Launcharr (app launcher dashboard)" "off"
             "homer"        "Homer (dashboard)" "off"
             "homarr"       "Homarr (dashboard)" "off"
         )
@@ -1793,7 +1786,6 @@ deploy_media_wizard() {
         local sel_tools
         sel_tools=$(d_checklist "Step 4 of 4 — Request & Tools" \
             "Select optional request management & monitoring tools (ESC = back to Step 1):" "${tools_items[@]}") || continue
->>>>>>> feature/bugfixes-and-enhancements
         sel_tools=$(printf '%s' "${sel_tools}" | tr -d '"')
 
         # Combine selections
@@ -1802,11 +1794,8 @@ deploy_media_wizard() {
         [[ -n "${downloader}" ]] && final_selection+=("${downloader}")
         [[ -n "${sel_arr}" ]] && final_selection+=(${sel_arr})
         [[ -n "${sel_tools}" ]] && final_selection+=(${sel_tools})
-<<<<<<< HEAD
-=======
         # Always include WebUI
         final_selection+=(arrhub_webui)
->>>>>>> feature/bugfixes-and-enhancements
 
         # Build summary
         local summary="Media Server: ${media_server:-<none>}
@@ -1822,13 +1811,9 @@ ${summary}
 Proceed?"; then
             log INFO "Media wizard: deploying ${#final_selection[@]} apps"
             deploy_apps "${final_selection[@]}"
-<<<<<<< HEAD
-        fi
-=======
             return
         fi
         # If they say No at confirmation, loop back to Step 1
->>>>>>> feature/bugfixes-and-enhancements
     done
 }
 
@@ -1843,37 +1828,6 @@ deploy_quick_preset() {
             "5" "Monitoring — Grafana, Prometheus, etc." \
             "6" "Back") || return
 
-<<<<<<< HEAD
-        case "${preset}" in
-            1)
-                local selected=("${MINIMAL_STACK[@]}")
-                log INFO "Quick preset ${preset}: ${selected[*]}"
-                deploy_apps "${selected[@]}"
-                ;;
-            2)
-                local selected=("${ARR_ONLY_STACK[@]}")
-                log INFO "Quick preset ${preset}: ${selected[*]}"
-                deploy_apps "${selected[@]}"
-                ;;
-            3)
-                local selected=("${MEDIA_ARR_STACK[@]}")
-                log INFO "Quick preset ${preset}: ${selected[*]}"
-                deploy_apps "${selected[@]}"
-                ;;
-            4)
-                local selected=("${FULL_STACK_ARR[@]}" "${FULL_STACK_TOOLS[@]}")
-                selected+=(jellyfin qbittorrent)
-                log INFO "Quick preset ${preset}: ${selected[*]}"
-                deploy_apps "${selected[@]}"
-                ;;
-            5)
-                local selected=("${FULL_STACK_MONITORING[@]}")
-                log INFO "Quick preset ${preset}: ${selected[*]}"
-                deploy_apps "${selected[@]}"
-                ;;
-            6) return ;;
-        esac
-=======
         local selected=()
         case "${preset}" in
             1) selected=("${MINIMAL_STACK[@]}") ;;
@@ -1889,7 +1843,6 @@ deploy_quick_preset() {
 
         log INFO "Quick preset ${preset}: ${selected[*]}"
         deploy_apps "${selected[@]}"
->>>>>>> feature/bugfixes-and-enhancements
     done
 }
 

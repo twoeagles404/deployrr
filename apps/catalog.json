@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "generated_by": "ArrHub (converted from YAML)",
     "github": "https://github.com/twoeagles404/arrhub",
-    "total_apps": 102
+    "total_apps": 103
   },
   "apps": [
     {
@@ -1506,6 +1506,38 @@
       "icon": "📊",
       "full_stack": false,
       "notes": ""
+    },
+    {
+      "id": "launcharr",
+      "name": "Launcharr",
+      "category": "Dashboards",
+      "image": "mickygx/launcharr:latest",
+      "description": "A modern, customizable application launcher and dashboard for self-hosted services.",
+      "ports": [
+        "3333:3333"
+      ],
+      "volumes": [
+        "{CONFIG}/launcharr/config:/app/config",
+        "{CONFIG}/launcharr/data:/app/data",
+        "{CONFIG}/launcharr/data/icons/custom:/app/public/icons/custom"
+      ],
+      "environment": [
+        "CONFIG_PATH=/app/config/config.json",
+        "DATA_DIR=/app/data",
+        "BASE_URL=http://localhost:3333",
+        "TRUST_PROXY=true",
+        "TRUST_PROXY_HOPS=1",
+        "SESSION_SECRET=change-this-to-a-random-secret"
+      ],
+      "privileged": false,
+      "restart": "unless-stopped",
+      "network_mode": null,
+      "custom_service": false,
+      "depends_on": [],
+      "url_path": "/",
+      "icon": "🚀",
+      "full_stack": false,
+      "notes": "Set SESSION_SECRET to a secure random string before deploying."
     },
     {
       "id": "traefik",

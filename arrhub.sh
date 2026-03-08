@@ -651,7 +651,10 @@ add_service_boxarr() {
 add_service_seerr() {
     local id="${1:-seerr}"
     local f; f="$(app_compose "${id}")"
-    mkdir -p "${CONFIG_DIR}/seerr" 2>/dev/null || true
+    # Pre-create config + logs dirs with open permissions so the Node.js
+    # process inside the container (uid 1000) can write freely
+    mkdir -p "${CONFIG_DIR}/seerr/logs" 2>/dev/null || true
+    chmod -R 777 "${CONFIG_DIR}/seerr" 2>/dev/null || true
 
     # Resolve port conflict
     local hp_5055; hp_5055=$(find_free_port 5055)

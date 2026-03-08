@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.4.0 · Full deployment, update management, and real-time monitoring
+Version: 3.5.0-dev · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -266,11 +266,7 @@ def api_network():
             stats = stats_by_name.get(name, None)
             io = io_by_name.get(name, None)
 
-<<<<<<< HEAD
-            addresses = [addr.address for addr in addrs if addr.address]
-=======
             addresses = [addr.address for addr in addrs if addr.address and isinstance(addr.address, str)]
->>>>>>> feature/bugfixes-and-enhancements
 
             interfaces.append({
                 "name": name,
@@ -441,11 +437,7 @@ def api_hardware():
 
 @app.route("/api/logs")
 def api_logs():
-<<<<<<< HEAD
-    """System logs from Docker containers and host."""
-=======
     """System logs from Docker containers, ArrHub logs, and host."""
->>>>>>> feature/bugfixes-and-enhancements
     try:
         lines_count = request.args.get('lines', 100, type=int)
         unit = request.args.get('unit', '')
@@ -453,7 +445,6 @@ def api_logs():
         log_lines = []
 
         if unit and DOCKER_OK:
-            # Get logs for specific container
             try:
                 c = _dc.containers.get(unit)
                 logs = c.logs(tail=lines_count, timestamps=True).decode('utf-8', errors='replace')
@@ -461,11 +452,7 @@ def api_logs():
             except Exception:
                 pass
         elif DOCKER_OK:
-<<<<<<< HEAD
-            # Get recent logs from all containers
-=======
             # Get recent logs from all running containers
->>>>>>> feature/bugfixes-and-enhancements
             try:
                 for c in _dc.containers.list():
                     try:
@@ -475,18 +462,6 @@ def api_logs():
                                 log_lines.append(f"[{c.name}] {line}")
                     except Exception:
                         pass
-<<<<<<< HEAD
-                # Sort by timestamp and limit
-                log_lines.sort()
-                log_lines = log_lines[-lines_count:]
-            except Exception:
-                pass
-
-        # Also try dmesg as fallback
-        if not log_lines:
-            try:
-                result = subprocess.run(["dmesg", "--time-format=iso", "-T"],
-=======
             except Exception:
                 pass
 
@@ -522,7 +497,6 @@ def api_logs():
         if not log_lines:
             try:
                 result = subprocess.run(["dmesg", "-T"],
->>>>>>> feature/bugfixes-and-enhancements
                     capture_output=True, text=True, timeout=5)
                 if result.stdout.strip():
                     log_lines = result.stdout.strip().split('\n')[-lines_count:]
@@ -531,13 +505,10 @@ def api_logs():
 
         if not log_lines:
             log_lines = ["No logs available. Container logs will appear here when Docker is running."]
-<<<<<<< HEAD
-=======
 
         # Sort and return last N
         log_lines.sort()
         log_lines = log_lines[-lines_count:]
->>>>>>> feature/bugfixes-and-enhancements
 
         return jsonify({"lines": log_lines})
     except Exception as e:
@@ -654,8 +625,7 @@ def api_deploy_app():
     vols_yaml = "\n".join(f"      - \"{replace_placeholders(v)}\"" for v in app_data.get("volumes", []))
     env_yaml = "\n".join(f"      - \"{replace_placeholders(e)}\"" for e in app_data.get("environment", []))
 
-    snippet = f"""
-  {app_id}:
+    snippet = f"""  {app_id}:
     image: {app_data['image']}
     container_name: {app_id}
     restart: {app_data.get('restart', 'unless-stopped')}
@@ -667,92 +637,19 @@ def api_deploy_app():
     if env_yaml:
         snippet += f"    environment:\n{env_yaml}\n"
 
-<<<<<<< HEAD
-    # Write to config directory and deploy using Docker SDK
     compose_content = f"services:\n{snippet}"
 
-    try:
-        # Write compose to the app's config directory
-        app_dir = os.path.join(config_dir, app_id)
-        os.makedirs(app_dir, exist_ok=True)
-        compose_path = os.path.join(app_dir, "docker-compose.yml")
-
-        with open(compose_path, "w") as f:
-            f.write(compose_content)
-
-        status = "success"
-        error = None
-
-        if DOCKER_OK:
-            try:
-                # Use docker SDK to pull image and create container
-                image = app_data['image']
-                try:
-                    _dc.images.pull(image)
-                except Exception:
-                    pass  # May already exist
-
-                # Parse ports, volumes, environment from app_data
-                port_bindings = {}
-                port_changes = []  # Track any reassignments
-                for p in app_data.get("ports", []):
-                    resolved, orig, new, changed = _resolve_port_mapping(str(p))
-                    if changed:
-                        port_changes.append({"original": orig, "assigned": new, "container_port": p.split(":")[-1] if ":" in str(p) else p})
-                    parts = resolved.split(":")
-                    if len(parts) == 2:
-                        try:
-                            port_bindings[int(parts[1])] = int(parts[0])
-                        except ValueError:
-                            pass
-
-                volumes_dict = {}
-                for v in app_data.get("volumes", []):
-                    v = replace_placeholders(v)
-                    parts = v.split(":")
-                    if len(parts) >= 2:
-                        host_path = parts[0]
-                        container_path = parts[1]
-                        mode = parts[2] if len(parts) > 2 else "rw"
-                        os.makedirs(host_path, exist_ok=True)
-                        volumes_dict[host_path] = {"bind": container_path, "mode": mode}
-
-                env_list = [replace_placeholders(e) for e in app_data.get("environment", [])]
-
-                # Remove existing container if present
-                try:
-                    old = _dc.containers.get(app_id)
-                    old.stop(timeout=10)
-                    old.remove()
-                except Exception:
-                    pass
-
-                container = _dc.containers.run(
-                    image,
-                    name=app_id,
-                    detach=True,
-                    ports=port_bindings if port_bindings else None,
-                    volumes=volumes_dict if volumes_dict else None,
-                    environment=env_list if env_list else None,
-                    restart_policy={"Name": app_data.get("restart", "unless-stopped")},
-                )
-
-                status = "success"
-                error = None
-            except Exception as deploy_err:
-                status = "failed"
-                error = str(deploy_err)
-        else:
-            status = "warning"
-            error = "Docker SDK not available; compose file saved but container not created"
-=======
-    compose_content = f"services:\n{snippet}"
+    # Write compose file to app's config directory
+    app_dir = os.path.join(config_dir, app_id)
+    os.makedirs(app_dir, exist_ok=True)
+    compose_path = os.path.join(app_dir, "docker-compose.yml")
+    with open(compose_path, "w") as f:
+        f.write(compose_content)
 
     if not DOCKER_OK:
         return jsonify({"error": "Docker is not available. Ensure the Docker socket is mounted."}), 500
 
     try:
-        # Use Docker SDK to deploy directly (no subprocess needed)
         image_name = app_data["image"]
 
         # Pull the image first
@@ -764,21 +661,20 @@ def api_deploy_app():
         # Remove existing container with the same name
         try:
             existing = _dc.containers.get(app_id)
-            existing.stop()
+            existing.stop(timeout=10)
             existing.remove()
         except Exception:
             pass
 
-        # Build port bindings: {"5055/tcp": 5055}
+        # Build port bindings with conflict resolution
         port_bindings = {}
-        exposed_ports = {}
+        port_changes = []
         for port_str in app_data.get("ports", []):
-            parts = port_str.split(":")
+            parts = str(port_str).split(":")
             if len(parts) == 2:
-                host_port = parts[0]
-                container_port = parts[1]
-                # Resolve port conflicts
-                resolved = _resolve_port_mapping(f"{host_port}:{container_port}")
+                resolved, orig, new_port, changed = _resolve_port_mapping(str(port_str))
+                if changed:
+                    port_changes.append({"original": orig, "assigned": new_port})
                 r_parts = resolved.split(":")
                 h_port = int(r_parts[0])
                 c_port_str = r_parts[1]
@@ -787,10 +683,8 @@ def api_deploy_app():
                     c_port_str, proto = c_port_str.split("/")
                 c_port = int(c_port_str)
                 port_bindings[f"{c_port}/{proto}"] = h_port
-                exposed_ports[f"{c_port}/{proto}"] = {}
 
-        # Build volume bindings: ["/host/path:/container/path"]
-        volumes = {}
+        # Build volume bindings
         binds = []
         for vol_str in app_data.get("volumes", []):
             replaced = replace_placeholders(vol_str)
@@ -799,10 +693,8 @@ def api_deploy_app():
                 host_path = parts[0]
                 container_path = parts[1]
                 mode = parts[2] if len(parts) > 2 else "rw"
-                # Create host directory if it doesn't exist
                 os.makedirs(host_path, exist_ok=True)
                 binds.append(f"{host_path}:{container_path}:{mode}")
-                volumes[container_path] = {}
 
         # Build environment
         environment = {}
@@ -812,24 +704,20 @@ def api_deploy_app():
                 key, val = replaced.split("=", 1)
                 environment[key] = val
 
-        # Determine restart policy
         restart_val = app_data.get("restart", "unless-stopped")
-        restart_policy = {"Name": restart_val.replace("-", "_") if restart_val != "unless-stopped" else "unless-stopped"}
 
-        # Create and start container
         container = _dc.containers.run(
             image_name,
             name=app_id,
             detach=True,
-            ports=port_bindings,
-            volumes=binds,
-            environment=environment,
-            restart_policy=restart_policy
+            ports=port_bindings if port_bindings else None,
+            volumes=binds if binds else None,
+            environment=environment if environment else None,
+            restart_policy={"Name": restart_val}
         )
 
         status = "success"
         error = None
->>>>>>> feature/bugfixes-and-enhancements
 
         # Log to history
         try:
@@ -845,16 +733,12 @@ def api_deploy_app():
         return jsonify({
             "status": status,
             "app_id": app_id,
-<<<<<<< HEAD
+            "container_id": container.short_id,
             "compose_path": compose_path,
-            "port_changes": port_changes if 'port_changes' in locals() else [],
+            "port_changes": port_changes,
             "error": error
-=======
-            "container_id": container.short_id
->>>>>>> feature/bugfixes-and-enhancements
         })
     except Exception as e:
-        # Log failure to history
         try:
             with sqlite3.connect(DB_PATH) as conn:
                 conn.execute(
@@ -970,7 +854,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.4.0"
+            "version": "3.5.0-dev"
         }
     })
 
@@ -1107,10 +991,7 @@ def api_stacks():
     search_dirs = [config_dir, "/docker", "/opt/arrhub/docker"]
     searched = set()
 
-<<<<<<< HEAD
-=======
     # Search for docker-compose.yml files on disk
->>>>>>> feature/bugfixes-and-enhancements
     for sdir in search_dirs:
         if sdir in searched or not os.path.exists(sdir):
             continue
@@ -1122,48 +1003,19 @@ def api_stacks():
                     stack_name = os.path.basename(stack_dir)
                     with open(item) as f:
                         content = f.read()
-<<<<<<< HEAD
-                    # Count actual services by looking for "image:" lines
-=======
                     # Count services by looking for "image:" lines
->>>>>>> feature/bugfixes-and-enhancements
                     service_count = content.count("image:")
                     stacks.append({
                         "name": stack_name,
                         "path": item,
-<<<<<<< HEAD
-                        "services": service_count
-=======
                         "services": max(1, service_count),
                         "source": "file"
->>>>>>> feature/bugfixes-and-enhancements
                     })
                 except Exception:
                     pass
         except Exception:
             pass
 
-<<<<<<< HEAD
-    # Also list running compose projects from Docker
-    if DOCKER_OK and not stacks:
-        try:
-            for c in _dc.containers.list(all=True):
-                project = c.labels.get("com.docker.compose.project", "")
-                if project and project not in [s["name"] for s in stacks]:
-                    stacks.append({
-                        "name": project,
-                        "path": c.labels.get("com.docker.compose.project.working_dir", ""),
-                        "services": 1
-                    })
-            # Deduplicate and count services per project
-            projects = {}
-            for s in stacks:
-                if s["name"] in projects:
-                    projects[s["name"]]["services"] += 1
-                else:
-                    projects[s["name"]] = s
-            stacks = list(projects.values())
-=======
     # Discover running compose projects from Docker labels
     if DOCKER_OK:
         try:
@@ -1186,16 +1038,68 @@ def api_stacks():
                 if name not in existing_names:
                     stacks.append(proj)
                 else:
-                    # Update service count from Docker to be more accurate
                     for s in stacks:
                         if s["name"] == name:
                             s["services"] = max(s["services"], proj["services"])
                             break
->>>>>>> feature/bugfixes-and-enhancements
         except Exception:
             pass
 
     return jsonify({"stacks": stacks})
+
+@app.route("/api/stack/<name>/compose")
+def api_stack_compose_named(name):
+    """Get compose file content for a stack."""
+    config_dir = _db_get("config_dir", "/docker")
+    compose_path = os.path.join(config_dir, name, "docker-compose.yml")
+    if not os.path.isfile(compose_path):
+        return jsonify({"error": "Compose file not found"}), 404
+    try:
+        with open(compose_path) as f:
+            content = f.read()
+        return jsonify({"name": name, "path": compose_path, "content": content})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/stack/<name>/up", methods=["POST"])
+def api_stack_up(name):
+    """Start a stack with docker compose up -d."""
+    config_dir = _db_get("config_dir", "/docker")
+    compose_path = os.path.join(config_dir, name, "docker-compose.yml")
+    if not os.path.isfile(compose_path):
+        return jsonify({"error": "Compose file not found"}), 404
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", compose_path, "up", "-d"],
+            capture_output=True, text=True, timeout=120
+        )
+        return jsonify({
+            "status": "ok" if result.returncode == 0 else "error",
+            "stdout": result.stdout[-2000:],
+            "stderr": result.stderr[-2000:]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/stack/<name>/down", methods=["POST"])
+def api_stack_down(name):
+    """Stop a stack with docker compose down."""
+    config_dir = _db_get("config_dir", "/docker")
+    compose_path = os.path.join(config_dir, name, "docker-compose.yml")
+    if not os.path.isfile(compose_path):
+        return jsonify({"error": "Compose file not found"}), 404
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", compose_path, "down"],
+            capture_output=True, text=True, timeout=120
+        )
+        return jsonify({
+            "status": "ok" if result.returncode == 0 else "error",
+            "stdout": result.stdout[-2000:],
+            "stderr": result.stderr[-2000:]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/stack/add", methods=["POST"])
 def api_stack_add():
@@ -1401,11 +1305,7 @@ def api_rss_feeds():
             "soccer": {
                 "BBC Sport Football": "http://feeds.bbc.co.uk/sport/football/rss.xml",
                 "ESPN FC": "https://www.espn.com/espn/rss/soccer/news",
-<<<<<<< HEAD
-                "Goal.com": "https://www.goal.com/en/feeds/news?ICID=RSS_FEEDS",
-=======
                 "Guardian Football": "https://www.theguardian.com/football/rss",
->>>>>>> feature/bugfixes-and-enhancements
                 "Sky Sports": "https://www.skysports.com/feeds/rss/football.xml"
             },
             "reddit": {
@@ -1420,12 +1320,9 @@ def api_rss_feeds():
                 "NetworkChuck": "https://www.youtube.com/feeds/videos.xml?channel_id=UC9x0AN7BWHpCDHSm9NiJFJQ",
                 "Jeff Geerling": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg",
                 "Techno Tim": "https://www.youtube.com/feeds/videos.xml?channel_id=UCOk-gHyjcWZNj3Br4oxwh0A",
-<<<<<<< HEAD
-=======
                 "MKBHD": "https://www.youtube.com/feeds/videos.xml?channel_id=UCBJycsmduvYEL83R_U4JriQ",
                 "Fireship": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA",
                 "Level1Techs": "https://www.youtube.com/feeds/videos.xml?channel_id=UC4w1YQAJMWOz4qtxinq55LQ",
->>>>>>> feature/bugfixes-and-enhancements
                 "Hardware Unboxed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCI8iQa1hv7oV_Z8D35vVuSg"
             },
             "linux": {
@@ -1433,8 +1330,6 @@ def api_rss_feeds():
                 "Phoronix": "https://www.phoronix.com/rss.php",
                 "LWN.net": "https://lwn.net/headlines/newrss",
                 "It's FOSS": "https://itsfoss.com/feed/"
-<<<<<<< HEAD
-=======
             },
             "gaming": {
                 "PC Gamer": "https://www.pcgamer.com/rss/",
@@ -1457,7 +1352,6 @@ def api_rss_feeds():
                 "Variety": "https://variety.com/feed/",
                 "The Hollywood Reporter": "https://www.hollywoodreporter.com/feed/",
                 "IGN": "https://feeds.feedburner.com/ign/all"
->>>>>>> feature/bugfixes-and-enhancements
             }
         }
 
@@ -1879,6 +1773,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 /* =====================================================================
    ARRHUB — PegaProx-inspired dark dashboard
@@ -2271,7 +2166,7 @@ tbody tr:last-child{border-bottom:none;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.4.0</div>
+      <div class="sb-version">v3.5.0-dev</div>
     </div>
   </div>
 
@@ -2416,12 +2311,13 @@ tbody tr:last-child{border-bottom:none;}
             <span class="metric-name">CPU Usage</span>
             <span class="metric-badge" id="cpu-badge" style="background:var(--green2);color:var(--green)">0%</span>
           </div>
-          <div class="gauge-wrap">
-            <svg class="gauge-svg" viewBox="0 0 100 100">
-              <circle class="gauge-circle-bg" cx="50" cy="50" r="40" stroke-dasharray="251.3" stroke-dashoffset="0"/>
-              <circle class="gauge-circle" id="cpu-ring" cx="50" cy="50" r="40" stroke="var(--blue)" stroke-dasharray="251.3" stroke-dashoffset="251.3"/>
-              <text class="gauge-text" id="cpu-gauge-text" x="50" y="50">0%</text>
-            </svg>
+          <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
+            <div style="position:relative;width:140px;height:140px">
+              <canvas id="cpu-gauge-canvas" width="140" height="140"></canvas>
+              <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
+                <span id="cpu-gauge-text" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
+              </div>
+            </div>
             <span class="gauge-sub" id="cpu-cores">— cores</span>
           </div>
           <div class="pbar-wrap"><div class="pbar blue" id="cpu-pbar" style="width:0%"></div></div>
@@ -2432,12 +2328,13 @@ tbody tr:last-child{border-bottom:none;}
             <span class="metric-name">Memory</span>
             <span class="metric-badge" id="mem-badge" style="background:var(--green2);color:var(--green)">0%</span>
           </div>
-          <div class="gauge-wrap">
-            <svg class="gauge-svg" viewBox="0 0 100 100">
-              <circle class="gauge-circle-bg" cx="50" cy="50" r="40" stroke-dasharray="251.3" stroke-dashoffset="0"/>
-              <circle class="gauge-circle" id="mem-ring" cx="50" cy="50" r="40" stroke="var(--purple)" stroke-dasharray="251.3" stroke-dashoffset="251.3"/>
-              <text class="gauge-text" id="mem-gauge-text" x="50" y="50">0%</text>
-            </svg>
+          <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
+            <div style="position:relative;width:140px;height:140px">
+              <canvas id="mem-gauge-canvas" width="140" height="140"></canvas>
+              <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
+                <span id="mem-gauge-text" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
+              </div>
+            </div>
             <span class="gauge-sub" id="mem-detail">— / — GB</span>
           </div>
           <div class="pbar-wrap"><div class="pbar" id="mem-pbar" style="width:0%;background:var(--purple)"></div></div>
@@ -2520,6 +2417,30 @@ tbody tr:last-child{border-bottom:none;}
           <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
           <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
           <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Disk Used</div></div>
+        </div>
+      </div>
+
+      <!-- Recent Logs Excerpt -->
+      <div class="panel">
+        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span>
+            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Recent Logs
+          </span>
+          <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('logs',null)">View All</button>
+        </div>
+        <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:120px;overflow:hidden;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
+      </div>
+
+      <!-- Network I/O Quick Stats -->
+      <div class="panel">
+        <div class="panel-title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
+          Network I/O
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Total Sent</div></div>
+          <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Total Received</div></div>
         </div>
       </div>
     </div>
@@ -2605,7 +2526,10 @@ tbody tr:last-child{border-bottom:none;}
     <div id="tab-logs" class="tab-panel">
       <div class="section-header">
         <div class="section-title">System Logs</div>
-        <button class="btn-primary" onclick="loadLogs()">Refresh</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="toggleLogsAutoRefresh(this)">Auto-refresh: Off</button>
+          <button class="btn-primary" onclick="loadLogs()">Refresh</button>
+        </div>
       </div>
       <div class="panel-title" style="margin-bottom:8px">Journal (last 200 lines)</div>
       <div id="log-output">Loading...</div>
@@ -2673,7 +2597,7 @@ tbody tr:last-child{border-bottom:none;}
       </div>
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.4.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.5.0-dev</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -2696,13 +2620,10 @@ tbody tr:last-child{border-bottom:none;}
         <div class="filter-pill" onclick="filterRSS('reddit',this)">Reddit</div>
         <div class="filter-pill" onclick="filterRSS('youtube',this)">YouTube</div>
         <div class="filter-pill" onclick="filterRSS('linux',this)">Linux</div>
-<<<<<<< HEAD
-=======
         <div class="filter-pill" onclick="filterRSS('gaming',this)">Gaming</div>
         <div class="filter-pill" onclick="filterRSS('science',this)">Science</div>
         <div class="filter-pill" onclick="filterRSS('crypto',this)">Crypto</div>
         <div class="filter-pill" onclick="filterRSS('entertainment',this)">Entertainment</div>
->>>>>>> feature/bugfixes-and-enhancements
       </div>
       <div id="rss-grid" class="cat-grid">
         <div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Click a category to load feeds...</div></div>
@@ -2779,19 +2700,47 @@ function openExternalLink(url) {
     window.open(url, '_blank');
 }
 
-// ── Gauge ─────────────────────────────────────────────────────────────
-function updateGauge(ringId, textId, value, max) {
-    const ring = document.getElementById(ringId);
-    const text = document.getElementById(textId);
-    if (!ring || !text) return;
+// ── Chart.js Gauges ───────────────────────────────────────────────────
+let _cpuChart = null, _memChart = null;
+
+function _makeGaugeChart(canvasId, color) {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return null;
+    return new Chart(ctx.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            datasets: [{
+                data: [0, 100],
+                backgroundColor: [color, 'rgba(48,54,61,0.8)'],
+                borderWidth: 0,
+                hoverOffset: 0
+            }]
+        },
+        options: {
+            responsive: false,
+            cutout: '72%',
+            circumference: 270,
+            rotation: 225,
+            animation: { duration: 400 },
+            plugins: { legend: { display: false }, tooltip: { enabled: false } }
+        }
+    });
+}
+
+function initGauges() {
+    _cpuChart = _makeGaugeChart('cpu-gauge-canvas', '#388bfd');
+    _memChart = _makeGaugeChart('mem-gauge-canvas', '#bc8cff');
+}
+
+function updateGauge(chart, textId, value, max) {
+    if (!chart) return;
     const pct = Math.min(100, Math.max(0, (value / max) * 100));
-    const circumference = 251.3;
-    ring.style.strokeDashoffset = circumference - (pct / 100) * circumference;
-    // Color
-    const color = pct < 50 ? 'var(--green)' : pct < 80 ? 'var(--yellow)' : 'var(--red)';
-    ring.style.stroke = color;
-    text.textContent = Math.round(pct) + '%';
-    text.style.fill = color;
+    const color = pct < 50 ? '#3fb950' : pct < 80 ? '#e3b341' : '#f85149';
+    chart.data.datasets[0].data = [pct, 100 - pct];
+    chart.data.datasets[0].backgroundColor[0] = color;
+    chart.update('none');
+    const text = document.getElementById(textId);
+    if (text) { text.textContent = Math.round(pct) + '%'; text.style.color = color; }
 }
 
 function pbarColor(pct) {
@@ -2818,8 +2767,8 @@ function startSSE() {
             colorEl('tb-cpu', cpu < 50 ? '' : cpu < 80 ? 'orange' : 'red');
             colorEl('tb-ram', ram < 50 ? '' : ram < 80 ? 'orange' : 'red');
             // Gauges
-            updateGauge('cpu-ring','cpu-gauge-text', cpu, 100);
-            updateGauge('mem-ring','mem-gauge-text', ram, 100);
+            updateGauge(_cpuChart,'cpu-gauge-text', cpu, 100);
+            updateGauge(_memChart,'mem-gauge-text', ram, 100);
             setEl('cpu-badge', cpu + '%');
             setEl('mem-badge', ram + '%');
             const cpuPbar = document.getElementById('cpu-pbar');
@@ -2869,11 +2818,11 @@ async function loadOverview() {
         setEl('si-python', d.python || '—');
         setEl('cpu-cores', (d.cpu_count || '—') + ' cores');
         if (d.cpu_percent !== undefined) {
-            updateGauge('cpu-ring','cpu-gauge-text', d.cpu_percent, 100);
+            updateGauge(_cpuChart,'cpu-gauge-text', d.cpu_percent, 100);
             setEl('cpu-badge', d.cpu_percent + '%');
         }
         if (d.mem_percent !== undefined) {
-            updateGauge('mem-ring','mem-gauge-text', d.mem_percent, 100);
+            updateGauge(_memChart,'mem-gauge-text', d.mem_percent, 100);
             setEl('mem-badge', d.mem_percent + '%');
             const used = ((d.mem_used||0)/1e9).toFixed(1);
             const total = ((d.mem_total||0)/1e9).toFixed(1);
@@ -3258,8 +3207,16 @@ async function loadStackManager() {
         const el = document.getElementById('stacks-list');
         const stacks = d.stacks || [];
         if (!stacks.length) { el.innerHTML = '<div class="empty-text" style="padding:12px;color:var(--text3)">No compose stacks found in /docker/</div>'; return; }
-        el.innerHTML = '<table><thead><tr><th>Stack</th><th>Path</th><th>Services</th></tr></thead><tbody>' +
-          stacks.map(s=>`<tr><td><b>${s.name}</b></td><td style="font-family:var(--mono);font-size:11px">${s.path}</td><td>${s.services||'—'}</td></tr>`).join('') +
+        el.innerHTML = '<table><thead><tr><th>Stack</th><th>Path</th><th>Services</th><th>Actions</th></tr></thead><tbody>' +
+          stacks.map(s=>`<tr>
+            <td><b>${s.name}</b></td>
+            <td style="font-family:var(--mono);font-size:11px">${s.path}</td>
+            <td>${s.services||'—'}</td>
+            <td style="display:flex;gap:6px;padding:4px 0">
+              <button class="btn green" style="padding:3px 8px;font-size:11px" onclick="stackAction('${s.name}','up')">Up</button>
+              <button class="btn red" style="padding:3px 8px;font-size:11px" onclick="stackAction('${s.name}','down')">Down</button>
+            </td>
+          </tr>`).join('') +
           '</tbody></table>';
     } catch(e) {}
 }
@@ -3271,8 +3228,8 @@ async function loadDeployHistory() {
         const el = document.getElementById('deploy-history');
         const h = d.history || [];
         if (!h.length) { el.innerHTML = '<div style="padding:12px;color:var(--text3)">No deploys yet</div>'; return; }
-        el.innerHTML = '<table><thead><tr><th>Time</th><th>Apps</th><th>Status</th></tr></thead><tbody>' +
-          h.map(e=>`<tr><td>${e.ts}</td><td>${e.apps}</td><td><span class="ctr-status ${e.status==='ok'?'running':'exited'}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${e.status}</span></td></tr>`).join('') +
+        el.innerHTML = '<table><thead><tr><th>Time</th><th>App</th><th>Action</th><th>Status</th></tr></thead><tbody>' +
+          h.map(e=>`<tr><td style="font-size:12px">${e.timestamp||'—'}</td><td>${e.app_name||e.app_id||'—'}</td><td>${e.action||'—'}</td><td><span class="ctr-status ${e.status==='success'?'running':'exited'}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${e.status}</span></td></tr>`).join('') +
           '</tbody></table>';
     } catch(e) {}
 }
@@ -3429,6 +3386,49 @@ function renderRSS() {
       </div>`).join('');
 }
 
+// ── Overview Extras ───────────────────────────────────────────────────
+async function loadOverviewExtras() {
+    // Recent logs excerpt
+    try {
+        const r = await fetch(API + '/api/logs?lines=8');
+        const d = await r.json();
+        const el = document.getElementById('ov-log-excerpt');
+        if (el) el.textContent = (d.lines || []).slice(-8).join('\n') || '(no logs)';
+    } catch(e) {}
+    // Network I/O
+    try {
+        const r = await fetch(API + '/api/network');
+        const d = await r.json();
+        const io = d.io || {};
+        setEl('ov-net-sent', fmtBytes(io.bytes_sent || 0));
+        setEl('ov-net-recv', fmtBytes(io.bytes_recv || 0));
+    } catch(e) {}
+}
+
+// ── Stack Actions ─────────────────────────────────────────────────────
+async function stackAction(name, action) {
+    try {
+        const r = await fetch(API + `/api/stack/${name}/${action}`, {method:'POST'});
+        const d = await r.json();
+        if (d.error) alert('Stack ' + action + ' error: ' + d.error);
+        else { setTimeout(loadStackManager, 800); }
+    } catch(e) { alert('Request failed'); }
+}
+
+// ── Logs Auto-refresh ─────────────────────────────────────────────────
+let _logsAutoRefresh = null;
+function toggleLogsAutoRefresh(btn) {
+    if (_logsAutoRefresh) {
+        clearInterval(_logsAutoRefresh);
+        _logsAutoRefresh = null;
+        if (btn) btn.textContent = 'Auto-refresh: Off';
+    } else {
+        _logsAutoRefresh = setInterval(loadLogs, 10000);
+        if (btn) btn.textContent = 'Auto-refresh: On';
+        loadLogs();
+    }
+}
+
 // ── Polling ───────────────────────────────────────────────────────────
 setInterval(() => {
     if (currentTab === 'storage') loadStorage();
@@ -3437,10 +3437,12 @@ setInterval(() => {
 }, 10000);
 
 // ── Boot ──────────────────────────────────────────────────────────────
+initGauges();
 loadOverview();
 loadContainers();
 loadWeather();
 loadDockerInfo();
+loadOverviewExtras();
 startSSE();
 </script>
 </body>

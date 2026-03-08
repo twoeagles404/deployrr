@@ -11,13 +11,22 @@
 #           arrhub-webui:local
 # =============================================================================
 
+# ── Stage 1: grab the docker CLI binary (no daemon, just the client) ─────────
+FROM docker:27-cli AS docker-cli
+
+# ── Stage 2: the actual application image ─────────────────────────────────────
 FROM python:3.12-slim
 
 # ── Labels ────────────────────────────────────────────────────────────────────
 LABEL maintainer="twoeagles404"
-LABEL version="3.4.0"
+LABEL version="3.5.0-dev"
 LABEL description="ArrHub — Server monitoring and Docker management dashboard"
 LABEL org.opencontainers.image.source="https://github.com/twoeagles404/arrhub"
+
+# ── Copy docker CLI from stage 1 ─────────────────────────────────────────────
+# This gives us `docker` and `docker compose` inside the container so the app
+# can run compose commands against the mounted Docker socket.
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /app
 
@@ -47,7 +56,8 @@ RUN pip install --upgrade pip && \
     psutil==6.1.1 \
     gunicorn==23.0.0 \
     flask-sock==0.7.0 \
-    requests==2.32.3
+    requests==2.32.3 \
+    pyyaml==6.0.2
 
 # ── Copy application ──────────────────────────────────────────────────────────
 COPY app.py .

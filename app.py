@@ -709,6 +709,10 @@ def api_deploy_app():
                 container_path = parts[1]
                 mode = parts[2] if len(parts) > 2 else "rw"
                 os.makedirs(host_path, exist_ok=True)
+                try:
+                    os.chmod(host_path, 0o777)
+                except Exception:
+                    pass
                 binds.append(f"{host_path}:{container_path}:{mode}")
 
         # Build environment
@@ -2499,6 +2503,21 @@ tbody tr:last-child{border-bottom:none;}
         <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:120px;overflow:hidden;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
       </div>
 
+      <!-- Containers Live Panel -->
+      <div class="panel">
+        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span style="display:flex;align-items:center;gap:6px">
+            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+            Containers
+            <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
+          </span>
+          <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">View All</button>
+        </div>
+        <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+          <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
+        </div>
+      </div>
+
       <!-- Network I/O Quick Stats -->
       <div class="panel">
         <div class="panel-title">
@@ -3470,6 +3489,78 @@ async function loadOverviewExtras() {
         setEl('ov-net-sent', fmtBytes(io.bytes_sent || 0));
         setEl('ov-net-recv', fmtBytes(io.bytes_recv || 0));
     } catch(e) {}
+    // Dashboard containers panel
+    loadDashboardContainers();
+}
+
+async function loadDashboardContainers() {
+    try {
+        const r = await fetch(API + '/api/containers');
+        const d = await r.json();
+        const ctrs = d.containers || [];
+        const running = ctrs.filter(c => c.status === 'running');
+        const stopped = ctrs.filter(c => c.status !== 'running');
+
+        const badge = document.getElementById('ov-ctr-badge');
+        if (badge) badge.textContent = running.length + ' / ' + ctrs.length;
+
+        const list = document.getElementById('ov-ctr-list');
+        if (!list) return;
+
+        if (!ctrs.length) {
+            list.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">No containers found</div>';
+            return;
+        }
+
+        const rows = [...running, ...stopped].map(c => {
+            const isRunning = c.status === 'running';
+            const statusColor = isRunning ? 'var(--green)' : (c.status === 'restarting' ? 'var(--orange)' : 'var(--red)');
+            const statusBg = isRunning ? 'var(--green2)' : (c.status === 'restarting' ? 'var(--orange2,#2d1f00)' : 'var(--red2)');
+            const icon = ctrIcon(c.name);
+            const ports = c.ports && c.ports.length ? c.ports.slice(0,3).join('  ') : '—';
+            const uptime = c.uptime || '—';
+            return `<div style="display:flex;align-items:center;gap:10px;background:var(--bg3);border-radius:8px;padding:8px 12px;opacity:${isRunning ? 1 : 0.55}">
+  <span style="font-size:18px;flex-shrink:0">${icon}</span>
+  <div style="flex:1;min-width:0;overflow:hidden">
+    <div style="font-size:13px;font-weight:600;color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</div>
+    <div style="font-size:10px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.image}</div>
+  </div>
+  <span style="flex-shrink:0;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:${statusBg};color:${statusColor}">${c.status}</span>
+  ${isRunning
+    ? `<div style="flex-shrink:0;font-size:11px;color:var(--text2);text-align:center;min-width:80px">
+        <div>CPU <b id="ov-cpu-${c.name}" style="color:var(--blue)">—</b></div>
+        <div>MEM <b id="ov-mem-${c.name}" style="color:var(--purple)">—</b></div>
+       </div>`
+    : `<div style="flex-shrink:0;font-size:11px;color:var(--text3);min-width:80px;text-align:center">up ${uptime}</div>`}
+  <div style="flex-shrink:0;font-size:10px;color:var(--text3);text-align:right;max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${ports}">${ports}</div>
+  <div style="flex-shrink:0;display:flex;gap:4px">
+    ${isRunning
+      ? `<button class="btn orange" style="padding:2px 7px;font-size:11px" title="Restart" onclick="ctrAction('${c.name}','restart')">↺</button>
+         <button class="btn red" style="padding:2px 7px;font-size:11px" title="Stop" onclick="ctrAction('${c.name}','stop')">■</button>`
+      : `<button class="btn green" style="padding:2px 7px;font-size:11px" title="Start" onclick="ctrAction('${c.name}','start')">▶</button>`}
+  </div>
+</div>`;
+        });
+        list.innerHTML = rows.join('');
+
+        // Fetch per-container stats for running ones
+        running.forEach(c => loadOvCtrStats(c.name));
+    } catch(e) {
+        const list = document.getElementById('ov-ctr-list');
+        if (list) list.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Docker not available</div>';
+    }
+}
+
+async function loadOvCtrStats(name) {
+    try {
+        const r = await fetch(API + `/api/container/${name}/stats`);
+        const d = await r.json();
+        if (d.error) return;
+        const cpuEl = document.getElementById('ov-cpu-' + name);
+        const memEl = document.getElementById('ov-mem-' + name);
+        if (cpuEl) cpuEl.textContent = d.cpu_pct + '%';
+        if (memEl) memEl.textContent = d.mem_usage_mb + ' MB';
+    } catch(e) {}
 }
 
 // ── Stack Actions ─────────────────────────────────────────────────────
@@ -3501,6 +3592,7 @@ setInterval(() => {
     if (currentTab === 'storage') loadStorage();
     else if (currentTab === 'network') loadNetwork();
     else if (currentTab === 'containers') loadContainers();
+    else if (currentTab === 'overview') loadDashboardContainers();
 }, 10000);
 
 // ── Boot ──────────────────────────────────────────────────────────────
@@ -3509,7 +3601,7 @@ loadOverview();
 loadContainers();
 loadWeather();
 loadDockerInfo();
-loadOverviewExtras();
+loadOverviewExtras();   // also calls loadDashboardContainers()
 startSSE();
 </script>
 </body>

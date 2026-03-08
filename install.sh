@@ -21,7 +21,7 @@ set -euo pipefail
 # ── GitHub source — update to match your fork ────────────────────────────────
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
-GITHUB_BRANCH="main"
+GITHUB_BRANCH="dev"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────

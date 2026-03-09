@@ -42,6 +42,11 @@
 curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/main/install.sh | sudo bash
 ```
 
+**To test the latest dev build:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/dev/install.sh | sudo bash
+```
+
 The installer downloads all files to `/opt/arrhub/`, **builds the WebUI image locally** from the downloaded Dockerfile, starts the container on port `9999`, and installs the `media` TUI alias.
 
 ---

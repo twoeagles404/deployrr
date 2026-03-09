@@ -1,7 +1,7 @@
 # 👻 ArrHub
 
 > A dead-simple, fully open-source homelab Docker deployment tool.
-> One `curl | sudo bash` install. Pure Bash TUI + real-time Flask WebUI. **103 apps across 17 categories.** MIT licensed.
+> One `curl | sudo bash` install. Pure Bash TUI + real-time Flask WebUI. **101 apps across 17 categories.** MIT licensed.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-3.5.0-blue)](https://github.com/twoeagles404/arrhub/releases)
@@ -12,7 +12,7 @@
 ## Features
 
 - **One-command install** — `curl -fsSL ... | sudo bash`, zero manual steps
-- **103 apps** across 17 categories — ARR Suite, Media Servers, Monitoring, Security, and more
+- **101 apps** across 17 categories — ARR Suite, Media Servers, Monitoring, Security, and more
 - **Pure Bash TUI** — run `media` to launch the interactive deployment wizard
 - **Flask WebUI** on port `:9999` — real-time SSE dashboard with dark UI
 - **Live monitoring** — CPU, RAM, load, network, storage via Server-Sent Events every 2s
@@ -67,7 +67,7 @@ docker run -e ARRHUB_TOKEN=your-secret-token ...
 
 ---
 
-## App Catalog — 103 Apps
+## App Catalog — 101 Apps
 
 ### 🎬 ARR Suite (12)
 | App | Description |
@@ -244,13 +244,30 @@ arrhub/
 ├── app.py               ← Flask WebUI (all HTML/CSS/JS embedded, served on :9999)
 ├── Dockerfile           ← Multi-stage build: docker CLI + python:3.12-slim
 ├── apps/
-│   └── catalog.json     ← Master app catalog (103 apps)
+│   └── catalog.json     ← Master app catalog (101 apps)
 └── README.md
 ```
 
 Each app deploys to its own compose file at `/docker/<appname>/docker-compose.yml`, keeping stacks isolated and independently manageable.
 
 **Adding a new app:** add an entry to `apps/catalog.json` with `id`, `name`, `category`, `image`, `ports`, `volumes`, `environment`, and optionally `description`.
+
+---
+
+## Local Development
+
+Run the WebUI locally without Docker for fast iteration:
+
+```bash
+pip3 install flask docker psutil flask-sock requests pyyaml gunicorn
+
+ARRHUB_DB=/tmp/arrhub-dev.db ARRHUB_NO_AUTH=true python3 app.py
+```
+
+Then open **http://localhost:9999** in your browser.
+
+> `ARRHUB_DB` points the SQLite database to `/tmp` so the app doesn't need `/data` to exist.
+> `ARRHUB_NO_AUTH=true` skips token authentication for local testing.
 
 ---
 

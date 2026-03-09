@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.5.0-dev · Full deployment, update management, and real-time monitoring
+Version: 3.5.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.5.0-dev"
+            "version": "3.5.0"
         }
     })
 
@@ -1410,124 +1410,92 @@ def api_docker_info():
 
 @app.route("/api/rss/feeds")
 def api_rss_feeds():
-    """Fetch RSS feeds with categories."""
-    global _rss_cache
+    """Return RSS feed categories and sources (no fetching — client fetches via /api/rss/fetch)."""
+    feeds = {
+        "World News": [
+            {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/world/rss.xml", "icon": "🇬🇧"},
+            {"name": "CNN Top Stories", "url": "http://rss.cnn.com/rss/edition.rss", "icon": "🇺🇸"},
+            {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "icon": "🌍"},
+            {"name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml", "icon": "🌐"},
+            {"name": "Reuters", "url": "https://feeds.reuters.com/reuters/topNews", "icon": "📰"},
+            {"name": "The Guardian", "url": "https://www.theguardian.com/world/rss", "icon": "🗞️"},
+        ],
+        "Technology": [
+            {"name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index", "icon": "💻"},
+            {"name": "The Verge", "url": "https://www.theverge.com/rss/index.xml", "icon": "⚡"},
+            {"name": "Hacker News", "url": "https://hnrss.org/frontpage", "icon": "🟠"},
+            {"name": "TechCrunch", "url": "https://techcrunch.com/feed/", "icon": "🚀"},
+            {"name": "Wired", "url": "https://www.wired.com/feed/rss", "icon": "🔌"},
+        ],
+        "Sports": [
+            {"name": "BBC Sport", "url": "http://feeds.bbci.co.uk/sport/rss.xml", "icon": "⚽"},
+            {"name": "Sky Sports", "url": "https://www.skysports.com/rss/12040", "icon": "🏆"},
+            {"name": "ESPN", "url": "https://www.espn.com/espn/rss/news", "icon": "🏈"},
+            {"name": "Goal.com", "url": "https://www.goal.com/feeds/en/news", "icon": "⚽"},
+            {"name": "Formula 1", "url": "https://www.formula1.com/content/fom-website/en/latest/all.xml", "icon": "🏎️"},
+        ],
+        "Science": [
+            {"name": "NASA", "url": "https://www.nasa.gov/rss/dyn/breaking_news.rss", "icon": "🚀"},
+            {"name": "New Scientist", "url": "https://www.newscientist.com/feed/home", "icon": "🔬"},
+            {"name": "Science Daily", "url": "https://www.sciencedaily.com/rss/all.xml", "icon": "🧪"},
+            {"name": "Nature", "url": "https://www.nature.com/nature.rss", "icon": "🌿"},
+        ],
+        "Entertainment": [
+            {"name": "Variety", "url": "https://variety.com/feed/", "icon": "🎬"},
+            {"name": "IGN", "url": "https://feeds.feedburner.com/ign/news", "icon": "🎮"},
+            {"name": "Rolling Stone", "url": "https://www.rollingstone.com/feed/", "icon": "🎵"},
+            {"name": "Pitchfork", "url": "https://pitchfork.com/rss/news/", "icon": "🎸"},
+        ],
+        "Business": [
+            {"name": "Financial Times", "url": "https://www.ft.com/rss/home", "icon": "💹"},
+            {"name": "Bloomberg", "url": "https://feeds.bloomberg.com/markets/news.rss", "icon": "📊"},
+            {"name": "Forbes", "url": "https://www.forbes.com/real-time/feed2/", "icon": "💰"},
+            {"name": "CNBC", "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html", "icon": "📈"},
+        ],
+        "YouTube": [
+            {"name": "Linus Tech Tips", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw", "icon": "▶️"},
+            {"name": "Fireship", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA", "icon": "🔥"},
+            {"name": "NetworkChuck", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC9x0AN7BWHpCDHSm9NiJFJQ", "icon": "🌐"},
+            {"name": "TechLinked", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCeeFfhMcJa1kjtfZAGskOCA", "icon": "🔗"},
+        ],
+    }
+    return jsonify({"categories": feeds})
 
+@app.route("/api/rss/fetch")
+def api_rss_fetch():
+    """Proxy-fetch and parse an RSS/Atom feed URL to avoid CORS."""
+    import xml.etree.ElementTree as ET
+    url = request.args.get("url", "")
+    if not url:
+        return jsonify({"error": "Missing url"}), 400
     try:
-        # Check cache
-        cache_key = "rss_feeds"
-        if cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < CACHE_RSS:
-            return jsonify(_rss_cache[cache_key]["data"])
-
-        feeds = {
-            "news": {
-                "Reuters": "https://www.reutersagency.com/feed/?taxonomy=best-topics&output=rss",
-                "AP News": "https://apnews.com/apf-services/v2/rss/hub?hub_id=top-news",
-                "BBC World": "http://feeds.bbc.co.uk/news/world/rss.xml",
-                "Al Jazeera": "https://www.aljazeera.com/xml/rss/all.xml",
-                "NPR": "https://feeds.npr.org/1001/rss.xml"
-            },
-            "tech": {
-                "Hacker News": "https://news.ycombinator.com/rss",
-                "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
-                "The Verge": "https://www.theverge.com/rss/index.xml",
-                "TechCrunch": "https://techcrunch.com/feed/",
-                "Wired": "https://www.wired.com/feed/rss"
-            },
-            "soccer": {
-                "BBC Sport Football": "http://feeds.bbc.co.uk/sport/football/rss.xml",
-                "ESPN FC": "https://www.espn.com/espn/rss/soccer/news",
-                "Guardian Football": "https://www.theguardian.com/football/rss",
-                "Sky Sports": "https://www.skysports.com/feeds/rss/football.xml"
-            },
-            "reddit": {
-                "r/selfhosted": "https://www.reddit.com/r/selfhosted/.rss",
-                "r/homelab": "https://www.reddit.com/r/homelab/.rss",
-                "r/docker": "https://www.reddit.com/r/docker/.rss",
-                "r/linux": "https://www.reddit.com/r/linux/.rss",
-                "r/datahoarder": "https://www.reddit.com/r/datahoarder/.rss"
-            },
-            "youtube": {
-                "Linus Tech Tips": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw",
-                "NetworkChuck": "https://www.youtube.com/feeds/videos.xml?channel_id=UC9x0AN7BWHpCDHSm9NiJFJQ",
-                "Jeff Geerling": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg",
-                "Techno Tim": "https://www.youtube.com/feeds/videos.xml?channel_id=UCOk-gHyjcWZNj3Br4oxwh0A",
-                "MKBHD": "https://www.youtube.com/feeds/videos.xml?channel_id=UCBJycsmduvYEL83R_U4JriQ",
-                "Fireship": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA",
-                "Level1Techs": "https://www.youtube.com/feeds/videos.xml?channel_id=UC4w1YQAJMWOz4qtxinq55LQ",
-                "Hardware Unboxed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCI8iQa1hv7oV_Z8D35vVuSg"
-            },
-            "linux": {
-                "OMG Ubuntu": "https://www.omgubuntu.co.uk/feed",
-                "Phoronix": "https://www.phoronix.com/rss.php",
-                "LWN.net": "https://lwn.net/headlines/newrss",
-                "It's FOSS": "https://itsfoss.com/feed/"
-            },
-            "gaming": {
-                "PC Gamer": "https://www.pcgamer.com/rss/",
-                "Kotaku": "https://kotaku.com/rss",
-                "Rock Paper Shotgun": "https://www.rockpapershotgun.com/feed",
-                "Eurogamer": "https://www.eurogamer.net/feed"
-            },
-            "science": {
-                "NASA": "https://www.nasa.gov/rss/dyn/breaking_news.rss",
-                "ScienceDaily": "https://www.sciencedaily.com/rss/all.xml",
-                "Phys.org": "https://phys.org/rss-feed/",
-                "Nature": "https://www.nature.com/nature.rss"
-            },
-            "crypto": {
-                "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
-                "Cointelegraph": "https://cointelegraph.com/rss",
-                "Bitcoin Magazine": "https://bitcoinmagazine.com/.rss/full/"
-            },
-            "entertainment": {
-                "Variety": "https://variety.com/feed/",
-                "The Hollywood Reporter": "https://www.hollywoodreporter.com/feed/",
-                "IGN": "https://feeds.feedburner.com/ign/all"
-            }
-        }
-
-        result = {"feeds": []}
-        for category, sources in feeds.items():
-            for source_name, url in sources.items():
-                try:
-                    resp = requests.get(url, timeout=5)
-                    root = ET.fromstring(resp.content)
-
-                    articles = []
-                    # Try RSS format first, then Atom (for YouTube)
-                    items = root.findall(".//item")
-                    if not items:
-                        items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
-
-                    for item in items:
-                        title_elem = item.find("title") or item.find("{http://www.w3.org/2005/Atom}title")
-                        link_elem = item.find("link") or item.find("{http://www.w3.org/2005/Atom}link")
-                        pubdate_elem = item.find("pubDate") or item.find("{http://www.w3.org/2005/Atom}published")
-
-                        link_text = ""
-                        if link_elem is not None:
-                            link_text = link_elem.text or link_elem.get("href", "#")
-
-                        if title_elem is not None and link_text:
-                            articles.append({
-                                "title": title_elem.text or "Untitled",
-                                "link": link_text,
-                                "pubdate": pubdate_elem.text if pubdate_elem is not None else ""
-                            })
-
-                    result["feeds"].append({
-                        "source": source_name,
-                        "category": category,
-                        "articles": articles[:5]
-                    })
-                except Exception:
-                    pass
-
-        _rss_cache[cache_key] = {"data": result, "ts": time.time()}
-        return jsonify(result)
+        import urllib.request
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.5; +https://github.com/twoeagles404/arrhub)"}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+        root = ET.fromstring(raw)
+        items = []
+        # RSS 2.0
+        ns = {"atom": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
+        for item in (root.findall(".//item") or root.findall("atom:entry", ns))[:20]:
+            title_el = item.find("title")
+            link_el  = item.find("link")
+            date_el  = item.find("pubDate") or item.find("updated") or item.find("dc:date")
+            title = title_el.text if title_el is not None else "Untitled"
+            link  = link_el.text  if link_el  is not None else "#"
+            # Atom feeds use link[href]
+            if not link or link == "#":
+                link_el2 = item.find("atom:link", ns)
+                if link_el2 is not None:
+                    link = link_el2.get("href", "#")
+            date = ""
+            if date_el is not None and date_el.text:
+                date = date_el.text[:16]
+            items.append({"title": title.strip(), "link": link.strip() if link else "#", "date": date})
+        return jsonify({"items": items})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "items": []}), 200
 
 @app.route("/api/rss")
 def api_rss():
@@ -2560,7 +2528,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.5.0-dev</div>
+      <div class="sb-version">v3.5.0</div>
     </div>
   </div>
 
@@ -3067,7 +3035,7 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.5.0-dev</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.5.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -3075,28 +3043,44 @@ body.sse-disconnected #app{padding-top:38px;}
 
     <!-- ── RSS FEEDS ── -->
     <div id="tab-rss" class="tab-panel">
+      <!-- RSS header with category tabs + view toggle -->
       <div class="section-header">
-        <div class="section-title">RSS Feeds</div>
-        <button class="btn-primary" onclick="loadRSSFeeds()">
-          <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-          Refresh
-        </button>
+        <div class="section-title">Live Feeds</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="view-btn active" id="rss-view-feeds" onclick="setRSSView('feeds')">📰 Feeds</button>
+          <button class="view-btn" id="rss-view-live" onclick="setRSSView('live')">📺 Live News</button>
+          <button class="btn-primary" onclick="loadRSSFeeds()">↺ Refresh</button>
+        </div>
       </div>
-      <div class="filter-row" id="rss-filters">
-        <div class="filter-pill active" onclick="filterRSS('all',this)">All</div>
-        <div class="filter-pill" onclick="filterRSS('news',this)">News</div>
-        <div class="filter-pill" onclick="filterRSS('tech',this)">Tech</div>
-        <div class="filter-pill" onclick="filterRSS('soccer',this)">Soccer</div>
-        <div class="filter-pill" onclick="filterRSS('reddit',this)">Reddit</div>
-        <div class="filter-pill" onclick="filterRSS('youtube',this)">YouTube</div>
-        <div class="filter-pill" onclick="filterRSS('linux',this)">Linux</div>
-        <div class="filter-pill" onclick="filterRSS('gaming',this)">Gaming</div>
-        <div class="filter-pill" onclick="filterRSS('science',this)">Science</div>
-        <div class="filter-pill" onclick="filterRSS('crypto',this)">Crypto</div>
-        <div class="filter-pill" onclick="filterRSS('entertainment',this)">Entertainment</div>
+
+      <!-- Category filter pills -->
+      <div class="filter-row" id="rss-cat-pills" style="flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+
+      <!-- Feeds view -->
+      <div id="rss-feeds-view">
+        <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px"></div>
       </div>
-      <div id="rss-grid" class="cat-grid">
-        <div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Click a category to load feeds...</div></div>
+
+      <!-- Live News iframes view -->
+      <div id="rss-live-view" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="panel">
+            <div class="panel-title">🇬🇧 BBC News Live</div>
+            <iframe src="https://www.bbc.com/news" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🌍 Al Jazeera Live</div>
+            <iframe src="https://www.aljazeera.com" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🏆 Sky Sports</div>
+            <iframe src="https://www.skysports.com" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">📊 Bloomberg Markets</div>
+            <iframe src="https://www.bloomberg.com/markets" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -3524,6 +3508,11 @@ function renderContainers() {
         if(a.status!=='running' && b.status==='running') return 1;
         return a.name.localeCompare(b.name);
     });
+    // Destroy old Chart.js instances to avoid canvas reuse errors
+    Object.keys(_ctrCharts).forEach(n => {
+        try { _ctrCharts[n].cpu.destroy(); _ctrCharts[n].mem.destroy(); } catch(e) {}
+        delete _ctrCharts[n];
+    });
     grid.innerHTML = ctrs.map(c => {
         const sc = statusClass(c.status);
         const icon = ctrIcon(c.name);
@@ -3550,30 +3539,24 @@ function renderContainers() {
     <div class="ctr-row"><span>ID</span><span>${c.id}</span></div>
     <div class="ctr-row"><span>Ports</span><span class="ctr-ports">${ports}</span></div>
   </div>
-  <div class="ctr-stats" style="display:flex;gap:16px;justify-content:center;padding:8px 0">
+  <div class="ctr-stats" style="display:flex;gap:16px;justify-content:center;padding:8px 14px;align-items:flex-start">
     <div style="text-align:center">
-      <svg width="48" height="48" viewBox="0 0 48 48">
-        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--border)" stroke-width="4"/>
-        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--blue)" stroke-width="4"
-          stroke-dasharray="113.1" stroke-dashoffset="113.1"
-          id="donut-cpu-${c.name}" transform="rotate(-90 24 24)" stroke-linecap="round"/>
-        <text x="24" y="26" text-anchor="middle" fill="var(--text2)" font-size="9" font-family="var(--mono)" id="stat-cpu-${c.name}">—</text>
-      </svg>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">CPU</div>
-    </div>
-    <div style="text-align:center;flex:1">
-      <svg width="48" height="48" viewBox="0 0 48 48">
-        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--border)" stroke-width="4"/>
-        <circle cx="24" cy="24" r="18" fill="none" stroke="var(--purple)" stroke-width="4"
-          stroke-dasharray="113.1" stroke-dashoffset="113.1"
-          id="donut-mem-${c.name}" transform="rotate(-90 24 24)" stroke-linecap="round"/>
-        <text x="24" y="26" text-anchor="middle" fill="var(--text2)" font-size="9" font-family="var(--mono)" id="stat-mem-${c.name}">—</text>
-      </svg>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">MEM</div>
-      <!-- 6. Horizontal memory bar -->
-      <div class="mem-bar-wrap" style="margin-top:4px;width:80px;margin-left:auto;margin-right:auto">
-        <div class="mem-bar" id="mem-bar-${c.name}" style="width:0%;background:var(--green)"></div>
+      <div style="position:relative;width:80px;height:80px;filter:drop-shadow(0 0 6px rgba(63,185,80,0.3))">
+        <canvas id="donut-cpu-${c.name}" width="80" height="80"></canvas>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
+          <span id="stat-cpu-${c.name}" style="font-size:13px;font-weight:700;color:#fff;font-family:var(--mono)">—</span>
+        </div>
       </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:4px">CPU</div>
+    </div>
+    <div style="text-align:center">
+      <div style="position:relative;width:80px;height:80px">
+        <canvas id="donut-mem-${c.name}" width="80" height="80"></canvas>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
+          <span id="stat-mem-${c.name}" style="font-size:13px;font-weight:700;color:#fff;font-family:var(--mono)">—</span>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:4px">MEM</div>
     </div>
   </div>
   <div class="ctr-footer">
@@ -3589,8 +3572,8 @@ function renderContainers() {
 </div>`;
     }).join('');
 
-    // Load stats for running containers (also updates mem bar)
-    ctrs.filter(c=>c.status==='running').forEach(c => loadCtrStats(c.name));
+    // Load stats for running containers — force=true bypasses throttle on first render
+    ctrs.filter(c=>c.status==='running').forEach(c => loadCtrStats(c.name, true));
     // If table is visible, sync it
     if (ctrViewMode === 'table') renderContainerTable();
 }
@@ -3627,7 +3610,80 @@ async function updateContainer(name) {
     } catch(e) { showToast('Update request failed', 'error'); }
 }
 
-async function loadCtrStats(name) {
+// ── Container Chart.js donut registry ────────────────────────────────
+const _ctrCharts = {};   // name -> {cpu: Chart, mem: Chart}
+
+function _getCtrChartColor(pct, isCPU) {
+    if (pct >= 80) return '#f85149';
+    if (pct >= 50) return '#d29922';
+    return isCPU ? '#3fb950' : '#a371f7';
+}
+
+function _ensureCtrCharts(name) {
+    if (_ctrCharts[name]) return _ctrCharts[name];
+    const cpuCanvas = document.getElementById('donut-cpu-' + name);
+    const memCanvas = document.getElementById('donut-mem-' + name);
+    if (!cpuCanvas || !memCanvas) return null;
+
+    const makeChart = (canvas, initColor) => new Chart(canvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            datasets: [{
+                data: [0, 100],
+                backgroundColor: [initColor, '#21262d'],
+                borderWidth: 0,
+                hoverOffset: 0,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            responsive: false,
+            cutout: '72%',
+            animation: { duration: 400 },
+            plugins: { legend: { display: false }, tooltip: { enabled: false } }
+        }
+    });
+
+    const charts = {
+        cpu: makeChart(cpuCanvas, '#3fb950'),
+        mem: makeChart(memCanvas, '#a371f7')
+    };
+    _ctrCharts[name] = charts;
+    return charts;
+}
+
+function _updateCtrChart(name, cpuPct, memPct) {
+    const charts = _ensureCtrCharts(name);
+    if (!charts) return;
+    const cpu = Math.min(Math.max(cpuPct, 0), 100);
+    const mem = Math.min(Math.max(memPct, 0), 100);
+    const cpuColor = _getCtrChartColor(cpu, true);
+    const memColor = _getCtrChartColor(mem, false);
+
+    charts.cpu.data.datasets[0].data = [cpu, 100 - cpu];
+    charts.cpu.data.datasets[0].backgroundColor[0] = cpuColor;
+    charts.cpu.update('none');
+
+    charts.mem.data.datasets[0].data = [mem, 100 - mem];
+    charts.mem.data.datasets[0].backgroundColor[0] = memColor;
+    charts.mem.update('none');
+
+    const cpuEl = document.getElementById('stat-cpu-' + name);
+    const memEl = document.getElementById('stat-mem-' + name);
+    if (cpuEl) { cpuEl.textContent = cpu + '%'; cpuEl.style.color = cpuColor; }
+    if (memEl) { memEl.textContent = mem + '%'; memEl.style.color = memColor; }
+}
+
+// ── Smarter stats refresh ─────────────────────────────────────────────
+const _lastStatsFetch = {};   // name -> performance.now() timestamp
+
+async function loadCtrStats(name, force) {
+    const now = performance.now();
+    const last = _lastStatsFetch[name] || 0;
+    const isContainersTab = currentTab === 'containers';
+    const minInterval = isContainersTab ? 8000 : 30000;
+    if (!force && (now - last) < minInterval) return;
+    _lastStatsFetch[name] = now;
     try {
         const r = await fetch(API + `/api/container/${name}/stats`);
         const d = await r.json();
@@ -3636,28 +3692,8 @@ async function loadCtrStats(name) {
         // Cache for table view
         ctrStatsCache[name] = d;
 
-        const cpuEl = document.getElementById('stat-cpu-' + name);
-        const memEl = document.getElementById('stat-mem-' + name);
-        const cpuDonut = document.getElementById('donut-cpu-' + name);
-        const memDonut = document.getElementById('donut-mem-' + name);
-        const memBar  = document.getElementById('mem-bar-' + name);
-        const circumference = 113.1;
-        if (cpuEl) cpuEl.textContent = d.cpu_pct + '%';
-        if (memEl) memEl.textContent = d.mem_usage_mb + ' MB';
-        if (cpuDonut) {
-            cpuDonut.style.strokeDashoffset = circumference - (Math.min(d.cpu_pct,100)/100)*circumference;
-            cpuDonut.style.stroke = d.cpu_pct < 50 ? 'var(--blue)' : d.cpu_pct < 80 ? 'var(--orange)' : 'var(--red)';
-        }
-        if (memDonut) {
-            memDonut.style.strokeDashoffset = circumference - (Math.min(d.mem_pct,100)/100)*circumference;
-            memDonut.style.stroke = d.mem_pct < 50 ? 'var(--purple)' : d.mem_pct < 80 ? 'var(--orange)' : 'var(--red)';
-        }
-        // 6. Horizontal memory bar
-        if (memBar) {
-            const pct = Math.min(d.mem_pct, 100);
-            memBar.style.width = pct + '%';
-            memBar.style.background = pct < 60 ? 'var(--green)' : pct < 80 ? 'var(--yellow)' : 'var(--red)';
-        }
+        // Update Chart.js donuts + center text with color
+        _updateCtrChart(name, d.cpu_pct, d.mem_pct);
     } catch(e) {}
 }
 
@@ -4389,12 +4425,24 @@ function toggleLogsAutoRefresh(btn) {
 }
 
 // ── Polling ───────────────────────────────────────────────────────────
+// Active containers tab: refresh full list every 8s
+setInterval(() => {
+    if (currentTab === 'containers') loadContainers();
+}, 8000);
+
+// Slower polls for other tabs
 setInterval(() => {
     if (currentTab === 'storage') loadStorage();
     else if (currentTab === 'network') loadNetwork();
-    else if (currentTab === 'containers') loadContainers();
     else if (currentTab === 'overview') loadDashboardContainers();
 }, 10000);
+
+// Background stats refresh for running containers (every 30s when NOT on containers tab)
+setInterval(() => {
+    if (currentTab !== 'containers') {
+        allContainers.filter(c => c.status === 'running').forEach(c => loadCtrStats(c.name, false));
+    }
+}, 30000);
 
 // ── Boot ──────────────────────────────────────────────────────────────
 initGauges();

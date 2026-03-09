@@ -21,7 +21,7 @@ set -euo pipefail
 # ── GitHub source — update to match your fork ────────────────────────────────
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
-GITHUB_BRANCH="main"
+GITHUB_BRANCH="dev"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ hdr() {
     printf "${C}${B}            ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ${N}\n"
     printf "\n"
     printf "${G}${B}                             v${VERSION}${N}\n"
-    printf "${C}                        110+ apps · Pure Bash · MIT License${N}\n"
+    printf "${C}                        101 apps · Pure Bash · MIT License${N}\n"
     printf "\n"
     printf "${C}${B}%s${N}\n" "$(printf '═%.0s' {1..64})"
     echo

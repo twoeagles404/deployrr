@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# ArrHub — Master Installer v3.5.0-dev
+# ArrHub — Master Installer v3.5.0
 # =============================================================================
 #
 # ONE-COMMAND INSTALL:
@@ -21,11 +21,11 @@ set -euo pipefail
 # ── GitHub source — update to match your fork ────────────────────────────────
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
-GITHUB_BRANCH="dev"
+GITHUB_BRANCH="main"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="3.5.0-dev"
+VERSION="3.5.0"
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Install paths ─────────────────────────────────────────────────────────────

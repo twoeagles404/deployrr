@@ -2708,6 +2708,17 @@ body.sse-disconnected #app{padding-top:38px;}
   0%{background-position:-400px 0;}
   100%{background-position:400px 0;}
 }
+/* ── RSS collapsible columns ── */
+.rss-col.collapsed .rss-items{display:none;}
+.rss-col.collapsed .rss-feed-tabs{margin-bottom:0;}
+.rss-col-hdr{cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;}
+.rss-col-hdr:hover .rss-col-chevron{color:var(--blue);}
+.rss-col-chevron{font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px;transition:color var(--transition);}
+.rss-col-count{background:var(--surface2);border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;}
+/* Expand/collapse all controls */
+#rss-all-controls{display:none;}
+#rss-all-controls.visible{display:flex;}
+
 .skeleton{
   background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
   background-size:800px 100%;
@@ -3492,6 +3503,10 @@ body.sse-disconnected #app{padding-top:38px;}
         <div style="display:flex;gap:8px;align-items:center">
           <button class="view-btn active" id="rss-view-feeds" onclick="setRSSView('feeds')">📰 Feeds</button>
           <button class="view-btn" id="rss-view-live" onclick="setRSSView('live')">📺 Live News</button>
+          <div id="rss-all-controls" style="gap:6px;align-items:center">
+            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssExpandAll()">⊞ Expand All</button>
+            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssCollapseAll()">⊟ Collapse All</button>
+          </div>
           <button class="btn-primary" onclick="loadRSSFeeds()">↺ Refresh</button>
         </div>
       </div>
@@ -4836,32 +4851,78 @@ async function renderRSSFeeds(cats) {
     const content = document.getElementById('rss-content');
     if (!content) return;
 
-    const toLoad = rssCatFilter === 'All'
+    const isAll = rssCatFilter === 'All';
+    const toLoad = isAll
         ? Object.entries(cats)
         : Object.entries(cats).filter(([k]) => k === rssCatFilter);
 
-    // Each category gets a column with source tabs and rich card items below
-    content.innerHTML = toLoad.map(([cat, feeds]) => `
-        <div class="panel rss-col" id="rss-col-${cat.replace(/\s/g,'_')}">
-          <div class="panel-title" style="font-size:13px;font-weight:700">
-            ${feeds[0]&&feeds[0].icon ? feeds[0].icon : '📰'} ${cat}
+    // Show/hide Expand All / Collapse All controls
+    const allCtrl = document.getElementById('rss-all-controls');
+    if (allCtrl) allCtrl.classList.toggle('visible', isAll);
+
+    // Each category: collapsible in "All" view, always open in single-cat view
+    content.innerHTML = toLoad.map(([cat, feeds]) => {
+        const catId = cat.replace(/\s/g,'_');
+        return `
+        <div class="panel rss-col${isAll ? ' collapsed' : ''}" id="rss-col-${catId}">
+          <div class="panel-title rss-col-hdr" onclick="toggleRssCol('${catId}')">
+            <span style="font-size:13px;font-weight:700">${feeds[0]&&feeds[0].icon ? feeds[0].icon : '📰'} ${cat}</span>
+            <span class="rss-col-chevron" id="rss-chev-${catId}">
+              <span class="rss-col-count" id="rss-count-${catId}">${feeds.length} source${feeds.length!==1?'s':''}</span>
+              ${isAll ? '▶' : '▼'}
+            </span>
           </div>
-          <div class="rss-feed-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">
+          <div class="rss-feed-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px;margin-top:6px">
             ${feeds.map((f,i) => `<button class="filter-pill${i===0?' active':''}" style="font-size:10px;padding:2px 8px"
-                onclick="loadFeedItems('${cat.replace(/\s/g,'_')}','${encodeURIComponent(f.url)}','${encodeURIComponent(f.name)}',this)">${f.icon} ${f.name}</button>`).join('')}
+                onclick="rssTabClick('${catId}','${encodeURIComponent(f.url)}','${encodeURIComponent(f.name)}',this)">${f.icon} ${f.name}</button>`).join('')}
           </div>
-          <div class="rss-items" id="rss-items-${cat.replace(/\s/g,'_')}">
+          <div class="rss-items" id="rss-items-${catId}">
             <div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>
             <div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>
             <div class="skeleton" style="height:80px;border-radius:var(--r)"></div>
           </div>
-        </div>`).join('');
+        </div>`;
+    }).join('');
 
-    // Load first feed for each visible category in parallel
+    // Load first feed for each category in parallel
     await Promise.all(toLoad.map(([cat, feeds]) => {
         if (feeds.length > 0)
             return loadFeedItems(cat.replace(/\s/g,'_'), encodeURIComponent(feeds[0].url), encodeURIComponent(feeds[0].name), null);
     }));
+}
+
+// Toggle a single category column open/closed
+function toggleRssCol(catId) {
+    const col  = document.getElementById('rss-col-' + catId);
+    const chev = document.getElementById('rss-chev-' + catId);
+    if (!col) return;
+    const nowCollapsed = col.classList.toggle('collapsed');
+    if (chev) {
+        const countEl = document.getElementById('rss-count-' + catId);
+        const countTxt = countEl ? countEl.outerHTML : '';
+        chev.innerHTML = countTxt + (nowCollapsed ? ' ▶' : ' ▼');
+    }
+}
+
+// Source-tab click: auto-expands the column then loads items
+function rssTabClick(catId, encodedUrl, encodedName, btnEl) {
+    const col = document.getElementById('rss-col-' + catId);
+    if (col && col.classList.contains('collapsed')) toggleRssCol(catId);
+    loadFeedItems(catId, encodedUrl, encodedName, btnEl);
+}
+
+// Expand / collapse all columns at once
+function rssExpandAll() {
+    document.querySelectorAll('#rss-content .rss-col').forEach(col => {
+        const catId = col.id.replace('rss-col-', '');
+        if (col.classList.contains('collapsed')) toggleRssCol(catId);
+    });
+}
+function rssCollapseAll() {
+    document.querySelectorAll('#rss-content .rss-col').forEach(col => {
+        const catId = col.id.replace('rss-col-', '');
+        if (!col.classList.contains('collapsed')) toggleRssCol(catId);
+    });
 }
 
 async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
@@ -4885,6 +4946,7 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
 
         if (!items.length) {
             itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No items found</div>';
+            _rssUpdateCount(catId, 0);
             return;
         }
 
@@ -4907,9 +4969,19 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
                 <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
               </div>
             </a>`).join('');
+
+        // Update chevron badge with article count
+        _rssUpdateCount(catId, items.length);
     } catch(e) {
         itemsEl.innerHTML = '<div style="color:var(--red);font-size:11px;padding:8px">Failed to load feed</div>';
     }
+}
+
+// Update the item-count badge in the column chevron
+function _rssUpdateCount(catId, n) {
+    const countEl = document.getElementById('rss-count-' + catId);
+    if (!countEl) return;
+    countEl.textContent = n > 0 ? `${n} article${n!==1?'s':''}` : 'no articles';
 }
 
 // ══════════════════════════════════════════════════════════════════════

@@ -685,6 +685,13 @@ add_service_seerr() {
 
 add_service_arrhub_webui() {
     local id="${1:-arrhub_webui}"
+
+    # Skip entirely if the container is already running — prevents double-install
+    if docker ps --filter "name=^${id}$" --filter "status=running" -q 2>/dev/null | grep -q .; then
+        log INFO "${id} is already running — skipping re-install"
+        return 0
+    fi
+
     local f; f="$(app_compose "${id}")"
     local webui_dir="${SCRIPT_DIR}/arrhub-webui"
 

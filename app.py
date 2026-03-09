@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.6.0 · Full deployment, update management, and real-time monitoring
+Version: 3.7.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.6.0"
+            "version": "3.7.0"
         }
     })
 
@@ -1230,6 +1230,30 @@ def api_stack_down(name):
             "stopped": stopped,
             "errors": errors
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/stack/<name>/pull", methods=["POST"])
+def api_stack_pull(name):
+    """Pull latest images for a stack without restarting it."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+    config_dir = _db_get("config_dir", "/docker")
+    compose_path = os.path.join(config_dir, name, "docker-compose.yml")
+    if not os.path.isfile(compose_path):
+        return jsonify({"error": f"Compose file not found: {compose_path}"}), 404
+    try:
+        result = subprocess.run(
+            [_DOCKER_BIN, "compose", "-f", compose_path, "pull"],
+            capture_output=True, text=True, timeout=300
+        )
+        return jsonify({
+            "status": "ok" if result.returncode == 0 else "error",
+            "stdout": result.stdout[-3000:],
+            "stderr": result.stderr[-2000:]
+        })
+    except FileNotFoundError:
+        return jsonify({"error": "docker CLI not found"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2140,6 +2164,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
   --cyan:     #39d353;
   --sb-w:     260px;
   --top-h:    56px;
+  --ctr-card-min: 280px;
   --r:        8px;
   --mono:     'JetBrains Mono',monospace;
   --ui:       'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
@@ -2368,7 +2393,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .metric-badge{font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600;}
 
 /* ── Container grid ── */
-.container-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;}
+.container-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--ctr-card-min,280px),1fr));gap:14px;}
 .ctr-card{
   background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
   overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition);
@@ -2645,6 +2670,47 @@ body.sse-disconnected #app{padding-top:38px;}
 #hamburger:hover{background:var(--surface2);color:var(--text);}
 #hamburger svg{width:20px;height:20px;}
 
+/* ── Desktop sidebar collapse toggle ── */
+#sb-collapse-btn{
+  display:flex;background:none;border:none;color:var(--text2);cursor:pointer;
+  padding:4px 6px;border-radius:6px;align-items:center;justify-content:center;flex-shrink:0;
+}
+#sb-collapse-btn:hover{background:var(--surface2);color:var(--text);}
+#sb-collapse-btn svg{width:18px;height:18px;}
+@media(max-width:900px){#sb-collapse-btn{display:none;}}
+
+/* Collapsed sidebar state */
+#app.sb-collapsed #sidebar{width:60px;min-width:60px;}
+#app.sb-collapsed .sb-title,#app.sb-collapsed .sb-version,
+#app.sb-collapsed .sb-section-label,#app.sb-collapsed .sb-badge{display:none!important;}
+#app.sb-collapsed .sb-item{justify-content:center;padding:8px 0;}
+#app.sb-collapsed .sb-item>span:not(.sb-icon){display:none;}
+#app.sb-collapsed .sb-brand{justify-content:center;padding:12px 0;}
+#app.sb-collapsed .sb-logo{margin:0;}
+#app.sb-collapsed #sidebar .sb-section{padding:6px 4px;}
+
+/* Card size slider */
+.ctr-size-slider{accent-color:var(--blue);width:80px;cursor:pointer;vertical-align:middle;}
+
+/* Port map accordion */
+.pm-group{border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:8px;}
+.pm-group-hdr{
+  display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;
+  background:var(--bg2);transition:background var(--transition);user-select:none;
+}
+.pm-group-hdr:hover{background:var(--surface);}
+.pm-group-body{border-top:1px solid var(--border);}
+.pm-group-body table{width:100%;border-collapse:collapse;}
+.pm-group-chevron{margin-left:auto;transition:transform .2s;font-size:10px;color:var(--text3);}
+.pm-group.collapsed .pm-group-chevron{transform:rotate(-90deg);}
+.pm-group.collapsed .pm-group-body{display:none;}
+
+/* Stack manager cards */
+.stack-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:10px;}
+.stack-card-hdr{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.stack-card-name{font-weight:600;font-size:14px;flex:1;}
+.stack-card-actions{display:flex;gap:6px;flex-wrap:wrap;}
+
 /* Mobile bottom nav — hidden on desktop */
 #bottom-nav{
   display:none;
@@ -2859,7 +2925,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.6.0</div>
+      <div class="sb-version">v3.7.0</div>
     </div>
   </div>
 
@@ -2963,6 +3029,10 @@ body.sse-disconnected #app{padding-top:38px;}
     <!-- Hamburger for mobile -->
     <button id="hamburger" onclick="toggleSidebar()" aria-label="Menu">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <!-- Sidebar collapse for desktop -->
+    <button id="sb-collapse-btn" onclick="toggleSidebarDesktop()" aria-label="Collapse sidebar" title="Collapse sidebar">
+      <svg id="sb-collapse-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/></svg>
     </button>
     <div class="tb-stat">
       <span class="tb-stat-label">Containers</span>
@@ -3235,6 +3305,11 @@ body.sse-disconnected #app{padding-top:38px;}
               Table
             </button>
           </div>
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)">
+            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"/></svg>
+            Size
+            <input type="range" class="ctr-size-slider" id="ctr-size-range" min="200" max="500" value="280" oninput="setCtrCardSize(this.value)">
+          </label>
           <button class="btn-primary" onclick="loadContainers()">
             <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Refresh
@@ -3276,18 +3351,28 @@ body.sse-disconnected #app{padding-top:38px;}
     <!-- ── STORAGE ── -->
     <div id="tab-storage" class="tab-panel">
       <div class="section-header"><div class="section-title">Storage</div></div>
-      <div class="panel">
-        <div class="panel-title">Filesystems</div>
-        <div id="disk-list"></div>
-      </div>
+      <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-bottom:0"></div>
     </div>
 
     <!-- ── NETWORK ── -->
     <div id="tab-network" class="tab-panel">
       <div class="section-header"><div class="section-title">Network</div></div>
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-title">Live Bandwidth</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">↑ TX Rate (Upload)</div>
+            <canvas id="net-tx-chart" height="100"></canvas>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">↓ RX Rate (Download)</div>
+            <canvas id="net-rx-chart" height="100"></canvas>
+          </div>
+        </div>
+      </div>
       <div class="panel">
         <div class="panel-title">Interfaces</div>
-        <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Status</th></tr></thead>
+        <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Rate ↑/↓</th><th>Status</th></tr></thead>
         <tbody id="net-table"></tbody></table>
       </div>
     </div>
@@ -3296,25 +3381,14 @@ body.sse-disconnected #app{padding-top:38px;}
     <div id="tab-ports" class="tab-panel">
       <div class="section-header">
         <div class="section-title">Port Assignments</div>
-        <button class="btn-primary" onclick="loadPortMap()">Refresh</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn" onclick="pmExpandAll()">⊞ All</button>
+          <button class="btn" onclick="pmCollapseAll()">⊟ All</button>
+          <button class="btn-primary" onclick="loadPortMap()">↺ Refresh</button>
+        </div>
       </div>
       <div id="port-summary" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap"></div>
-      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
-        <table style="width:100%;border-collapse:collapse">
-          <thead>
-            <tr style="background:rgba(88,166,255,0.08);border-bottom:1px solid var(--border)">
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Host Port</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Container</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Container Port</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Status</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Quick Link</th>
-            </tr>
-          </thead>
-          <tbody id="port-table-body">
-            <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Click Refresh to load port assignments</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <div id="port-accordion"><div class="empty"><div class="empty-icon">🔌</div><div class="empty-text">Click Refresh to load port assignments</div></div></div>
     </div>
 
     <!-- ── HARDWARE ── -->
@@ -3374,12 +3448,12 @@ body.sse-disconnected #app{padding-top:38px;}
 
     <!-- ── STACK ── -->
     <div id="tab-stack" class="tab-panel">
-      <div class="section-header"><div class="section-title">Stack Manager</div></div>
-      <div class="panel">
-        <div class="panel-title">Compose Stacks</div>
-        <div id="stacks-list"><div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Loading stacks...</div></div></div>
+      <div class="section-header">
+        <div class="section-title">Stack Manager</div>
+        <button class="btn-primary" onclick="loadStackManager()">↺ Refresh</button>
       </div>
-      <div class="panel">
+      <div id="stacks-list"><div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Loading stacks...</div></div></div>
+      <div class="panel" style="margin-top:16px">
         <div class="panel-title">Deploy History</div>
         <div id="deploy-history"></div>
       </div>
@@ -3470,8 +3544,8 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- Background image -->
         <div class="field" style="margin-top:14px">
           <label>Background Image URL</label>
-          <input type="text" id="bg-url-input" placeholder="https://example.com/wallpaper.jpg or leave blank">
-          <div class="field-hint">Paste any image URL. Leave blank for solid background color.</div>
+          <input type="text" id="bg-url-input" placeholder="https://example.com/wallpaper.jpg or https://unsplash.com/photos/...">
+          <div class="field-hint">Paste any image URL or an Unsplash photo page URL. Leave blank for solid color.</div>
         </div>
         <div class="field">
           <label>Blur: <span id="bg-blur-val">4</span>px</label>
@@ -3489,7 +3563,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.6.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.7.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -3524,7 +3598,7 @@ body.sse-disconnected #app{padding-top:38px;}
            YouTube live streams are used instead — these are the official 24/7 streams for each channel. -->
       <div id="rss-live-view" style="display:none">
         <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-          📺 Live streams via YouTube — official 24/7 channels
+          📺 Live streams via YouTube — official 24/7 channels. Free & ad-supported.
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(480px,1fr));gap:12px">
           <div class="panel">
@@ -3550,6 +3624,30 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="panel">
             <div class="panel-title">🇫🇷 France 24 English</div>
             <iframe src="https://www.youtube.com/embed/live_stream?channel=UCQfwfsi5VrQ8yKZ-UGuIzgA&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🇺🇸 ABC News Live</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCBi2mrWuNuyYy4gbM6fU18Q&list=PLB7CF74B8AD4B4D6E&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">📡 Euronews English</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCg4nqEVXwDPGFSa8IISP9_A&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🌏 NHK World</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCfQem_4hQYrDL4FjMnD5v3g&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🇷🇺 RT International</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCpwvZwUam-URkxB7g4USKpg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🎵 Lofi Girl — Study</div>
+            <iframe src="https://www.youtube.com/embed/jfKfPfyJRdk?autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🌿 Nature & Relax — 8K</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCiyZqDEhm2Jbj-Sg-JQMuSg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
         </div>
       </div>
@@ -3680,6 +3778,51 @@ function closeSidebar() {
     if (sb) sb.classList.remove('sidebar-open');
     if (ov) ov.classList.remove('visible');
 }
+
+// ── Desktop sidebar collapse ─────────────────────────────────────────
+function toggleSidebarDesktop() {
+    const app = document.getElementById('app');
+    const collapsed = app.classList.toggle('sb-collapsed');
+    localStorage.setItem('arrhub_sb_collapsed', collapsed ? '1' : '0');
+    const icon = document.getElementById('sb-collapse-icon');
+    if (icon) {
+        const p = icon.querySelector('path');
+        if (p) p.setAttribute('d', collapsed
+            ? 'M13 5l7 7-7 7M5 5l7 7-7 7'   // expand arrows →→
+            : 'M11 19l-7-7 7-7m8 14l-7-7 7-7'); // collapse arrows ←←
+    }
+    const btn = document.getElementById('sb-collapse-btn');
+    if (btn) btn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+}
+// Restore sidebar collapse state on load
+(function _restoreSbCollapse() {
+    if (localStorage.getItem('arrhub_sb_collapsed') === '1') {
+        const app = document.getElementById('app');
+        if (app) app.classList.add('sb-collapsed');
+        const icon = document.getElementById('sb-collapse-icon');
+        if (icon) {
+            const p = icon.querySelector('path');
+            if (p) p.setAttribute('d', 'M13 5l7 7-7 7M5 5l7 7-7 7');
+        }
+        const btn = document.getElementById('sb-collapse-btn');
+        if (btn) btn.title = 'Expand sidebar';
+    }
+})();
+
+// ── Container card size slider ───────────────────────────────────────
+function setCtrCardSize(val) {
+    document.documentElement.style.setProperty('--ctr-card-min', val + 'px');
+    localStorage.setItem('arrhub_ctr_card_min', val);
+}
+// Restore card size on load
+(function _restoreCtrCardSize() {
+    const saved = localStorage.getItem('arrhub_ctr_card_min');
+    if (saved) {
+        document.documentElement.style.setProperty('--ctr-card-min', saved + 'px');
+        const r = document.getElementById('ctr-size-range');
+        if (r) r.value = saved;
+    }
+})();
 
 // ── Time ─────────────────────────────────────────────────────────────
 function updateTime() {
@@ -3982,8 +4125,9 @@ function statusClass(status) {
 // ══════════════════════════════════════════════════════════════════════
 function setCtrView(mode) {
     ctrViewMode = mode;
-    document.getElementById('ctr-grid').style.display = mode === 'grid' ? '' : 'none';
-    document.getElementById('ctr-table-wrap').style.display = mode === 'table' ? '' : 'none';
+    // Use explicit display values — '' would inherit the CSS display:none default
+    document.getElementById('ctr-grid').style.display = mode === 'grid' ? 'grid' : 'none';
+    document.getElementById('ctr-table-wrap').style.display = mode === 'table' ? 'block' : 'none';
     document.getElementById('btn-grid-view').classList.toggle('active', mode === 'grid');
     document.getElementById('btn-table-view').classList.toggle('active', mode === 'table');
     if (mode === 'table') renderContainerTable();
@@ -4369,98 +4513,238 @@ document.getElementById('log-modal').addEventListener('click', function(e) {
 });
 
 // ── Storage ───────────────────────────────────────────────────────────
+// Storage pie chart registry
+const _diskCharts = {};
+
 async function loadStorage() {
     try {
         const r = await fetch(API + '/api/storage');
         const d = await r.json();
         const el = document.getElementById('disk-list');
-        if (!d.filesystems) { el.innerHTML = '<div class="empty-text">No data</div>'; return; }
-        el.innerHTML = d.filesystems.map(fs => {
-            const pct = fs.percent || 0;
-            const color = pct < 70 ? 'green' : pct < 90 ? 'orange' : 'red';
-            return `<div class="disk-item">
-              <div class="disk-header">
-                <span class="disk-path">${fs.mountpoint || fs.device}</span>
-                <span class="disk-usage">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)} (${pct}%)</span>
-              </div>
-              <div class="pbar-wrap"><div class="pbar ${color}" style="width:${pct}%"></div></div>
-            </div>`;
-        }).join('');
+        if (!d.filesystems || !d.filesystems.length) {
+            el.innerHTML = '<div class="empty"><div class="empty-icon">💾</div><div class="empty-text">No filesystem data</div></div>';
+            return;
+        }
+        d.filesystems.forEach(fs => {
+            const pct = Math.round(fs.percent || 0);
+            const mount = fs.mountpoint || fs.device;
+            const safeId = 'disk-' + mount.replace(/[^a-zA-Z0-9]/g, '_');
+            const clr = pct < 70 ? '#3fb950' : pct < 90 ? '#e3b341' : '#f85149';
+            const clrFree = 'rgba(255,255,255,0.06)';
+
+            // Create card if it doesn't exist
+            if (!document.getElementById(safeId)) {
+                const card = document.createElement('div');
+                card.id = safeId;
+                card.className = 'panel';
+                card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;';
+                card.innerHTML = `
+                  <canvas id="c-${safeId}" width="130" height="130"></canvas>
+                  <div style="font-size:12px;font-weight:600;color:var(--text);text-align:center;word-break:break-all">${mount}</div>
+                  <div style="font-size:11px;color:var(--text3)">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}</div>
+                  <div style="font-size:20px;font-weight:700;color:${clr}" id="pct-${safeId}">${pct}%</div>`;
+                el.appendChild(card);
+            } else {
+                // Update percentage label color
+                const pctEl = document.getElementById('pct-' + safeId);
+                if (pctEl) { pctEl.textContent = pct + '%'; pctEl.style.color = clr; }
+            }
+
+            // Create or update chart
+            const canvas = document.getElementById('c-' + safeId);
+            if (canvas) {
+                if (_diskCharts[safeId]) {
+                    _diskCharts[safeId].data.datasets[0].data = [pct, 100 - pct];
+                    _diskCharts[safeId].data.datasets[0].backgroundColor = [clr, clrFree];
+                    _diskCharts[safeId].update('none');
+                } else {
+                    _diskCharts[safeId] = new Chart(canvas.getContext('2d'), {
+                        type: 'doughnut',
+                        data: { datasets: [{ data: [pct, 100 - pct], backgroundColor: [clr, clrFree], borderWidth: 0, hoverOffset: 0 }] },
+                        options: {
+                            cutout: '72%', responsive: false, animation: { duration: 600 },
+                            plugins: { legend: { display: false }, tooltip: { enabled: false } }
+                        }
+                    });
+                }
+            }
+        });
     } catch(e) {}
 }
 
-// ── Network ───────────────────────────────────────────────────────────
+// ── Network (with bandwidth line charts) ─────────────────────────────
+const _netHistory = {tx: [], rx: [], labels: [], maxPoints: 60};
+const _netPrev = {tx: 0, rx: 0, time: 0};
+let _netTxChart = null, _netRxChart = null;
+
+function _netChartInit(canvasId, label, color) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return null;
+    return new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label, data: [], borderColor: color,
+                backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
+                borderWidth: 1.5, fill: true, tension: 0.4,
+                pointRadius: 0, pointHoverRadius: 3
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: true, animation: { duration: 0 },
+            scales: {
+                x: { display: false },
+                y: {
+                    display: true, beginAtZero: true, min: 0,
+                    ticks: { color: 'rgba(139,148,158,.7)', font: { size: 10 }, maxTicksLimit: 4,
+                             callback: v => fmtBytes(v) + '/s' },
+                    grid: { color: 'rgba(48,54,61,.6)' }
+                }
+            },
+            plugins: { legend: { display: false }, tooltip: {
+                callbacks: { label: ctx => fmtBytes(ctx.raw) + '/s' }
+            }}
+        }
+    });
+}
+
 async function loadNetwork() {
     try {
         const r = await fetch(API + '/api/network');
         const d = await r.json();
         const tbody = document.getElementById('net-table');
         const ifaces = d.interfaces || [];
-        tbody.innerHTML = ifaces.map(i => `
-          <tr>
-            <td><b>${i.name}</b></td>
-            <td style="font-family:var(--mono);font-size:12px">${(i.addresses||[]).join(', ')||'—'}</td>
-            <td>${fmtBytes(i.bytes_sent)}</td>
-            <td>${fmtBytes(i.bytes_recv)}</td>
-            <td><span class="ctr-status ${i.is_up?'running':'exited'}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${i.is_up?'Up':'Down'}</span></td>
-          </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text3)">No interfaces</td></tr>';
+
+        // Aggregate total TX/RX across all physical interfaces
+        let totalTx = 0, totalRx = 0;
+        ifaces.forEach(i => { totalTx += i.bytes_sent || 0; totalRx += i.bytes_recv || 0; });
+
+        const now = Date.now();
+        let txRate = 0, rxRate = 0;
+        if (_netPrev.time && (now - _netPrev.time) < 30000) {
+            const dt = (now - _netPrev.time) / 1000;
+            txRate = Math.max(0, (totalTx - _netPrev.tx) / dt);
+            rxRate = Math.max(0, (totalRx - _netPrev.rx) / dt);
+        }
+        _netPrev.tx = totalTx; _netPrev.rx = totalRx; _netPrev.time = now;
+
+        // Rolling history
+        const label = new Date().toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
+        _netHistory.tx.push(txRate);
+        _netHistory.rx.push(rxRate);
+        _netHistory.labels.push(label);
+        if (_netHistory.tx.length > _netHistory.maxPoints) {
+            _netHistory.tx.shift(); _netHistory.rx.shift(); _netHistory.labels.shift();
+        }
+
+        // Init charts on first call
+        if (!_netTxChart) _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)');
+        if (!_netRxChart) _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)');
+
+        if (_netTxChart) {
+            _netTxChart.data.labels = [..._netHistory.labels];
+            _netTxChart.data.datasets[0].data = [..._netHistory.tx];
+            _netTxChart.update('none');
+        }
+        if (_netRxChart) {
+            _netRxChart.data.labels = [..._netHistory.labels];
+            _netRxChart.data.datasets[0].data = [..._netHistory.rx];
+            _netRxChart.update('none');
+        }
+
+        tbody.innerHTML = ifaces.map(i => {
+            const sc = i.is_up ? 'running' : 'exited';
+            return `<tr>
+              <td><b>${i.name}</b></td>
+              <td style="font-family:var(--mono);font-size:12px">${(i.addresses||[]).join(', ')||'—'}</td>
+              <td>${fmtBytes(i.bytes_sent)}</td>
+              <td>${fmtBytes(i.bytes_recv)}</td>
+              <td style="font-family:var(--mono);font-size:11px;color:var(--text2)">—/—</td>
+              <td><span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${i.is_up?'Up':'Down'}</span></td>
+            </tr>`;
+        }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text3)">No interfaces</td></tr>';
     } catch(e) {}
 }
 
-// ── Port Map ──────────────────────────────────────────────────────────
+// ── Port Map (accordion by container) ────────────────────────────────
 async function loadPortMap() {
-    const tbody = document.getElementById('port-table-body');
+    const accordion = document.getElementById('port-accordion');
     const summary = document.getElementById('port-summary');
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Loading port assignments...</td></tr>';
+    accordion.innerHTML = '<div class="empty"><div class="empty-icon">⏳</div><div class="empty-text">Loading port assignments...</div></div>';
     try {
         const r = await fetch(API + '/api/ports/map');
         const d = await r.json();
         const ports = d.ports || [];
 
         // Summary cards
-        const running = ports.filter(p => p.status === 'running' && p.host_port);
-        const stopped = ports.filter(p => p.status !== 'running' && p.host_port);
+        const activePorts = ports.filter(p => p.status === 'running' && p.host_port);
+        const stoppedPorts = ports.filter(p => p.status !== 'running' && p.host_port);
         const unbound = ports.filter(p => !p.host_port);
         summary.innerHTML = `
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--green)">${running.length}</div>
-                <div class="stat-card-label">Active Ports</div>
-            </div>
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--orange)">${stopped.length}</div>
-                <div class="stat-card-label">Stopped</div>
-            </div>
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--text3)">${unbound.length}</div>
-                <div class="stat-card-label">Unbound</div>
-            </div>
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--blue)">${d.total_bindings || 0}</div>
-                <div class="stat-card-label">Total Bindings</div>
-            </div>`;
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--green)">${activePorts.length}</div><div class="stat-card-label">Active Ports</div></div>
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--orange)">${stoppedPorts.length}</div><div class="stat-card-label">Stopped</div></div>
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--text3)">${unbound.length}</div><div class="stat-card-label">Unbound</div></div>
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--blue)">${d.total_bindings || 0}</div><div class="stat-card-label">Total Bindings</div></div>`;
 
         if (!ports.length) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">No port assignments found</td></tr>';
+            accordion.innerHTML = '<div class="empty"><div class="empty-icon">🔌</div><div class="empty-text">No port assignments found</div></div>';
             return;
         }
 
-        tbody.innerHTML = ports.map(p => {
-            const sc = p.status === 'running' ? 'running' : 'exited';
-            const icon = ctrIcon(p.container);
-            const hostPort = p.host_port || '—';
-            const isWeb = p.host_port && !String(p.container_port).includes('/udp');
-            const link = isWeb ? `<a href="#" onclick="openExternalLink('http://localhost:${p.host_port}');return false" style="color:var(--blue);text-decoration:none;font-size:12px">Open :${p.host_port} ↗</a>` : '<span style="color:var(--text3);font-size:11px">non-HTTP</span>';
-            return `<tr style="border-bottom:1px solid var(--border)">
-                <td style="padding:10px 14px;font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green)">${hostPort}</td>
-                <td style="padding:10px 14px"><span style="margin-right:6px">${icon}</span>${p.container}</td>
-                <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--text2)">${p.container_port}</td>
-                <td style="padding:10px 14px"><span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${p.status}</span></td>
-                <td style="padding:10px 14px">${link}</td>
-            </tr>`;
+        // Group by container
+        const grouped = {};
+        ports.forEach(p => {
+            if (!grouped[p.container]) grouped[p.container] = {status: p.status, ports: []};
+            grouped[p.container].ports.push(p);
+        });
+
+        accordion.innerHTML = Object.entries(grouped).map(([name, g]) => {
+            const sc = g.status === 'running' ? 'running' : 'exited';
+            const icon = ctrIcon(name);
+            const portCount = g.ports.length;
+            // Collapse groups with many ports or stopped containers by default
+            const startCollapsed = portCount > 3 || g.status !== 'running' ? 'collapsed' : '';
+            const rows = g.ports.map(p => {
+                const hostPort = p.host_port || '—';
+                const isWeb = p.host_port && !String(p.container_port).includes('/udp');
+                const link = isWeb
+                    ? `<a href="#" onclick="openExternalLink('http://localhost:${p.host_port}');return false" style="color:var(--blue);text-decoration:none;font-size:12px">:${p.host_port} ↗</a>`
+                    : '<span style="color:var(--text3);font-size:11px">—</span>';
+                return `<tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 14px;font-family:var(--mono);font-size:13px;font-weight:700;color:var(--green)">${hostPort}</td>
+                    <td style="padding:8px 14px;font-family:var(--mono);font-size:12px;color:var(--text2)">${p.container_port}</td>
+                    <td style="padding:8px 14px">${link}</td>
+                </tr>`;
+            }).join('');
+            return `<div class="pm-group ${startCollapsed}" id="pmg-${name}">
+              <div class="pm-group-hdr" onclick="pmToggle('${name}')">
+                <span style="margin-right:4px">${icon}</span>
+                <b style="font-size:13px">${name}</b>
+                <span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;font-size:11px;margin-left:6px"><span class="ctr-status-dot"></span>${g.status}</span>
+                <span style="font-size:11px;color:var(--text3);margin-left:8px">${portCount} port${portCount!==1?'s':''}</span>
+                <span class="pm-group-chevron">▼</span>
+              </div>
+              <div class="pm-group-body">
+                <table style="width:100%;border-collapse:collapse">
+                  <thead><tr style="background:var(--surface)"><th style="padding:6px 14px;text-align:left;font-size:11px;color:var(--blue)">Host Port</th><th style="padding:6px 14px;text-align:left;font-size:11px;color:var(--blue)">Container Port</th><th style="padding:6px 14px;text-align:left;font-size:11px;color:var(--blue)">Open</th></tr></thead>
+                  <tbody>${rows}</tbody>
+                </table>
+              </div>
+            </div>`;
         }).join('');
     } catch(e) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--red)">Failed to load port map</td></tr>';
+        accordion.innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load port map</div></div>';
     }
+}
+function pmToggle(name) {
+    document.getElementById('pmg-' + name)?.classList.toggle('collapsed');
+}
+function pmExpandAll() {
+    document.querySelectorAll('.pm-group').forEach(g => g.classList.remove('collapsed'));
+}
+function pmCollapseAll() {
+    document.querySelectorAll('.pm-group').forEach(g => g.classList.add('collapsed'));
 }
 
 // ── Hardware ─────────────────────────────────────────────────────────
@@ -4641,19 +4925,66 @@ async function loadStackManager() {
         const d = await r.json();
         const el = document.getElementById('stacks-list');
         const stacks = d.stacks || [];
-        if (!stacks.length) { el.innerHTML = '<div class="empty-text" style="padding:12px;color:var(--text3)">No compose stacks found in /docker/</div>'; return; }
-        el.innerHTML = '<table><thead><tr><th>Stack</th><th>Path</th><th>Services</th><th>Actions</th></tr></thead><tbody>' +
-          stacks.map(s=>`<tr>
-            <td><b>${s.name}</b></td>
-            <td style="font-family:var(--mono);font-size:11px">${s.path}</td>
-            <td>${s.services||'—'}</td>
-            <td style="display:flex;gap:6px;padding:4px 0">
-              <button class="btn green" style="padding:3px 8px;font-size:11px" onclick="stackAction('${s.name}','up')">Up</button>
-              <button class="btn red" style="padding:3px 8px;font-size:11px" onclick="stackAction('${s.name}','down')">Down</button>
-            </td>
-          </tr>`).join('') +
-          '</tbody></table>';
-    } catch(e) {}
+        if (!stacks.length) {
+            el.innerHTML = '<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">No compose stacks found in /docker/<br><span style="font-size:11px;color:var(--text3)">Deploy apps to create stacks</span></div></div>';
+            return;
+        }
+        el.innerHTML = stacks.map(s => {
+            const isRunning = s.status === 'running' || (s.running_containers && s.running_containers > 0);
+            const sc = isRunning ? 'running' : 'exited';
+            const svcInfo = s.services ? `${s.services} services` : '—';
+            const runInfo = s.running_containers !== undefined ? `${s.running_containers} running` : '';
+            return `<div class="stack-card" id="stack-${s.name}">
+              <div class="stack-card-hdr">
+                <span style="font-size:18px">📋</span>
+                <div style="flex:1">
+                  <div class="stack-card-name">${s.name}</div>
+                  <div style="font-size:11px;color:var(--text3);font-family:var(--mono)">${s.path}</div>
+                </div>
+                <span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;font-size:11px">
+                  <span class="ctr-status-dot"></span>${isRunning ? 'Running' : 'Stopped'}
+                </span>
+              </div>
+              <div style="font-size:12px;color:var(--text2);margin-bottom:10px">${svcInfo}${runInfo ? ' · ' + runInfo : ''}</div>
+              <div class="stack-card-actions">
+                <button class="btn green" style="padding:4px 10px;font-size:12px" onclick="stackAction('${s.name}','up')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Up
+                </button>
+                <button class="btn red" style="padding:4px 10px;font-size:12px" onclick="stackAction('${s.name}','down')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg> Down
+                </button>
+                <button class="btn orange" style="padding:4px 10px;font-size:12px" onclick="stackRestart('${s.name}')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Restart
+                </button>
+                <button class="btn purple" style="padding:4px 10px;font-size:12px" onclick="stackPull('${s.name}')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg> Pull
+                </button>
+              </div>
+            </div>`;
+        }).join('');
+    } catch(e) { document.getElementById('stacks-list').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load stacks</div></div>'; }
+}
+
+async function stackRestart(name) {
+    showToast('Restarting stack ' + name + '…', 'info', 3000);
+    try {
+        await fetch(API + `/api/stack/${name}/down`, {method:'POST'});
+        await new Promise(r => setTimeout(r, 1500));
+        const r = await fetch(API + `/api/stack/${name}/up`, {method:'POST'});
+        const d = await r.json();
+        if (d.error) showToast('Restart error: ' + d.error, 'error');
+        else { showToast('Stack ' + name + ' restarted', 'success'); setTimeout(loadStackManager, 1000); }
+    } catch(e) { showToast('Request failed', 'error'); }
+}
+
+async function stackPull(name) {
+    showToast('Pulling latest images for ' + name + '…', 'info', 8000);
+    try {
+        const r = await fetch(API + `/api/stack/${name}/pull`, {method:'POST'});
+        const d = await r.json();
+        if (d.error) showToast('Pull error: ' + d.error, 'error');
+        else showToast('✓ ' + name + ' images pulled — run Up to apply', 'success', 6000);
+    } catch(e) { showToast('Pull request failed', 'error'); }
 }
 
 async function loadDeployHistory() {
@@ -5374,8 +5705,25 @@ function applyAccent(a) {
   document.querySelectorAll('.accent-swatch').forEach(b =>
     b.classList.toggle('active', b.dataset.a === a));
 }
+// Resolve Unsplash page URLs to direct image URLs
+function _resolveUnsplash(url) {
+    // https://unsplash.com/photos/abcXYZ → https://images.unsplash.com/photo-abcXYZ?w=1920&q=80
+    const m = url.match(/unsplash\.com\/photos\/([\w-]+)/);
+    if (m) return `https://images.unsplash.com/photo-${m[1]}?w=1920&q=80`;
+    // https://unsplash.com/s/photos/... (search page) — can't resolve directly
+    if (url.includes('unsplash.com/s/')) return '';
+    return url;
+}
+
 function saveAppearance() {
-  const url     = document.getElementById('bg-url-input')?.value.trim() || '';
+  let url = document.getElementById('bg-url-input')?.value.trim() || '';
+  if (url) {
+    const resolved = _resolveUnsplash(url);
+    if (!resolved) { showToast('Cannot use Unsplash search pages — paste a photo page URL', 'error', 4000); return; }
+    url = resolved;
+    const ui = document.getElementById('bg-url-input');
+    if (ui) ui.value = url; // update input to show resolved URL
+  }
   const blur    = parseInt(document.getElementById('bg-blur-input')?.value || 4);
   const overlay = parseInt(document.getElementById('bg-overlay-input')?.value || 70);
   _applyBg(url, blur, overlay);

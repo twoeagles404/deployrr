@@ -6,6 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.7.0] — 2026-03-09
+
+### Added
+- **Sidebar collapse toggle** — chevron button in the topbar collapses the left sidebar to 60px
+  icon-only mode; state persisted to `localStorage`.
+- **Container card size slider** — range input in the Containers header sets `--ctr-card-min`
+  (200–500 px) so users control card density; persisted to `localStorage`.
+- **Network bandwidth charts** — Chart.js line charts (TX ↑ and RX ↓) on the Network tab with
+  60-point rolling history; rate computed from cumulative `bytes_sent`/`bytes_recv` deltas.
+- **Storage pie/donut charts** — each mounted filesystem shown as a Chart.js donut card with
+  colour-coded fill (green < 70%, yellow < 90%, red ≥ 90%) and used/total labels.
+- **Port Map accordion** — ports grouped by container; collapsed by default for multi-port apps
+  and stopped containers; "⊞ All / ⊟ All" bulk-expand controls.
+- **Stack Manager cards** — each stack now shows as a rich card with Up / Down / Restart / Pull
+  actions; new `/api/stack/<name>/pull` backend endpoint runs `docker compose pull`.
+- **More live news streams** — 6 additional YouTube 24/7 channels: ABC News, Euronews, NHK World,
+  RT International, Lofi Girl (study), 8K Nature/Relax. Total: 12 channels.
+- **Unsplash URL support** — paste `https://unsplash.com/photos/<id>` in Background Image;
+  automatically resolved to `https://images.unsplash.com/photo-<id>?w=1920&q=80`.
+- **5 new TUI presets** — Gaming (Sunshine/Moonlight), Home Automation (HA + Node-RED + Zigbee),
+  Dev Workstation (Gitea + Code-Server), Security (Vaultwarden + Authentik), Downloads-only.
+
+### Fixed
+- **Container table view invisible** — `setCtrView('table')` was clearing the inline `display`
+  style, causing the CSS `display:none` default to take over; fixed to use `display:block`.
+- **Tailscale serve/funnel** — now pass `--bg` flag so serve/funnel configs persist as background
+  services across tailscaled restarts.
+
+### Changed
+- **Tailscale LXC install** — pins version v1.94.2 from `pkgs.tailscale.com` (last known-good
+  release for unprivileged cgroup2 LXC containers); falls back to `install.sh` on arch mismatch.
+
+---
+
 ## [3.6.0] — 2026-03-09
 
 ### Added

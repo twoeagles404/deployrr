@@ -380,6 +380,11 @@ MOVIES_PRESET=(plex qbittorrent prowlarr radarr unpackerr seerr tautulli arrhub_
 MUSIC_PRESET=(navidrome qbittorrent prowlarr lidarr seerr arrhub_webui)
 PHOTOS_PRESET=(immich arrhub_webui)
 HOMELAB_PRESET=(portainer dozzle watchtower uptime_kuma nginx arrhub_webui)
+GAMING_PRESET=(sunshine moonlight_host arrhub_webui watchtower)
+HOME_AUTO_PRESET=(homeassistant mosquitto node_red zigbee2mqtt esphome arrhub_webui)
+DEV_PRESET=(gitea code_server portainer drone arrhub_webui)
+SECURITY_PRESET=(vaultwarden authentik uptime_kuma arrhub_webui)
+DOWNLOADS_PRESET=(qbittorrent sabnzbd prowlarr radarr sonarr unpackerr arrhub_webui)
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -1780,16 +1785,21 @@ deploy_quick_preset() {
 
         local preset
         preset=$(d_menu "Quick Deploy Preset" "${hint}" \
-            "1" "Minimal         — Jellyfin + qBit + basic ARR" \
-            "2" "ARR Only        — all ARR apps + downloader" \
-            "3" "Media + ARR     — full media stack (no VPN)" \
-            "4" "Full Stack      — everything (Plex + ARR + tools)" \
-            "5" "Monitoring      — Grafana, Prometheus, Uptime Kuma" \
-            "6" "Movies ★        — Plex + Radarr + Seerr + Tautulli" \
-            "7" "Music ★         — Navidrome + Lidarr + Seerr" \
-            "8" "Photos ★        — Immich" \
-            "9" "General Homelab — Portainer + Dozzle + Watchtower + NPM" \
-            "10" "Back") || return
+            "1"  "Minimal         — Jellyfin + qBit + basic ARR" \
+            "2"  "ARR Only        — all ARR apps + downloader" \
+            "3"  "Media + ARR     — full media stack (no VPN)" \
+            "4"  "Full Stack      — everything (Plex + ARR + tools)" \
+            "5"  "Monitoring      — Grafana, Prometheus, Uptime Kuma" \
+            "6"  "Movies ★        — Plex + Radarr + Seerr + Tautulli" \
+            "7"  "Music ★         — Navidrome + Lidarr + Seerr" \
+            "8"  "Photos ★        — Immich" \
+            "9"  "Homelab ★       — Portainer + Dozzle + Watchtower + NPM" \
+            "10" "Gaming ★        — Sunshine/Moonlight game streaming" \
+            "11" "Home Auto ★     — Home Assistant + Node-RED + Zigbee2MQTT" \
+            "12" "Dev Workstation — Gitea + Code-Server + Portainer" \
+            "13" "Security        — Vaultwarden + Authentik + Uptime Kuma" \
+            "14" "Downloads Only  — qBit + SABnzbd + Prowlarr + ARR" \
+            "15" "Back") || return
 
         local selected=()
         case "${preset}" in
@@ -1805,7 +1815,12 @@ deploy_quick_preset() {
             7)  selected=("${MUSIC_PRESET[@]}") ;;
             8)  selected=("${PHOTOS_PRESET[@]}") ;;
             9)  selected=("${HOMELAB_PRESET[@]}") ;;
-            10) return ;;
+            10) selected=("${GAMING_PRESET[@]}") ;;
+            11) selected=("${HOME_AUTO_PRESET[@]}") ;;
+            12) selected=("${DEV_PRESET[@]}") ;;
+            13) selected=("${SECURITY_PRESET[@]}") ;;
+            14) selected=("${DOWNLOADS_PRESET[@]}") ;;
+            15) return ;;
         esac
 
         log INFO "Quick preset ${preset}: ${selected[*]}"
@@ -2764,12 +2779,38 @@ tailscale_lxc_install() {
         printf '\033[0;32m[1-3/5]\033[0m TUN already configured — skipping config patch.\n'
     fi
 
-    # Step 4: Install Tailscale inside the container
+    # Step 4: Install Tailscale inside the container (pinned v1.94.2 for LXC stability)
+    # v1.94.2 is pinned because it is the last known-good release for unprivileged LXC containers.
+    # Newer versions may fail in cgroup2-only environments without kernel TUN.
+    # Source: https://pkgs.tailscale.com/stable/
+    local TS_VERSION="1.94.2"
     if ${ok}; then
-        printf '\033[1;33m[4/5]\033[0m Installing Tailscale inside LXC %s...\n' "${ctid}"
-        pct exec "${ctid}" -- bash -c \
-            "curl -fsSL https://tailscale.com/install.sh | sh" 2>&1 | tee -a "${tmp}" || {
-            printf '\033[1;31mFAILED\033[0m — Tailscale install script failed\n'; ok=false
+        printf '\033[1;33m[4/5]\033[0m Installing Tailscale v%s inside LXC %s (pinned, stable for LXC)...\n' "${TS_VERSION}" "${ctid}"
+        pct exec "${ctid}" -- bash -c "
+set -e
+# Try pinned version from official package server first
+TS_VER=${TS_VERSION}
+TS_ARCH=\$(dpkg --print-architecture 2>/dev/null || echo 'amd64')
+TS_URL=\"https://pkgs.tailscale.com/stable/tailscale_\${TS_VER}_\${TS_ARCH}.tgz\"
+TMP_DIR=\$(mktemp -d)
+cd \"\${TMP_DIR}\"
+if curl -fsSL \"\${TS_URL}\" -o ts.tgz 2>/dev/null; then
+    tar xzf ts.tgz --strip-components=1
+    install -m 0755 tailscale tailscaled /usr/local/bin/
+    echo 'Installed Tailscale v\${TS_VER} from pkgs.tailscale.com'
+else
+    echo 'Pinned version not found for this arch — falling back to install.sh'
+    curl -fsSL https://tailscale.com/install.sh | sh
+fi
+rm -rf \"\${TMP_DIR}\"
+# Create systemd service if not already present
+if ! systemctl is-enabled tailscaled 2>/dev/null; then
+    tailscaled --cleanup 2>/dev/null || true
+    systemctl enable --now tailscaled 2>/dev/null || \
+        tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock &
+fi
+" 2>&1 | tee -a "${tmp}" || {
+            printf '\033[1;31mFAILED\033[0m — Tailscale install failed\n'; ok=false
         }
     fi
 
@@ -3072,18 +3113,20 @@ tailscale_menu() {
             8)
                 local port
                 port=$(d_inputbox "Tailscale Serve" \
-"Share a local service within your tailnet.\n\nEnter local port to share (or 'off' to disable):\n\nExample: 8096 (Jellyfin), 32400 (Plex)" "") || continue
+"Share a local service within your tailnet.\n\nEnter local port to share (or 'off' to disable):\n\nExamples:  8096 (Jellyfin)  32400 (Plex)  9999 (ArrHub)\n\nTip: Use --bg to run serve in the background (persistent across sessions)." "") || continue
                 _live_header "Tailscale Serve — Port ${port}"
-                ${ts_cmd} serve "${port}" 2>&1 | tee "${tmp}" || true
+                # Use --bg so the serve config persists as a background service
+                ${ts_cmd} serve --bg "${port}" 2>&1 | tee "${tmp}" || true
                 _live_wait_return
                 ;;
             9)
                 local port
                 port=$(d_inputbox "Tailscale Funnel" \
-"Expose a local service to the ENTIRE INTERNET.\nRequires: Tailscale account with Funnel enabled.\n\nEnter local port to expose (or 'off' to disable):\n\nExample: 8096, 9999" "") || continue
+"Expose a local service to the ENTIRE INTERNET.\nRequires: Tailscale account with Funnel enabled.\n\nEnter local port to expose (or 'off' to disable):\n\nExamples:  8096  9999\n\nTip: --bg makes the funnel persist as a background service." "") || continue
                 if d_yesno "Confirm Funnel" "This exposes port ${port} to the PUBLIC internet.\nOnly proceed if intentional."; then
                     _live_header "Tailscale Funnel — Port ${port}"
-                    ${ts_cmd} funnel "${port}" 2>&1 | tee "${tmp}" || true
+                    # Use --bg so the funnel config persists as a background service
+                    ${ts_cmd} funnel --bg "${port}" 2>&1 | tee "${tmp}" || true
                     _live_wait_return
                 fi
                 ;;

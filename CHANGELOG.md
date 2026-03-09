@@ -6,6 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.8.0] — 2026-03-09
+
+### Added
+- **Free TV / IPTV tab** — new "🎬 Free TV" sub-tab in Live Feeds; includes HLS.js-powered live
+  streams (NASA TV, France 24 English, Al Jazeera English) that play directly in-browser, plus a
+  custom M3U8 URL input field and link cards for Pluto TV, Tubi, Plex Free TV, Peacock, Roku
+  Channel and Crackle (open in new tab).
+- **HLS.js 1.5.13** — loaded from CDN; used for native browser HLS stream playback on the Free TV
+  tab. Falls back to native HLS on Safari/iOS.
+
+### Fixed
+- **Unsplash URL resolution** — `_resolveUnsplash()` now correctly extracts the short photo ID
+  from the URL slug (the last dash-separated token, e.g. `MjH55Ef3w_0`) and builds a
+  `source.unsplash.com/{id}/1920x1080` URL. Previously the entire slug was used as the ID.
+- **GridStack `resizestop`** — added event handler so any Chart.js canvases inside a widget are
+  asked to resize when the user drags the resize handle. Also added a layout reflow nudge for
+  panels and stat grids.
+- **Network chart aspect ratio** — changed `maintainAspectRatio: true → false` on TX/RX line
+  charts so they fill their container height when the widget is resized.
+
+### Changed
+- **Preset stacks no longer include `arrhub_webui`** — all 9 quick-deploy presets (Movies, Music,
+  Photos, Homelab, Gaming, Home Automation, Dev, Security, Downloads) had `arrhub_webui` appended.
+  Removed from all presets because `install.sh` already installs ArrHub WebUI before any preset
+  is deployed; including it in presets caused redundant re-installs.
+- **Live News grid** — column min-width reduced from `480px` to `300px` so streams stack
+  vertically on mobile screens instead of overflowing.
+- **GridStack mobile** — single-column layout and drag/resize disabled when viewport < 900px to
+  prevent awkward touch interactions.
+- **RSS view tab controls** — expand/collapse controls now hidden when the Live News or Free TV
+  sub-tab is active (only relevant for the Feeds view).
+
+---
+
 ## [3.7.0] — 2026-03-09
 
 ### Added

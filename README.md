@@ -107,8 +107,6 @@ docker run -e ARRHUB_TOKEN=your-secret-token ...
 | **Dasherr** | Minimal, lightweight app dashboard with customizable layout |
 | **Flame** | Self-hosted startpage and application dashboard with bookmarks |
 | **Heimdall** | Application dashboard with search functionality and enhanced app tiles |
-| **Homarr** | Sleek, modern dashboard with drag-and-drop, service integrations, and widgets |
-| **Homer** | Simple, static homepage for your homelab services |
 | **Launcharr** | Modern, customizable application launcher and dashboard for self-hosted services |
 | **Organizr** | HTPC/homelab organizer with tabbed interface and user authentication |
 

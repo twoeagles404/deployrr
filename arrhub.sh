@@ -246,9 +246,6 @@ load_catalog() {
     define_app speedtest  "Speedtest"   "lscr.io/linuxserver/speedtest-tracker:latest" "Monitoring" "8765:80"
 
     # -- Dashboards --
-    define_app homer     "Homer"      "ghcr.io/bastienwirtz/homer:latest"     "Dashboards"  "8085:8080"
-    APP_CUSTOM_SVC[homer]="yes"
-    define_app homarr    "Homarr"     "ghcr.io/ajnart/homarr:latest"          "Dashboards"  "7575:7575"
     define_app launcharr "Launcharr"  "mickygx/launcharr:latest"              "Dashboards"  "3333:3333"  "false"
     APP_CUSTOM_SVC[launcharr]="yes"
     define_app dasherr   "Dasherr"    "ghcr.io/erwin-kok/dasherr:latest"      "Dashboards"  "3080:3080"
@@ -345,7 +342,7 @@ ALL_APPS=(
     seerr ombi requestrr tautulli flaresolverr
     grafana prometheus uptime_kuma netdata glances dozzle portainer watchtower scrutiny speedtest
     # Dashboards
-    homer homarr launcharr dasherr flame heimdall organizr
+    launcharr dasherr flame heimdall organizr
     # Reverse Proxies
     traefik npm caddy swag
     # VPN & Network
@@ -1257,102 +1254,6 @@ add_service_watchtower() {
         echo "      - TZ=${TZ_VAL}"
     } >> "${f}"
     log INFO "Watchtower configured — will poll for updates every 24h"
-}
-
-add_service_homer() {
-    local id="${1:-homer}"
-    local f; f="$(app_compose "${id}")"
-    mkdir -p "${CONFIG_DIR}/homer/assets" 2>/dev/null || true
-
-    # Resolve port conflict
-    local hp_8085; hp_8085=$(find_free_port 8085)
-
-    if [[ "${hp_8085}" != "8085" ]]; then
-        log WARN "Port 8085 in use — ${id} reassigned to ${hp_8085}"
-    fi
-
-    cat > "${CONFIG_DIR}/homer/config.yml" << 'HOMER_EOF'
-title: "My Homelab"
-subtitle: "Powered by ArrHub"
-logo: "assets/logo.png"
-header: true
-footer: '<p>ArrHub — <a href="https://github.com">GitHub</a></p>'
-
-theme: default
-colors:
-  light:
-    highlight-primary: "#3367d6"
-    highlight-secondary: "#4f7ef0"
-  dark:
-    highlight-primary: "#3367d6"
-    highlight-secondary: "#4f7ef0"
-
-links:
-  - name: "GitHub"
-    icon: "fab fa-github"
-    url: "https://github.com"
-
-services:
-  - name: "Media"
-    icon: "fas fa-film"
-    items:
-      - name: "Jellyfin"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/jellyfin.png"
-        url: "http://HOST_IP:8096"
-        subtitle: "Media Server"
-      - name: "Plex"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/plex.png"
-        url: "http://HOST_IP:32400/web"
-        subtitle: "Media Server"
-  - name: "ARR Suite"
-    icon: "fas fa-search"
-    items:
-      - name: "Prowlarr"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/prowlarr.png"
-        url: "http://HOST_IP:9696"
-        subtitle: "Indexer Manager"
-      - name: "Radarr"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/radarr.png"
-        url: "http://HOST_IP:7878"
-        subtitle: "Movies"
-      - name: "Sonarr"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/sonarr.png"
-        url: "http://HOST_IP:8989"
-        subtitle: "TV Shows"
-  - name: "Downloads"
-    icon: "fas fa-download"
-    items:
-      - name: "qBittorrent"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/qbittorrent.png"
-        url: "http://HOST_IP:8080"
-        subtitle: "Torrent Client"
-  - name: "Tools"
-    icon: "fas fa-tools"
-    items:
-      - name: "ArrHub"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/docker.png"
-        url: "http://HOST_IP:9999"
-        subtitle: "Server Dashboard"
-HOMER_EOF
-    
-    local server_ip
-    server_ip=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "localhost")
-    sed -i "s/HOST_IP/${server_ip}/g" "${CONFIG_DIR}/homer/config.yml" 2>/dev/null || true
-
-    {
-        echo ""
-        echo "  homer:"
-        echo "    image: ghcr.io/bastienwirtz/homer:latest"
-        echo "    container_name: homer"
-        echo "    restart: unless-stopped"
-        echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/homer:/www/assets"
-        echo "    ports:"
-        echo "      - \"${hp_8085}:8080\""
-        echo "    environment:"
-        echo "      - INIT_ASSETS=0"
-    } >> "${f}"
-    log INFO "Homer configured with auto-generated config.yml (port ${hp_8085})"
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

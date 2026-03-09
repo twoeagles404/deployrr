@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "generated_by": "ArrHub (converted from YAML)",
     "github": "https://github.com/twoeagles404/arrhub",
-    "total_apps": 103
+    "total_apps": 101
   },
   "apps": [
     {
@@ -1349,56 +1349,6 @@
       "depends_on": [],
       "url_path": "/",
       "icon": "📈",
-      "full_stack": false,
-      "notes": ""
-    },
-    {
-      "id": "homer",
-      "name": "Homer",
-      "category": "Dashboards",
-      "image": "ghcr.io/bastienwirtz/homer:latest",
-      "description": "Simple, static homepage for your homelab services.",
-      "ports": [
-        "8085:8080"
-      ],
-      "volumes": [
-        "{CONFIG}/homer:/www/assets"
-      ],
-      "environment": [],
-      "privileged": false,
-      "restart": "unless-stopped",
-      "network_mode": null,
-      "custom_service": false,
-      "depends_on": [],
-      "url_path": "/",
-      "icon": "📊",
-      "full_stack": false,
-      "notes": ""
-    },
-    {
-      "id": "homarr",
-      "name": "Homarr",
-      "category": "Dashboards",
-      "image": "ghcr.io/ajnart/homarr:latest",
-      "description": "Sleek, modern dashboard with drag-and-drop, service integrations, and widgets.",
-      "ports": [
-        "7575:7575"
-      ],
-      "volumes": [
-        "/var/run/docker.sock:/var/run/docker.sock:ro",
-        "{CONFIG}/homarr/configs:/app/data/configs",
-        "{CONFIG}/homarr/icons:/app/public/icons"
-      ],
-      "environment": [
-        "TZ={TZ}"
-      ],
-      "privileged": false,
-      "restart": "unless-stopped",
-      "network_mode": null,
-      "custom_service": false,
-      "depends_on": [],
-      "url_path": "/",
-      "icon": "📊",
       "full_stack": false,
       "notes": ""
     },

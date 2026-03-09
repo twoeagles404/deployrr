@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# ArrHub — Master Installer v3.6.0
+# ArrHub — Master Installer v3.7.0
 # =============================================================================
 #
 # ONE-COMMAND INSTALL:
@@ -25,7 +25,7 @@ GITHUB_BRANCH="dev"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="3.6.0"
+VERSION="3.7.0"
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Install paths ─────────────────────────────────────────────────────────────

@@ -1338,15 +1338,26 @@ def api_weather():
         geo = geo_resp.json()
         lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
 
-        # Get weather from open-meteo
+        # Get weather from open-meteo.
+        # current= gives real-time humidity/wind; daily= gives 5-day forecast.
         weather_resp = requests.get(
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto",
+            f"https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}"
+            f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,apparent_temperature"
+            f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum"
+            f"&wind_speed_unit=mph"
+            f"&timezone=auto",
             timeout=5
         )
         weather = weather_resp.json()
 
+        # Extract current conditions (humidity, wind, feels-like)
+        current = weather.get("current", {})
         result = {
             "location": f"{geo.get('city', 'Unknown')}, {geo.get('country_name', '')}",
+            "humidity": current.get("relative_humidity_2m"),
+            "wind_mph": round(current.get("wind_speed_10m", 0), 1),
+            "feels_like": current.get("apparent_temperature"),
             "daily": []
         }
 
@@ -1463,37 +1474,135 @@ def api_rss_feeds():
 
 @app.route("/api/rss/fetch")
 def api_rss_fetch():
-    """Proxy-fetch and parse an RSS/Atom feed URL to avoid CORS."""
-    import xml.etree.ElementTree as ET
+    """Proxy-fetch and parse an RSS/Atom feed URL to avoid CORS.
+    Returns enriched items: title, link, date, excerpt, and thumbnail URL.
+    Supports RSS 2.0, Atom, and YouTube Atom feeds.
+    """
+    import html as _html_mod
+    import re as _re
     url = request.args.get("url", "")
     if not url:
         return jsonify({"error": "Missing url"}), 400
+
+    # Per-feed response cache to avoid hammering external servers
+    cache_key = "rss_fetch_" + url
+    if cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 300:
+        return jsonify(_rss_cache[cache_key]["data"])
+
     try:
         import urllib.request
         headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.5; +https://github.com/twoeagles404/arrhub)"}
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
+
         root = ET.fromstring(raw)
-        items = []
-        # RSS 2.0
-        ns = {"atom": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
-        for item in (root.findall(".//item") or root.findall("atom:entry", ns))[:20]:
-            title_el = item.find("title")
-            link_el  = item.find("link")
-            date_el  = item.find("pubDate") or item.find("updated") or item.find("dc:date")
-            title = title_el.text if title_el is not None else "Untitled"
-            link  = link_el.text  if link_el  is not None else "#"
-            # Atom feeds use link[href]
+        ns = {
+            "atom":    "http://www.w3.org/2005/Atom",
+            "media":   "http://search.yahoo.com/mrss/",
+            "content": "http://purl.org/rss/1.0/modules/content/",
+            "dc":      "http://purl.org/dc/elements/1.1/"
+        }
+
+        def _strip_html(text):
+            """Strip HTML tags and decode entities for excerpt use."""
+            if not text:
+                return ""
+            text = _re.sub(r"<[^>]+>", " ", text)
+            text = _html_mod.unescape(text)
+            text = _re.sub(r"\s+", " ", text).strip()
+            return text[:200]
+
+        def _first_img(text):
+            """Find first <img src=...> in HTML string."""
+            if not text:
+                return None
+            m = _re.search(r'<img[^>]+src=["\']([^"\']+)["\']', text, _re.I)
+            return m.group(1) if m else None
+
+        def _parse_item(item, is_atom=False):
+            """Extract fields from a single RSS item or Atom entry."""
+            # Title
+            title_el = item.find("title") if not is_atom else item.find("atom:title", ns)
+            title = (title_el.text or "").strip() if title_el is not None else "Untitled"
+            title = _strip_html(title) or title   # some feeds wrap title in CDATA with HTML
+
+            # Link
+            link = "#"
+            if not is_atom:
+                link_el = item.find("link")
+                link = (link_el.text or "").strip() if link_el is not None else "#"
             if not link or link == "#":
-                link_el2 = item.find("atom:link", ns)
-                if link_el2 is not None:
-                    link = link_el2.get("href", "#")
-            date = ""
-            if date_el is not None and date_el.text:
-                date = date_el.text[:16]
-            items.append({"title": title.strip(), "link": link.strip() if link else "#", "date": date})
-        return jsonify({"items": items})
+                atom_link = item.find("atom:link", ns)
+                if atom_link is not None:
+                    link = atom_link.get("href", "#")
+            # YouTube Atom: yt:videoId → build link
+            if not link or link == "#":
+                vid_el = item.find("{http://www.youtube.com/xml/schemas/2015}videoId")
+                if vid_el is not None and vid_el.text:
+                    link = "https://www.youtube.com/watch?v=" + vid_el.text.strip()
+
+            # Date
+            date_el = item.find("pubDate") or item.find("dc:date", ns) or item.find("atom:updated", ns) or item.find("atom:published", ns)
+            date = (date_el.text or "")[:16] if date_el is not None else ""
+
+            # Thumbnail — priority order:
+            # 1. <media:thumbnail url="...">
+            # 2. <media:content url="..." medium="image">
+            # 3. <enclosure url="..." type="image/...">
+            # 4. First <img> in <description> or <content:encoded>
+            # 5. YouTube video thumbnail via videoId
+            thumb = None
+            mt = item.find("media:thumbnail", ns)
+            if mt is not None:
+                thumb = mt.get("url")
+            if not thumb:
+                mc = item.find("media:content", ns)
+                if mc is not None and ("image" in (mc.get("medium","") + mc.get("type",""))):
+                    thumb = mc.get("url")
+            if not thumb:
+                enc = item.find("enclosure")
+                if enc is not None and "image" in (enc.get("type","") or ""):
+                    thumb = enc.get("url")
+            if not thumb:
+                for tag in ["content:encoded", "description"]:
+                    raw_el = item.find(tag, ns) or item.find(tag)
+                    if raw_el is not None and raw_el.text:
+                        thumb = _first_img(raw_el.text)
+                        if thumb:
+                            break
+            if not thumb:
+                # YouTube fallback: extract videoId from link
+                yt_match = _re.search(r"[?&]v=([A-Za-z0-9_-]{11})", link)
+                if yt_match:
+                    thumb = f"https://i.ytimg.com/vi/{yt_match.group(1)}/mqdefault.jpg"
+
+            # Excerpt — from <description> or <content:encoded>
+            excerpt = ""
+            for tag in ["description", "content:encoded", "atom:summary", "atom:content"]:
+                raw_el = item.find(tag, ns) or item.find(tag)
+                if raw_el is not None and raw_el.text:
+                    excerpt = _strip_html(raw_el.text)
+                    if excerpt:
+                        break
+
+            return {"title": title, "link": link, "date": date,
+                    "thumb": thumb, "excerpt": excerpt}
+
+        items = []
+        # Try RSS 2.0 items first, then Atom entries
+        raw_items = root.findall(".//item")
+        is_atom = False
+        if not raw_items:
+            raw_items = root.findall("atom:entry", ns)
+            is_atom = True
+
+        for item in raw_items[:20]:
+            items.append(_parse_item(item, is_atom=is_atom))
+
+        result = {"items": items}
+        _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e), "items": []}), 200
 
@@ -1697,6 +1806,132 @@ def api_tailscale():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# =============================================================================
+# SERVICE INTEGRATION — Radarr / Sonarr / Plex / Seerr
+# These proxy endpoints pull data from locally running ARR/Plex/Seerr services.
+# Each reads its URL + API key from the settings table (set in the UI Settings
+# tab).  If not configured they return {"configured": false} so the frontend
+# can prompt the user rather than silently failing.
+# =============================================================================
+
+def _get_setting(key, default=None):
+    """Read a single setting from SQLite; return default if missing."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+def _svc_get(base_url, path, api_key, api_key_header="X-Api-Key", timeout=5):
+    """GET a JSON endpoint on a local service; raises on HTTP/network error."""
+    url = base_url.rstrip('/') + path
+    headers = {api_key_header: api_key} if api_key else {}
+    r = requests.get(url, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+@app.route("/api/services/radarr/calendar")
+def api_radarr_calendar():
+    """Upcoming movies from Radarr (next 14 days)."""
+    url = _get_setting("radarr_url")
+    key = _get_setting("radarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        from datetime import date, timedelta
+        start = date.today().isoformat()
+        end   = (date.today() + timedelta(days=14)).isoformat()
+        data = _svc_get(url, f"/api/v3/calendar?start={start}&end={end}&unmonitored=false", key)
+        movies = [{"title": m.get("title"), "year": m.get("year"),
+                   "date": m.get("physicalRelease") or m.get("digitalRelease") or m.get("inCinemas", "")[:10],
+                   "poster": (next((i["remoteUrl"] for i in m.get("images",[]) if i.get("coverType")=="poster"), None)),
+                   "hasFile": m.get("hasFile", False)} for m in data]
+        return jsonify({"configured": True, "movies": movies[:10]})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "movies": []})
+
+@app.route("/api/services/sonarr/calendar")
+def api_sonarr_calendar():
+    """Upcoming episodes from Sonarr (next 7 days)."""
+    url = _get_setting("sonarr_url")
+    key = _get_setting("sonarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        from datetime import date, timedelta
+        start = date.today().isoformat()
+        end   = (date.today() + timedelta(days=7)).isoformat()
+        data = _svc_get(url, f"/api/v3/calendar?start={start}&end={end}&unmonitored=false&includeSeries=true", key)
+        episodes = [{"series": e.get("series",{}).get("title",""),
+                     "title": e.get("title",""),
+                     "season": e.get("seasonNumber"),
+                     "episode": e.get("episodeNumber"),
+                     "airDate": e.get("airDateUtc","")[:10],
+                     "hasFile": e.get("hasFile", False),
+                     "poster": (next((i["remoteUrl"] for i in e.get("series",{}).get("images",[]) if i.get("coverType")=="poster"), None))} for e in data]
+        return jsonify({"configured": True, "episodes": episodes[:10]})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "episodes": []})
+
+@app.route("/api/services/plex/sessions")
+def api_plex_sessions():
+    """Active Plex streams (Now Playing)."""
+    url   = _get_setting("plex_url")
+    token = _get_setting("plex_token")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        data = _svc_get(url, "/status/sessions", None,
+                        timeout=5)
+        # Plex requires token as query param, not header
+        full_url = url.rstrip('/') + "/status/sessions"
+        r = requests.get(full_url, headers={"X-Plex-Token": token or "", "Accept": "application/json"}, timeout=5)
+        r.raise_for_status()
+        payload = r.json()
+        sessions = []
+        for item in payload.get("MediaContainer", {}).get("Metadata", []):
+            pct = 0
+            if item.get("duration") and item.get("viewOffset"):
+                pct = round(item["viewOffset"] / item["duration"] * 100, 1)
+            sessions.append({
+                "title": item.get("grandparentTitle") or item.get("title",""),
+                "subtitle": item.get("title","") if item.get("grandparentTitle") else "",
+                "user": item.get("User",{}).get("title",""),
+                "player": item.get("Player",{}).get("product",""),
+                "progress": pct,
+                "state": item.get("Player",{}).get("state",""),
+                "thumb": item.get("thumb","")
+            })
+        return jsonify({"configured": True, "sessions": sessions})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "sessions": []})
+
+@app.route("/api/services/seerr/requests")
+def api_seerr_requests():
+    """Recent Seerr/Overseerr requests (latest 8)."""
+    url = _get_setting("seerr_url")
+    key = _get_setting("seerr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        data = _svc_get(url, "/api/v1/request?take=8&skip=0&sort=added", key)
+        reqs = []
+        for r in data.get("results", []):
+            media = r.get("media", {})
+            reqs.append({
+                "id": r.get("id"),
+                "type": media.get("mediaType",""),
+                "status": r.get("status"),          # 1=pending 2=approved 3=declined 4=available
+                "requestedBy": r.get("requestedBy",{}).get("displayName",""),
+                "title": media.get("tmdbId",""),     # resolved to title in frontend via cache
+                "poster": media.get("posterPath",""),
+                "createdAt": r.get("createdAt","")[:10]
+            })
+        return jsonify({"configured": True, "requests": reqs})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "requests": []})
 
 @app.route("/api/home")
 def api_home():
@@ -2511,8 +2746,8 @@ body.sse-disconnected #app{padding-top:38px;}
 
 <!-- ══ SSE DISCONNECTED BANNER ══ -->
 <div id="sse-banner">
-  ⚠ Live metrics disconnected — Reconnecting…
-  <button onclick="retrySSE()">Retry</button>
+  ⚠ <span id="sse-banner-msg">Live metrics disconnected — Reconnecting…</span>
+  <button onclick="retrySSE()">Retry Now</button>
 </div>
 
 <!-- ══ SIDEBAR OVERLAY (mobile) ══ -->
@@ -2754,32 +2989,89 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
       </div>
 
-      <!-- Weather Widget -->
-      <div class="panel">
+      <!-- Weather Widget — current conditions + 5-day forecast -->
+      <div class="panel" id="weather-panel">
         <div class="panel-title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
           Weather
+          <span id="weather-location" style="margin-left:8px;font-weight:400;font-size:11px;color:var(--text3)"></span>
         </div>
-        <div id="weather-widget" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="stat-card" style="grid-column:1/-1">
-            <div style="display:flex;align-items:center;gap:12px">
-              <div id="weather-icon" style="font-size:32px">🌤️</div>
-              <div>
-                <div id="weather-temp" style="font-size:24px;font-weight:600;color:var(--text1)">—</div>
-                <div id="weather-desc" style="font-size:12px;color:var(--text3)">Loading weather...</div>
-                <div id="weather-location" style="font-size:11px;color:var(--text3)"></div>
-              </div>
+        <div id="weather-widget" style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:10px;align-items:center">
+          <!-- Current conditions -->
+          <div style="display:flex;align-items:center;gap:10px;padding:4px 12px 4px 0;border-right:1px solid var(--border)">
+            <div id="weather-icon" style="font-size:36px;line-height:1">🌤️</div>
+            <div>
+              <div id="weather-temp" style="font-size:26px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
+              <div id="weather-desc" style="font-size:11px;color:var(--text3);margin-top:2px">Loading…</div>
             </div>
           </div>
+          <!-- Humidity -->
           <div class="stat-card">
             <div class="stat-card-val" id="weather-humidity">—</div>
             <div class="stat-card-label">Humidity</div>
           </div>
+          <!-- Wind -->
           <div class="stat-card">
             <div class="stat-card-val" id="weather-wind">—</div>
             <div class="stat-card-label">Wind</div>
           </div>
+          <!-- Feels like -->
+          <div class="stat-card">
+            <div class="stat-card-val" id="weather-feels">—</div>
+            <div class="stat-card-label">Feels Like</div>
+          </div>
         </div>
+        <!-- 5-day forecast strip -->
+        <div id="weather-forecast" style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;padding-bottom:4px"></div>
+      </div>
+
+      <!-- Service Cards row (Radarr / Sonarr / Plex / Seerr) -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:0" id="service-cards-row">
+
+        <!-- Radarr Calendar -->
+        <div class="panel" style="margin:0" id="radarr-card">
+          <div class="panel-title">
+            🎥 Radarr — Upcoming
+            <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span>
+          </div>
+          <div id="radarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
+            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Sonarr Calendar -->
+        <div class="panel" style="margin:0" id="sonarr-card">
+          <div class="panel-title">
+            📺 Sonarr — Upcoming
+            <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 7 days</span>
+          </div>
+          <div id="sonarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
+            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Plex Now Playing -->
+        <div class="panel" style="margin:0" id="plex-card">
+          <div class="panel-title">
+            ▶ Plex — Now Playing
+            <span id="plex-stream-count" style="margin-left:auto;background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600"></span>
+          </div>
+          <div id="plex-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
+            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Seerr Requests -->
+        <div class="panel" style="margin:0" id="seerr-card">
+          <div class="panel-title">
+            🎬 Seerr — Requests
+            <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Recent</span>
+          </div>
+          <div id="seerr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
+            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
+          </div>
+        </div>
+
       </div>
 
       <!-- Docker Info -->
@@ -3032,6 +3324,25 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="field"><label>PGID</label><input type="text" id="cfg-pgid" placeholder="1000"></div>
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSettings()">Save Settings</button>
+      </div>
+      <!-- Service Integrations — API keys for Overview cards -->
+      <div class="panel">
+        <div class="panel-title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Service Integrations
+        </div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Fill in API details to enable Overview cards for Radarr, Sonarr, Plex, and Seerr.</div>
+        <div class="settings-grid">
+          <div class="field"><label>Radarr URL</label><input type="text" id="svc-radarr-url" placeholder="http://localhost:7878"><div class="field-hint">e.g. http://192.168.1.x:7878</div></div>
+          <div class="field"><label>Radarr API Key</label><input type="password" id="svc-radarr-key" placeholder="•••••••••••"></div>
+          <div class="field"><label>Sonarr URL</label><input type="text" id="svc-sonarr-url" placeholder="http://localhost:8989"></div>
+          <div class="field"><label>Sonarr API Key</label><input type="password" id="svc-sonarr-key" placeholder="•••••••••••"></div>
+          <div class="field"><label>Plex URL</label><input type="text" id="svc-plex-url" placeholder="http://localhost:32400"></div>
+          <div class="field"><label>Plex Token</label><input type="password" id="svc-plex-token" placeholder="•••••••••••"><div class="field-hint">Settings → Troubleshooting → X-Plex-Token</div></div>
+          <div class="field"><label>Seerr/Overseerr URL</label><input type="text" id="svc-seerr-url" placeholder="http://localhost:5055"></div>
+          <div class="field"><label>Seerr API Key</label><input type="password" id="svc-seerr-key" placeholder="•••••••••••"></div>
+        </div>
+        <button class="btn-primary" style="margin-top:16px" onclick="saveSvcSettings()">Save Integrations</button>
       </div>
       <div class="panel">
         <div class="panel-title">About</div>
@@ -3300,30 +3611,43 @@ function pbarColor(pct) {
 }
 
 // ── SSE live stream ───────────────────────────────────────────────────
+// Uses exponential backoff on reconnect so a post-wizard gunicorn restart
+// (which makes the first few retries fail quickly) doesn't flood the server.
+// Backoff: 3s → 6s → 12s → 24s → 30s (capped), resets to 3s on success.
 let evtSource = null;
 let _sseWasConnected = false;
+let _sseRetryCount = 0;
+const _SSE_BASE_RETRY_MS = 3000;
+const _SSE_MAX_RETRY_MS  = 30000;
+
+function _sseRetryDelay() {
+    // Exponential: base * 2^(n-1), capped at max
+    return Math.min(_SSE_BASE_RETRY_MS * Math.pow(2, Math.max(_sseRetryCount - 1, 0)), _SSE_MAX_RETRY_MS);
+}
+
 function startSSE() {
-    if (evtSource) return;
+    if (evtSource) return;   // already connecting/connected
     evtSource = new EventSource(API + '/api/stream');
     const badge = document.getElementById('live-badge');
+
     evtSource.onopen = () => {
+        _sseRetryCount = 0;   // success — reset backoff counter
         if (badge) badge.style.display = 'inline-flex';
         hideSSEBanner();
-        // Show "restored" toast only if we had previously connected and then lost it
+        // Show "restored" toast only after a previous connection loss
         if (_sseWasConnected) showToast('Live metrics restored', 'success', 3000);
         _sseWasConnected = true;
     };
+
     evtSource.onmessage = (e) => {
         try {
             const d = JSON.parse(e.data);
-            // Topbar
             const cpu = d.cpu_percent; const ram = d.mem_percent;
             setEl('tb-cpu', cpu + '%');
             setEl('tb-ram', ram + '%');
             setEl('tb-load', d.load_1m);
             colorEl('tb-cpu', cpu < 50 ? '' : cpu < 80 ? 'orange' : 'red');
             colorEl('tb-ram', ram < 50 ? '' : ram < 80 ? 'orange' : 'red');
-            // Gauges
             updateGauge(_cpuChart,'cpu-gauge-text', cpu, 100);
             updateGauge(_memChart,'mem-gauge-text', ram, 100);
             setEl('cpu-badge', cpu + '%');
@@ -3339,12 +3663,24 @@ function startSSE() {
             setEl('mem-detail', d.mem_used_gb + ' / ' + d.mem_total_gb + ' GB');
         } catch(err) {}
     };
+
     evtSource.onerror = () => {
         if (badge) badge.style.display = 'none';
-        evtSource.close(); evtSource = null;
-        // Only show the banner if we had ever connected (avoid on initial page load failure)
+        // Null before close so the guard at the top doesn't block the retry
+        const dying = evtSource;
+        evtSource = null;
+        try { dying.close(); } catch(e) {}
+
+        // Show banner only after a first successful connection (not on initial load failure)
         if (_sseWasConnected) showSSEBanner();
-        setTimeout(startSSE, 5000);
+
+        _sseRetryCount++;
+        const delay = _sseRetryDelay();
+        // Update banner text so user can see reconnect is in progress
+        const bannerMsg = document.getElementById('sse-banner-msg');
+        if (bannerMsg) bannerMsg.textContent =
+            `Lost connection — reconnecting in ${Math.round(delay/1000)}s (attempt ${_sseRetryCount})…`;
+        setTimeout(startSSE, delay);
     };
 }
 
@@ -3457,7 +3793,7 @@ const ICONS = {
     grafana:'📊', prometheus:'📈', jellyfin:'🎬', plex:'🎬', emby:'🎬',
     radarr:'🎥', sonarr:'📺', lidarr:'🎵', bazarr:'💬', prowlarr:'🔍',
     qbittorrent:'⬇️', transmission:'⬇️', nextcloud:'☁️', portainer:'🐳',
-    watchtower:'👁️', dozzle:'📋', uptime:'✅', homer:'🏠', homarr:'🏠',
+    watchtower:'👁️', dozzle:'📋', uptime:'✅', launcharr:'🚀', dasherr:'🏠',
     immich:'📷', vaultwarden:'🔐', pihole:'🛡️', adguard:'🛡️',
     wireguard:'🔒', tailscale:'🔒', gitea:'🐙', postgres:'🐘',
     redis:'🔴', mariadb:'🐬', netdata:'📡', glances:'👀',
@@ -3493,49 +3829,31 @@ function setCtrView(mode) {
     if (mode === 'table') renderContainerTable();
 }
 
-function renderContainers() {
-    const grid = document.getElementById('ctr-grid');
-    let ctrs = allContainers;
-    if (ctrFilter !== 'all') ctrs = ctrs.filter(c => c.status === ctrFilter);
-    if (!ctrs.length) {
-        grid.innerHTML = '<div class="empty"><div class="empty-icon">📦</div><div class="empty-text">No containers match filter</div></div>';
-        if (ctrViewMode === 'table') renderContainerTable();
-        return;
-    }
-    // Sort: running first
-    ctrs = [...ctrs].sort((a,b)=>{
-        if(a.status==='running' && b.status!=='running') return -1;
-        if(a.status!=='running' && b.status==='running') return 1;
-        return a.name.localeCompare(b.name);
-    });
-    // Destroy old Chart.js instances to avoid canvas reuse errors
-    Object.keys(_ctrCharts).forEach(n => {
-        try { _ctrCharts[n].cpu.destroy(); _ctrCharts[n].mem.destroy(); } catch(e) {}
-        delete _ctrCharts[n];
-    });
-    grid.innerHTML = ctrs.map(c => {
-        const sc = statusClass(c.status);
-        const icon = ctrIcon(c.name);
-        const ports = c.ports && c.ports.length ? c.ports.join(', ') : '—';
-        const uptime = c.uptime || '—';
-        const isRunning = c.status === 'running';
-        // 6. Memory progress bar (initially hidden; updated in loadCtrStats)
-        return `
-<div class="ctr-card" id="card-${c.name}">
+// Build the static HTML shell for one container card (charts injected separately).
+// Splitting static HTML from dynamic state lets us update cards in-place without
+// destroying Chart.js canvas instances.
+function _ctrCardHTML(c) {
+    const sc = statusClass(c.status);
+    const icon = ctrIcon(c.name);
+    const ports = c.ports && c.ports.length ? c.ports.join(', ') : '—';
+    const uptime = c.uptime || '—';
+    const isRunning = c.status === 'running';
+    return `
+<div class="ctr-card" id="card-${c.name}" data-status="${c.status}">
   <div class="ctr-header">
     <div class="ctr-icon">${icon}</div>
     <div class="ctr-info">
       <div class="ctr-name">${c.name}</div>
       <div class="ctr-image">${c.image}</div>
       <div>
-        <span class="ctr-status ${sc}">
+        <span class="ctr-status ${sc}" id="ctr-status-badge-${c.name}">
           <span class="ctr-status-dot"></span>${c.status}
         </span>
       </div>
     </div>
   </div>
   <div class="ctr-body">
-    <div class="ctr-row"><span>Uptime</span><span>${uptime}</span></div>
+    <div class="ctr-row"><span>Uptime</span><span id="ctr-uptime-${c.name}">${uptime}</span></div>
     <div class="ctr-row"><span>ID</span><span>${c.id}</span></div>
     <div class="ctr-row"><span>Ports</span><span class="ctr-ports">${ports}</span></div>
   </div>
@@ -3559,22 +3877,128 @@ function renderContainers() {
       <div style="font-size:10px;color:var(--text3);margin-top:4px">MEM</div>
     </div>
   </div>
-  <div class="ctr-footer">
+  <div class="ctr-footer" id="ctr-footer-${c.name}">
     ${isRunning
       ? `<button class="btn red" onclick="ctrAction('${c.name}','stop')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" stroke-width="2"/></svg>Stop</button>`
       : `<button class="btn green" onclick="ctrAction('${c.name}','start')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>Start</button>`}
     <button class="btn orange" onclick="ctrAction('${c.name}','restart')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Restart</button>
     <button class="btn blue" onclick="openLogs('${c.name}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Logs</button>
-    <!-- 7. Update & Recreate button (running containers only) -->
     ${isRunning ? `<button class="btn purple" onclick="updateContainer('${c.name}')">⬆ Update</button>` : ''}
     <button class="btn red" onclick="ctrAction('${c.name}','remove')" style="margin-left:auto"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
   </div>
 </div>`;
-    }).join('');
+}
 
-    // Load stats for running containers — force=true bypasses throttle on first render
-    ctrs.filter(c=>c.status==='running').forEach(c => loadCtrStats(c.name, true));
-    // If table is visible, sync it
+// Update only the mutable parts of an existing card (status badge, uptime, footer
+// buttons) without touching the chart canvases.  This prevents the
+// destroy→rebuild cycle that caused flickering donuts.
+function _ctrCardUpdate(c) {
+    const badge = document.getElementById('ctr-status-badge-' + c.name);
+    if (badge) {
+        badge.className = 'ctr-status ' + statusClass(c.status);
+        badge.innerHTML = `<span class="ctr-status-dot"></span>${c.status}`;
+    }
+    const uptimeEl = document.getElementById('ctr-uptime-' + c.name);
+    if (uptimeEl) uptimeEl.textContent = c.uptime || '—';
+
+    // Swap footer buttons when running state changes
+    const card = document.getElementById('card-' + c.name);
+    if (card) {
+        const prevStatus = card.dataset.status;
+        if (prevStatus !== c.status) {
+            card.dataset.status = c.status;
+            const footer = document.getElementById('ctr-footer-' + c.name);
+            if (footer) {
+                // Replace only the start/stop button (first child)
+                const isRunning = c.status === 'running';
+                const newBtn = isRunning
+                    ? `<button class="btn red" onclick="ctrAction('${c.name}','stop')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" stroke-width="2"/></svg>Stop</button>`
+                    : `<button class="btn green" onclick="ctrAction('${c.name}','start')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>Start</button>`;
+                footer.innerHTML = newBtn +
+                    `<button class="btn orange" onclick="ctrAction('${c.name}','restart')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Restart</button>
+                    <button class="btn blue" onclick="openLogs('${c.name}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Logs</button>
+                    ${isRunning ? `<button class="btn purple" onclick="updateContainer('${c.name}')">⬆ Update</button>` : ''}
+                    <button class="btn red" onclick="ctrAction('${c.name}','remove')" style="margin-left:auto"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>`;
+            }
+            // Destroy chart only when container goes from running→stopped (stats no longer valid)
+            if (!isRunning && _ctrCharts[c.name]) {
+                try { _ctrCharts[c.name].cpu.destroy(); _ctrCharts[c.name].mem.destroy(); } catch(e) {}
+                delete _ctrCharts[c.name];
+                const cpuEl = document.getElementById('stat-cpu-' + c.name);
+                const memEl = document.getElementById('stat-mem-' + c.name);
+                if (cpuEl) cpuEl.textContent = '—';
+                if (memEl) memEl.textContent = '—';
+            }
+        }
+    }
+}
+
+function renderContainers() {
+    const grid = document.getElementById('ctr-grid');
+    let ctrs = allContainers;
+    if (ctrFilter !== 'all') ctrs = ctrs.filter(c => c.status === ctrFilter);
+
+    if (!ctrs.length) {
+        // Destroy all charts before clearing
+        Object.keys(_ctrCharts).forEach(n => {
+            try { _ctrCharts[n].cpu.destroy(); _ctrCharts[n].mem.destroy(); } catch(e) {}
+            delete _ctrCharts[n];
+        });
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">📦</div><div class="empty-text">No containers match filter</div></div>';
+        if (ctrViewMode === 'table') renderContainerTable();
+        return;
+    }
+
+    // Sort: running first, then alphabetical
+    ctrs = [...ctrs].sort((a,b)=>{
+        if(a.status==='running' && b.status!=='running') return -1;
+        if(a.status!=='running' && b.status==='running') return 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    const newNames = new Set(ctrs.map(c => c.name));
+    const existingCards = new Set(
+        [...grid.querySelectorAll('.ctr-card')].map(el => el.id.replace('card-', ''))
+    );
+
+    // Remove cards for containers that no longer exist / are filtered out
+    existingCards.forEach(name => {
+        if (!newNames.has(name)) {
+            const el = document.getElementById('card-' + name);
+            if (el) el.remove();
+            if (_ctrCharts[name]) {
+                try { _ctrCharts[name].cpu.destroy(); _ctrCharts[name].mem.destroy(); } catch(e) {}
+                delete _ctrCharts[name];
+            }
+        }
+    });
+
+    // If the grid had a non-card placeholder (empty state), clear it
+    if (grid.querySelector('.empty')) grid.innerHTML = '';
+
+    // Add new cards; update existing ones in-place (no chart destruction)
+    ctrs.forEach((c, idx) => {
+        if (!existingCards.has(c.name)) {
+            // New container — inject card HTML then initialise charts in next tick
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = _ctrCardHTML(c).trim();
+            const card = wrapper.firstChild;
+            // Insert at correct sorted position
+            const allCards = [...grid.querySelectorAll('.ctr-card')];
+            const nextCard = allCards[idx];
+            if (nextCard) grid.insertBefore(card, nextCard);
+            else grid.appendChild(card);
+            // Charts must be created after the canvas is in the DOM
+            if (c.status === 'running') {
+                requestAnimationFrame(() => loadCtrStats(c.name, true));
+            }
+        } else {
+            // Existing container — update mutable fields only, leave charts alone
+            _ctrCardUpdate(c);
+            if (c.status === 'running') loadCtrStats(c.name, false);
+        }
+    });
+
     if (ctrViewMode === 'table') renderContainerTable();
 }
 
@@ -4139,6 +4563,15 @@ async function loadSettings() {
         setInput('cfg-tz', s.tz);
         setInput('cfg-puid', s.puid);
         setInput('cfg-pgid', s.pgid);
+        // Service integration fields
+        setInput('svc-radarr-url',  s.radarr_url);
+        setInput('svc-radarr-key',  s.radarr_api_key);
+        setInput('svc-sonarr-url',  s.sonarr_url);
+        setInput('svc-sonarr-key',  s.sonarr_api_key);
+        setInput('svc-plex-url',    s.plex_url);
+        setInput('svc-plex-token',  s.plex_token);
+        setInput('svc-seerr-url',   s.seerr_url);
+        setInput('svc-seerr-key',   s.seerr_api_key);
     } catch(e) {}
 }
 
@@ -4169,16 +4602,34 @@ async function loadWeather() {
         const d = await r.json();
         if (d.error) return;
         if (!d.daily || d.daily.length === 0) return;
-        const w = d.daily[0];
-        const city = d.location || '';
+        const w = d.daily[0];   // today
+
+        // Current conditions (from open-meteo /current)
         const temp = w.temp_max !== undefined ? Math.round(w.temp_max) : '—';
         setEl('weather-temp', temp + '°C');
         setEl('weather-desc', w.desc || 'Clear');
-        setEl('weather-location', city);
-        setEl('weather-humidity', '—');
-        setEl('weather-wind', '—');
+        setEl('weather-location', d.location || '');
+        setEl('weather-humidity', d.humidity != null ? d.humidity + '%' : '—');
+        setEl('weather-wind', d.wind_mph != null ? d.wind_mph + ' mph' : '—');
+        setEl('weather-feels', d.feels_like != null ? Math.round(d.feels_like) + '°C' : '—');
         const iconEl = document.getElementById('weather-icon');
-        if (iconEl && w.icon) iconEl.textContent = WEATHER_ICONS[String(w.icon)] || '🌤️';
+        if (iconEl && w.icon) iconEl.textContent = w.icon;
+
+        // 5-day forecast strip
+        const forecastEl = document.getElementById('weather-forecast');
+        if (forecastEl && d.daily) {
+            forecastEl.innerHTML = d.daily.map((day, i) => {
+                const label = i === 0 ? 'Today' : new Date(day.date + 'T12:00').toLocaleDateString(undefined, {weekday:'short'});
+                const hi = day.temp_max != null ? Math.round(day.temp_max) + '°' : '—';
+                const lo = day.temp_min != null ? Math.round(day.temp_min) + '°' : '—';
+                return `<div style="flex:1;min-width:56px;text-align:center;background:var(--surface);border-radius:var(--r);padding:6px 4px;">
+                  <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${label}</div>
+                  <div style="font-size:20px;line-height:1.2">${day.icon || '🌤️'}</div>
+                  <div style="font-size:11px;font-weight:600;color:var(--text)">${hi}</div>
+                  <div style="font-size:10px;color:var(--text3)">${lo}</div>
+                </div>`;
+            }).join('');
+        }
     } catch(e) {}
 }
 
@@ -4208,7 +4659,7 @@ function setRSSView(v) {
 
 async function loadRSSFeeds() {
     const content = document.getElementById('rss-content');
-    if (content) content.innerHTML = '<div style="color:var(--text3);padding:20px">Loading feeds\u2026</div>';
+    if (content) content.innerHTML = '<div style="color:var(--text3);padding:20px">Loading feeds…</div>';
     try {
         const r = await fetch(API + '/api/rss/feeds');
         const d = await r.json();
@@ -4222,8 +4673,6 @@ async function loadRSSFeeds() {
                 `<div class="filter-pill${c===rssCatFilter?' active':''}" onclick="rssSetCat('${c}')">${c}</div>`
             ).join('');
         }
-
-        // Render feed columns
         renderRSSFeeds(cats);
     } catch(e) {
         if (content) content.innerHTML = '<div style="color:var(--red);padding:20px">Failed to load feeds</div>';
@@ -4235,7 +4684,6 @@ function rssSetCat(cat) {
     document.querySelectorAll('#rss-cat-pills .filter-pill').forEach(p => {
         p.classList.toggle('active', p.textContent === cat);
     });
-    // Re-render with current data (re-fetch to keep fresh)
     loadRSSFeeds();
 }
 
@@ -4247,30 +4695,32 @@ async function renderRSSFeeds(cats) {
         ? Object.entries(cats)
         : Object.entries(cats).filter(([k]) => k === rssCatFilter);
 
-    // Render placeholder columns first
+    // Each category gets a column with source tabs and rich card items below
     content.innerHTML = toLoad.map(([cat, feeds]) => `
         <div class="panel rss-col" id="rss-col-${cat.replace(/\s/g,'_')}">
           <div class="panel-title" style="font-size:13px;font-weight:700">
-            ${feeds[0]&&feeds[0].icon ? feeds[0].icon : '\u{1F4F0}'} ${cat}
+            ${feeds[0]&&feeds[0].icon ? feeds[0].icon : '📰'} ${cat}
           </div>
-          <div class="rss-feed-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
-            ${feeds.map((f,i) => `<button class="filter-pill${i===0?' active':''}" style="font-size:10px;padding:2px 8px" onclick="loadFeedItems('${cat.replace(/\s/g,'_')}','${encodeURIComponent(f.url)}','${encodeURIComponent(f.name)}',this)">${f.icon} ${f.name}</button>`).join('')}
+          <div class="rss-feed-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">
+            ${feeds.map((f,i) => `<button class="filter-pill${i===0?' active':''}" style="font-size:10px;padding:2px 8px"
+                onclick="loadFeedItems('${cat.replace(/\s/g,'_')}','${encodeURIComponent(f.url)}','${encodeURIComponent(f.name)}',this)">${f.icon} ${f.name}</button>`).join('')}
           </div>
           <div class="rss-items" id="rss-items-${cat.replace(/\s/g,'_')}">
-            <div style="color:var(--text3);font-size:12px;padding:8px">Loading\u2026</div>
+            <div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>
+            <div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>
+            <div class="skeleton" style="height:80px;border-radius:var(--r)"></div>
           </div>
         </div>`).join('');
 
-    // Load first feed for each category
-    for (const [cat, feeds] of toLoad) {
-        if (feeds.length > 0) {
-            loadFeedItems(cat.replace(/\s/g,'_'), encodeURIComponent(feeds[0].url), encodeURIComponent(feeds[0].name), null);
-        }
-    }
+    // Load first feed for each visible category in parallel
+    await Promise.all(toLoad.map(([cat, feeds]) => {
+        if (feeds.length > 0)
+            return loadFeedItems(cat.replace(/\s/g,'_'), encodeURIComponent(feeds[0].url), encodeURIComponent(feeds[0].name), null);
+    }));
 }
 
 async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
-    // Update active tab
+    // Highlight the selected source tab
     const col = document.getElementById('rss-col-' + catId);
     if (col && btnEl) {
         col.querySelectorAll('.rss-feed-tabs .filter-pill').forEach(b => b.classList.remove('active'));
@@ -4279,7 +4729,8 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
 
     const itemsEl = document.getElementById('rss-items-' + catId);
     if (!itemsEl) return;
-    itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">Loading\u2026</div>';
+    // Skeleton while fetching
+    itemsEl.innerHTML = '<div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>'.repeat(3);
 
     try {
         const url = decodeURIComponent(encodedUrl);
@@ -4288,16 +4739,29 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
         const items = d.items || [];
 
         if (!items.length) {
-            itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No items found</div>';
+            itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No items found</div>';
             return;
         }
 
-        itemsEl.innerHTML = items.slice(0,12).map(item => `
-            <a href="${item.link}" target="_blank" rel="noopener" style="display:block;text-decoration:none;padding:8px 4px;border-bottom:1px solid var(--border);">
-              <div style="font-size:12px;font-weight:500;color:var(--text);line-height:1.4;margin-bottom:3px">${item.title}</div>
-              <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
-            </a>`).join('') +
-            `<div style="padding:6px 4px;font-size:10px;color:var(--text3)">${decodeURIComponent(encodedName)}</div>`;
+        // Rich card layout: thumbnail left, title+excerpt+date right
+        itemsEl.innerHTML = items.slice(0, 12).map(item => `
+            <a href="${item.link}" target="_blank" rel="noopener"
+               style="display:flex;gap:10px;text-decoration:none;padding:8px 4px;border-bottom:1px solid var(--border);transition:background .12s ease;"
+               onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+              ${item.thumb
+                ? `<img src="${item.thumb}" loading="lazy" style="width:72px;height:52px;object-fit:cover;border-radius:5px;flex-shrink:0;background:var(--surface2)"
+                        onerror="this.style.display='none'">`
+                : `<div style="width:72px;height:52px;flex-shrink:0;background:var(--surface2);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text3)">📰</div>`}
+              <div style="flex:1;min-width:0;overflow:hidden">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:3px;
+                     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.title}</div>
+                ${item.excerpt
+                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.3;margin-bottom:3px;
+                            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.excerpt}</div>`
+                    : ''}
+                <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
+              </div>
+            </a>`).join('');
     } catch(e) {
         itemsEl.innerHTML = '<div style="color:var(--red);font-size:11px;padding:8px">Failed to load feed</div>';
     }
@@ -4386,6 +4850,164 @@ async function loadOverviewExtras() {
     } catch(e) {}
     // Dashboard containers panel
     loadDashboardContainers();
+    // Service integration cards
+    loadRadarrCard();
+    loadSonarrCard();
+    loadPlexCard();
+    loadSeerrCard();
+}
+
+// ── Service Card Loaders ───────────────────────────────────────────────
+// Each checks if the service is configured; if not, shows a "configure" prompt.
+
+function _svcUnconfigured(bodyId, svcName, settingsTab) {
+    const el = document.getElementById(bodyId);
+    if (el) el.innerHTML = `<div style="text-align:center;padding:12px 8px;color:var(--text3);font-size:12px">
+      <div style="font-size:20px;margin-bottom:4px">⚙️</div>
+      ${svcName} not configured — <a href="#" style="color:var(--blue)" onclick="showTab('settings',null);return false">add API key in Settings</a>
+    </div>`;
+}
+
+function _svcError(bodyId, msg) {
+    const el = document.getElementById(bodyId);
+    if (el) el.innerHTML = `<div style="color:var(--text3);font-size:11px;padding:8px;text-align:center">⚠ ${msg}</div>`;
+}
+
+async function loadRadarrCard() {
+    try {
+        const r = await fetch(API + '/api/services/radarr/calendar');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('radarr-card-body', 'Radarr');
+        if (d.error)  return _svcError('radarr-card-body', d.error);
+        const el = document.getElementById('radarr-card-body');
+        if (!el) return;
+        if (!d.movies || !d.movies.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming releases in the next 14 days</div>';
+            return;
+        }
+        el.innerHTML = d.movies.map(m => `
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+            ${m.poster ? `<img src="${m.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title} <span style="color:var(--text3);font-weight:400">(${m.year||''})</span></div>
+              <div style="font-size:10px;color:var(--text3)">${m.date || 'TBA'}</div>
+            </div>
+            ${m.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
+          </div>`).join('');
+    } catch(e) { _svcError('radarr-card-body', 'Could not reach Radarr'); }
+}
+
+async function loadSonarrCard() {
+    try {
+        const r = await fetch(API + '/api/services/sonarr/calendar');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('sonarr-card-body', 'Sonarr');
+        if (d.error) return _svcError('sonarr-card-body', d.error);
+        const el = document.getElementById('sonarr-card-body');
+        if (!el) return;
+        if (!d.episodes || !d.episodes.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming episodes this week</div>';
+            return;
+        }
+        el.innerHTML = d.episodes.map(ep => `
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+            ${ep.poster ? `<img src="${ep.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ep.series}</div>
+              <div style="font-size:10px;color:var(--text2)">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} · ${ep.title}</div>
+              <div style="font-size:10px;color:var(--text3)">${ep.airDate || 'TBA'}</div>
+            </div>
+            ${ep.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
+          </div>`).join('');
+    } catch(e) { _svcError('sonarr-card-body', 'Could not reach Sonarr'); }
+}
+
+async function loadPlexCard() {
+    try {
+        const r = await fetch(API + '/api/services/plex/sessions');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('plex-card-body', 'Plex');
+        if (d.error) return _svcError('plex-card-body', d.error);
+        const el = document.getElementById('plex-card-body');
+        if (!el) return;
+        const count = document.getElementById('plex-stream-count');
+        if (count) count.textContent = (d.sessions||[]).length + ' stream' + ((d.sessions||[]).length===1?'':'s');
+        if (!d.sessions || !d.sessions.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">Nothing playing right now</div>';
+            return;
+        }
+        el.innerHTML = d.sessions.map(s => {
+            const pct = s.progress || 0;
+            const barColor = pct > 80 ? 'var(--green)' : 'var(--blue)';
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                <span style="font-size:14px">▶</span>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.title}</div>
+                  ${s.subtitle ? `<div style="font-size:10px;color:var(--text2)">${s.subtitle}</div>` : ''}
+                  <div style="font-size:10px;color:var(--text3)">${s.user || 'Unknown user'} · ${s.player || ''}</div>
+                </div>
+                <span style="font-size:11px;font-weight:600;color:var(--blue);flex-shrink:0">${pct}%</span>
+              </div>
+              <div style="background:var(--surface2);border-radius:2px;height:3px">
+                <div style="width:${pct}%;height:3px;background:${barColor};border-radius:2px;transition:width .5s ease"></div>
+              </div>
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError('plex-card-body', 'Could not reach Plex'); }
+}
+
+async function loadSeerrCard() {
+    const STATUS_LABELS = {1:'Pending',2:'Approved',3:'Declined',4:'Available'};
+    const STATUS_COLORS = {1:'var(--yellow)',2:'var(--green)',3:'var(--red)',4:'var(--blue)'};
+    try {
+        const r = await fetch(API + '/api/services/seerr/requests');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('seerr-card-body', 'Seerr');
+        if (d.error) return _svcError('seerr-card-body', d.error);
+        const el = document.getElementById('seerr-card-body');
+        if (!el) return;
+        if (!d.requests || !d.requests.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No recent requests</div>';
+            return;
+        }
+        el.innerHTML = d.requests.map(req => {
+            const lbl   = STATUS_LABELS[req.status] || 'Unknown';
+            const color = STATUS_COLORS[req.status] || 'var(--text3)';
+            const typeIcon = req.type === 'movie' ? '🎬' : req.type === 'tv' ? '📺' : '❓';
+            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+              <span style="font-size:16px;flex-shrink:0">${typeIcon}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;color:var(--text2)">TMDB #${req.title || req.id}</div>
+                <div style="font-size:10px;color:var(--text3)">by ${req.requestedBy || '?'} · ${req.createdAt}</div>
+              </div>
+              <span style="font-size:10px;font-weight:600;color:${color};flex-shrink:0">${lbl}</span>
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError('seerr-card-body', 'Could not reach Seerr'); }
+}
+
+// ── Service settings save/load ─────────────────────────────────────────
+async function saveSvcSettings() {
+    const fields = {
+        radarr_url: 'svc-radarr-url', radarr_api_key: 'svc-radarr-key',
+        sonarr_url: 'svc-sonarr-url', sonarr_api_key: 'svc-sonarr-key',
+        plex_url:   'svc-plex-url',   plex_token:     'svc-plex-token',
+        seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key'
+    };
+    const payload = {};
+    for (const [key, id] of Object.entries(fields)) {
+        const el = document.getElementById(id);
+        if (el) payload[key] = el.value.trim();
+    }
+    try {
+        const r = await fetch(API + '/api/settings', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const d = await r.json();
+        showToast(d.error ? 'Error: ' + d.error : 'Service settings saved', d.error ? 'error' : 'success');
+    } catch(e) { showToast('Save failed', 'error'); }
 }
 
 async function loadDashboardContainers() {

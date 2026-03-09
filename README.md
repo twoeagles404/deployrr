@@ -274,6 +274,11 @@ Then open **http://localhost:9999** in your browser.
 > `ARRHUB_DB` points the SQLite database to `/tmp` so the app doesn't need `/data` to exist.
 > `ARRHUB_NO_AUTH=true` skips token authentication for local testing.
 
+**Install git hooks** (prevents committing the wrong `GITHUB_BRANCH` in `install.sh`):
+```bash
+git config core.hooksPath .github/hooks
+```
+
 ---
 
 ## Docker Run (Manual)

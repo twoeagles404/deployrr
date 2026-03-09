@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.7.0 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.8.0 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.7.0"
+VERSION="3.8.0"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -371,22 +371,22 @@ LOCAL_IMAGE_APPS=(arrhub_webui)
 
 # Full Stack Presets
 # Preset stacks — Homer and Homarr removed (ArrHub WebUI replaces them)
-MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr arrhub_webui)
-ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr qbittorrent seerr boxarr arrhub_webui)
-MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr seerr boxarr tautulli arrhub_webui)
+MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr)
+ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr qbittorrent seerr boxarr)
+MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr seerr boxarr tautulli)
 FULL_STACK_ARR=(prowlarr radarr sonarr lidarr bazarr whisparr doplarr boxarr seerr recyclarr unpackerr notifiarr)
-FULL_STACK_TOOLS=(seerr tautulli flaresolverr launcharr arrhub_webui)
+FULL_STACK_TOOLS=(seerr tautulli flaresolverr launcharr)
 FULL_STACK_MONITORING=(grafana prometheus uptime_kuma dozzle watchtower scrutiny speedtest)
-# New smart preset stacks
-MOVIES_PRESET=(plex qbittorrent prowlarr radarr unpackerr seerr tautulli arrhub_webui)
-MUSIC_PRESET=(navidrome qbittorrent prowlarr lidarr seerr arrhub_webui)
-PHOTOS_PRESET=(immich arrhub_webui)
-HOMELAB_PRESET=(portainer dozzle watchtower uptime_kuma nginx arrhub_webui)
-GAMING_PRESET=(sunshine moonlight_host arrhub_webui watchtower)
-HOME_AUTO_PRESET=(homeassistant mosquitto node_red zigbee2mqtt esphome arrhub_webui)
-DEV_PRESET=(gitea code_server portainer drone arrhub_webui)
-SECURITY_PRESET=(vaultwarden authentik uptime_kuma arrhub_webui)
-DOWNLOADS_PRESET=(qbittorrent sabnzbd prowlarr radarr sonarr unpackerr arrhub_webui)
+# Smart preset stacks — arrhub_webui is excluded here as install.sh already installs it first
+MOVIES_PRESET=(plex qbittorrent prowlarr radarr unpackerr seerr tautulli)
+MUSIC_PRESET=(navidrome qbittorrent prowlarr lidarr seerr)
+PHOTOS_PRESET=(immich)
+HOMELAB_PRESET=(portainer dozzle watchtower uptime_kuma nginx)
+GAMING_PRESET=(sunshine moonlight_host watchtower)
+HOME_AUTO_PRESET=(homeassistant mosquitto node_red zigbee2mqtt esphome)
+DEV_PRESET=(gitea code_server portainer drone)
+SECURITY_PRESET=(vaultwarden authentik uptime_kuma)
+DOWNLOADS_PRESET=(qbittorrent sabnzbd prowlarr radarr sonarr unpackerr)
 
 # ---------------------------------------------------------------------------
 # Requirements check

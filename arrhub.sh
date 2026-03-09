@@ -2868,11 +2868,26 @@ tailscale_menu() {
                         printf '\033[1;32m  tailscaled started via systemctl\033[0m\n'
                     else
                         mkdir -p /var/lib/tailscale /run/tailscale
+                        # LXC: use userspace networking if TUN device is unavailable
+                        local _ts_tun_flag=""
+                        [[ ! -e /dev/net/tun ]] && _ts_tun_flag="--tun=userspace-networking"
                         tailscaled --state=/var/lib/tailscale/tailscaled.state \
-                            --socket=/run/tailscale/tailscaled.sock &>/dev/null &
-                        sleep 3
+                            --socket=/run/tailscale/tailscaled.sock \
+                            ${_ts_tun_flag} &>/dev/null &
                         printf '\033[1;32m  tailscaled started in background\033[0m\n'
                     fi
+                fi
+                # Poll for socket readiness instead of a fixed sleep (LXC can be slow to init)
+                printf '\033[1;33m  Waiting for tailscaled socket'
+                local _ts_waited=0
+                until [[ -S "/run/tailscale/tailscaled.sock" ]] || (( _ts_waited >= 20 )); do
+                    printf '.'
+                    sleep 1
+                    (( _ts_waited++ ))
+                done
+                printf '\033[0m\n'
+                if [[ ! -S "/run/tailscale/tailscaled.sock" ]]; then
+                    printf '\033[1;31m  tailscaled socket not ready — check: systemctl status tailscaled\033[0m\n'
                 fi
                 printf '\033[1;32m  Tailscale installed. Use menu option 2 (Connect) to authenticate.\033[0m\n'
                 _live_wait_return
@@ -2926,22 +2941,45 @@ tailscale_menu() {
                 flags=$(d_inputbox "tailscale up flags" \
 "Optional flags (leave blank for defaults):\n\nExamples:\n  --accept-routes\n  --advertise-exit-node\n  --shields-up\n  --exit-node=<ip>" "") || { _live_wait_return; continue; }
                 # Ensure tailscaled daemon is running (needed in LXC containers)
-                if ! systemctl is-active --quiet tailscaled 2>/dev/null; then
-                    printf '[1;33m  tailscaled not running — attempting to start...[0m
-'
+                if ! systemctl is-active --quiet tailscaled 2>/dev/null && ! pgrep -x tailscaled &>/dev/null; then
+                    printf '\033[1;33m  tailscaled not running — attempting to start...\033[0m\n'
                     if systemctl start tailscaled 2>/dev/null; then
-                        printf '[1;32m  tailscaled started via systemctl[0m
-'
-                        sleep 2
-                    elif ! pgrep -x tailscaled &>/dev/null; then
-                        printf '[1;33m  Starting tailscaled in background...[0m
-'
+                        printf '\033[1;32m  tailscaled started via systemctl\033[0m\n'
+                    else
+                        # Fallback: start directly (LXC without systemd, or systemd not managing tailscale)
+                        printf '\033[1;33m  Starting tailscaled in background...\033[0m\n'
+                        mkdir -p /var/lib/tailscale /run/tailscale
+                        # Use userspace networking if TUN device is unavailable (common in unprivileged LXC)
+                        local _tun_flag=""
+                        [[ ! -e /dev/net/tun ]] && _tun_flag="--tun=userspace-networking"
                         tailscaled --state=/var/lib/tailscale/tailscaled.state \
-                            --socket=/run/tailscale/tailscaled.sock &>/dev/null &
-                        sleep 3
+                            --socket=/run/tailscale/tailscaled.sock \
+                            ${_tun_flag} &>/dev/null &
                     fi
                 fi
-                ${ts_cmd} up ${flags} 2>&1 | tee "${tmp}" || true
+                # Poll for socket readiness — do NOT run tailscale up until daemon is ready
+                # (race condition: systemctl returns before the unix socket is created)
+                printf '\033[1;33m  Waiting for tailscaled socket'
+                local _tw=0
+                until [[ -S "/run/tailscale/tailscaled.sock" ]] || (( _tw >= 20 )); do
+                    printf '.'
+                    sleep 1
+                    (( _tw++ ))
+                done
+                printf '\033[0m\n'
+                if [[ ! -S "/run/tailscale/tailscaled.sock" ]]; then
+                    printf '\033[1;31m  ERROR: tailscaled socket not ready after 20s.\033[0m\n'
+                    printf '\033[1;31m  LXC fix: ensure container has nesting=1 and TUN device enabled.\033[0m\n'
+                    printf '\033[1;31m  Proxmox: pct set <vmid> --features nesting=1\033[0m\n'
+                    _live_wait_return; continue
+                fi
+                # Run tailscale up; if TUN device missing, retry with userspace networking
+                if ! ${ts_cmd} up ${flags} 2>&1 | tee "${tmp}"; then
+                    if grep -qi "tun\|no such device\|not found" "${tmp}" 2>/dev/null; then
+                        printf '\033[1;33m  TUN unavailable — retrying with --tun=userspace-networking\033[0m\n'
+                        ${ts_cmd} up ${flags} --tun=userspace-networking 2>&1 | tee "${tmp}" || true
+                    fi
+                fi
                 log INFO "Tailscale up: ${flags}"
                 _live_wait_return
                 ;;

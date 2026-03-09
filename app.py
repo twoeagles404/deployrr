@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.7.0 · Full deployment, update management, and real-time monitoring
+Version: 3.8.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.7.0"
+            "version": "3.8.0"
         }
     })
 
@@ -2759,12 +2759,30 @@ body.sse-disconnected #app{padding-top:38px;}
   .settings-grid{grid-template-columns:1fr;}
   #topbar .tb-stat:nth-child(4){display:none;} /* hide Load stat */
   .topbar-hostname{display:none;}
+  /* Port map: full width on small screens */
+  .pm-group{margin-bottom:6px;}
+  /* Stack manager: single column */
+  #stack-list{grid-template-columns:1fr!important;}
+  /* RSS view tabs: wrap on very small screens */
+  #tab-rss .section-header{flex-wrap:wrap;gap:8px;}
+  /* Containers section-header: wrap */
+  #tab-containers .section-header{flex-direction:column;align-items:flex-start;gap:8px;}
+  /* Disk list: 1 column on tiny screens */
+  #disk-list{grid-template-columns:1fr!important;}
+  /* Network chart canvases: respect container width */
+  #net-tx-canvas,#net-rx-canvas{max-width:100%;}
 }
 
 /* Touch-friendly minimum heights */
 @media(max-width:900px){
   .btn,.filter-pill,.tab-btn{min-height:40px;}
   .bn-item{min-height:40px;}
+  /* Live feeds / IPTV: don't use full-page iframes on mobile */
+  #rss-live-view iframe{height:220px;}
+  /* GridStack: disable drag on mobile (too difficult on touch) */
+  .grid-stack.gs-editing .grid-stack-item > .ui-resizable-handle{touch-action:none;}
+  /* HLS video players: full width */
+  #rss-iptv-view video{height:180px!important;}
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -2925,7 +2943,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.7.0</div>
+      <div class="sb-version">v3.8.0</div>
     </div>
   </div>
 
@@ -3563,7 +3581,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.7.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.8.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -3577,6 +3595,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <div style="display:flex;gap:8px;align-items:center">
           <button class="view-btn active" id="rss-view-feeds" onclick="setRSSView('feeds')">📰 Feeds</button>
           <button class="view-btn" id="rss-view-live" onclick="setRSSView('live')">📺 Live News</button>
+          <button class="view-btn" id="rss-view-iptv" onclick="setRSSView('iptv')">🎬 Free TV</button>
           <div id="rss-all-controls" style="gap:6px;align-items:center">
             <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssExpandAll()">⊞ Expand All</button>
             <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssCollapseAll()">⊟ Collapse All</button>
@@ -3598,9 +3617,9 @@ body.sse-disconnected #app{padding-top:38px;}
            YouTube live streams are used instead — these are the official 24/7 streams for each channel. -->
       <div id="rss-live-view" style="display:none">
         <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-          📺 Live streams via YouTube — official 24/7 channels. Free & ad-supported.
+          📺 Official 24/7 YouTube live streams — free &amp; ad-supported. Click a stream to start playback.
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(480px,1fr));gap:12px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
           <div class="panel">
             <div class="panel-title">🇬🇧 BBC News</div>
             <iframe src="https://www.youtube.com/embed/live_stream?channel=UCBi2mrWuNuyYy4gbM6fU18Q&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
@@ -3649,6 +3668,107 @@ body.sse-disconnected #app{padding-top:38px;}
             <div class="panel-title">🌿 Nature & Relax — 8K</div>
             <iframe src="https://www.youtube.com/embed/live_stream?channel=UCiyZqDEhm2Jbj-Sg-JQMuSg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
+        </div>
+      </div>
+
+      <!-- ─────────────────────────────────────────────────────────────────────
+           Free TV / IPTV view — HLS.js live streams + free streaming services
+           ───────────────────────────────────────────────────────────────────── -->
+      <div id="rss-iptv-view" style="display:none">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:14px">
+          🎬 Free TV — HLS live streams play directly in-browser (click ▶ Play to start). Free streaming links open in a new tab.
+        </div>
+
+        <!-- HLS live streams -->
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <span>📡 HLS Live Streams</span>
+          <span style="font-size:10px;font-weight:400;color:var(--text3)">(plays in browser via HLS.js)</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:20px">
+
+          <!-- NASA TV -->
+          <div class="panel" style="margin:0">
+            <div class="panel-title">🚀 NASA TV</div>
+            <video id="hls-nasa" controls muted playsinline style="width:100%;height:200px;background:#000;border-radius:6px;object-fit:contain"></video>
+            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px" onclick="hlsPlay('hls-nasa','https://ntv1.akamaized.net/hls/live/2014075/NASA-NTV1-HLS/master.m3u8')">
+              ▶ Play NASA TV
+            </button>
+          </div>
+
+          <!-- France 24 English -->
+          <div class="panel" style="margin:0">
+            <div class="panel-title">🇫🇷 France 24 English</div>
+            <video id="hls-f24" controls muted playsinline style="width:100%;height:200px;background:#000;border-radius:6px;object-fit:contain"></video>
+            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px" onclick="hlsPlay('hls-f24','https://stream.france24.com/hls/live/2037800/F24_EN_LO_HLS/master.m3u8')">
+              ▶ Play France 24
+            </button>
+          </div>
+
+          <!-- Al Jazeera English -->
+          <div class="panel" style="margin:0">
+            <div class="panel-title">🌍 Al Jazeera English</div>
+            <video id="hls-aljazeera" controls muted playsinline style="width:100%;height:200px;background:#000;border-radius:6px;object-fit:contain"></video>
+            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px" onclick="hlsPlay('hls-aljazeera','https://live-hls-web-aje.getaj.net/AJE/index.m3u8')">
+              ▶ Play Al Jazeera
+            </button>
+          </div>
+
+          <!-- Custom M3U8 URL -->
+          <div class="panel" style="margin:0">
+            <div class="panel-title">🔗 Custom HLS Stream</div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Paste any M3U8 / HLS stream URL</div>
+            <input type="text" id="hls-custom-url" placeholder="https://example.com/stream.m3u8"
+              style="width:100%;padding:8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-bottom:6px">
+            <video id="hls-custom" controls muted playsinline style="width:100%;height:160px;background:#000;border-radius:6px;object-fit:contain"></video>
+            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px"
+              onclick="hlsPlay('hls-custom',document.getElementById('hls-custom-url').value.trim())">
+              ▶ Play Custom Stream
+            </button>
+          </div>
+        </div>
+
+        <!-- Free streaming services — external links -->
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <span>📺 Free Streaming Services</span>
+          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens in new tab)</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">
+          <a href="https://pluto.tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">📡</div>
+            <div style="font-weight:600;color:var(--text);font-size:13px">Pluto TV</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">250+ live channels</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://tubitv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🎬</div>
+            <div style="font-weight:600;color:var(--text);font-size:13px">Tubi</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; shows</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://watch.plex.tv/live-tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">▶️</div>
+            <div style="font-weight:600;color:var(--text);font-size:13px">Plex Free TV</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Live TV &amp; VOD</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://www.peacocktv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🦚</div>
+            <div style="font-weight:600;color:var(--text);font-size:13px">Peacock</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">NBC free tier</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE TIER</div>
+          </a>
+          <a href="https://therokuchannel.roku.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">📺</div>
+            <div style="font-weight:600;color:var(--text);font-size:13px">Roku Channel</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; live TV</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://www.crackle.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🎥</div>
+            <div style="font-weight:600;color:var(--text);font-size:13px">Crackle</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; originals</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+          </a>
         </div>
       </div>
     </div>
@@ -4592,7 +4712,7 @@ function _netChartInit(canvasId, label, color) {
             }]
         },
         options: {
-            responsive: true, maintainAspectRatio: true, animation: { duration: 0 },
+            responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
             scales: {
                 x: { display: false },
                 y: {
@@ -5144,8 +5264,12 @@ function setRSSView(v) {
     rssView = v;
     document.getElementById('rss-feeds-view').style.display = v === 'feeds' ? '' : 'none';
     document.getElementById('rss-live-view').style.display  = v === 'live'  ? '' : 'none';
-    document.querySelectorAll('#rss-view-feeds,#rss-view-live').forEach(b => b.classList.remove('active'));
+    document.getElementById('rss-iptv-view').style.display  = v === 'iptv'  ? '' : 'none';
+    document.querySelectorAll('#rss-view-feeds,#rss-view-live,#rss-view-iptv').forEach(b => b.classList.remove('active'));
     document.getElementById('rss-view-' + v).classList.add('active');
+    // Hide the expand/collapse controls on non-feed views
+    const ctl = document.getElementById('rss-all-controls');
+    if (ctl) ctl.style.display = v === 'feeds' ? '' : 'none';
 }
 
 async function loadRSSFeeds() {
@@ -5707,9 +5831,16 @@ function applyAccent(a) {
 }
 // Resolve Unsplash page URLs to direct image URLs
 function _resolveUnsplash(url) {
-    // https://unsplash.com/photos/abcXYZ → https://images.unsplash.com/photo-abcXYZ?w=1920&q=80
+    // Unsplash photo page format: https://unsplash.com/photos/description-slug-PHOTOID
+    // The actual photo ID is the LAST dash-separated token (e.g. MjH55Ef3w_0)
     const m = url.match(/unsplash\.com\/photos\/([\w-]+)/);
-    if (m) return `https://images.unsplash.com/photo-${m[1]}?w=1920&q=80`;
+    if (m) {
+        const slug = m[1].split('?')[0];
+        const parts = slug.split('-');
+        const photoId = parts[parts.length - 1]; // last segment is the short photo ID
+        // source.unsplash.com understands short IDs and serves the CDN image
+        return `https://source.unsplash.com/${photoId}/1920x1080`;
+    }
     // https://unsplash.com/s/photos/... (search page) — can't resolve directly
     if (url.includes('unsplash.com/s/')) return '';
     return url;
@@ -5772,6 +5903,42 @@ function _applyBg(url, blur, overlay) {
 
 // ── GridStack Drag-and-Drop Dashboard ─────────────────────────────────────
 // Requires gridstack@10 loaded below. Activated only when "Edit Layout" clicked.
+// ── HLS.js player helper ─────────────────────────────────────────────────────
+const _hlsInstances = {};  // track HLS instances keyed by videoId to avoid duplicates
+
+function hlsPlay(videoId, url) {
+    if (!url) { showToast('No stream URL provided', 'error'); return; }
+    const video = document.getElementById(videoId);
+    if (!video) return;
+
+    // Destroy any existing HLS instance for this element
+    if (_hlsInstances[videoId]) {
+        try { _hlsInstances[videoId].destroy(); } catch(e) {}
+        delete _hlsInstances[videoId];
+    }
+
+    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        _hlsInstances[videoId] = hls;
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            video.play().catch(() => {}); // autoplay may be blocked — that's fine
+        });
+        hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.fatal) {
+                showToast('Stream error — CORS or stream unavailable. Try another stream.', 'error', 5000);
+            }
+        });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari/iOS have native HLS support
+        video.src = url;
+        video.play().catch(() => {});
+    } else {
+        showToast('HLS not supported in this browser', 'error');
+    }
+}
+
 let _gs  = null;
 let _gsEditing = false;
 
@@ -5779,15 +5946,27 @@ function _gsInit() {
   if (_gs || typeof GridStack === 'undefined') return false;
   const el = document.getElementById('ov-grid');
   if (!el) return false;
+  const isMobile = window.innerWidth < 900;
   _gs = GridStack.init({
     cellHeight: 80,
-    column: 12,
+    column: isMobile ? 1 : 12, // single column on mobile for readability
     margin: 8,
-    staticGrid: true,   // non-draggable by default
+    staticGrid: true,   // non-draggable by default; edit mode enables drag+resize
     animate: true,
     float: false,
+    disableDrag: isMobile,    // no drag on touch screens
+    disableResize: isMobile,  // no resize on touch screens
     resizable: { handles: 'se' },
   }, el);
+  // When a widget is resized, tell any Chart.js canvases inside to resize too
+  _gs.on('resizestop', (event, element) => {
+    element.querySelectorAll('canvas').forEach(canvas => {
+      const chart = (typeof Chart !== 'undefined' && Chart.getChart) ? Chart.getChart(canvas) : null;
+      if (chart) { chart.resize(); }
+    });
+    // Also trigger a reflow for any flex/grid content that needs it
+    element.querySelectorAll('.panel,.stat-grid').forEach(el => { el.style.opacity = '0.99'; requestAnimationFrame(() => { el.style.opacity = ''; }); });
+  });
   // Restore saved layout
   const saved = localStorage.getItem('arrhub_grid');
   if (saved) {
@@ -5825,6 +6004,7 @@ function toggleGridEdit() {
 window.addEventListener('load', () => { setTimeout(_gsInit, 400); });
 </script>
 <script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 </body>
 </html>
 

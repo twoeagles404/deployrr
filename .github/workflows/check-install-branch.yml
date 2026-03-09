@@ -1,0 +1,43 @@
+name: Validate install.sh branch
+
+on:
+  push:
+    paths:
+      - install.sh
+  pull_request:
+    paths:
+      - install.sh
+
+jobs:
+  check-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check GITHUB_BRANCH matches target branch
+        run: |
+          # Read GITHUB_BRANCH from install.sh
+          INSTALL_BRANCH=$(grep '^GITHUB_BRANCH=' install.sh | head -1 | cut -d'"' -f2)
+
+          # For PRs, check against the base branch (where code will land)
+          # For pushes, check against the branch being pushed to
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            TARGET="${{ github.base_ref }}"
+          else
+            TARGET="${{ github.ref_name }}"
+          fi
+
+          echo "Branch target : ${TARGET}"
+          echo "GITHUB_BRANCH : ${INSTALL_BRANCH}"
+
+          if [[ -z "${INSTALL_BRANCH}" ]]; then
+            echo "::error file=install.sh::Could not read GITHUB_BRANCH from install.sh"
+            exit 1
+          fi
+
+          if [[ "${INSTALL_BRANCH}" != "${TARGET}" ]]; then
+            echo "::error file=install.sh::GITHUB_BRANCH=\"${INSTALL_BRANCH}\" but target branch is \"${TARGET}\" — update GITHUB_BRANCH in install.sh to match"
+            exit 1
+          fi
+
+          echo "✓ GITHUB_BRANCH=\"${INSTALL_BRANCH}\" matches branch \"${TARGET}\""

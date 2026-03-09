@@ -1,0 +1,44 @@
+#!/bin/bash
+# =============================================================================
+# ArrHub pre-commit hook — enforce GITHUB_BRANCH in install.sh
+# =============================================================================
+# Prevents accidentally committing install.sh with the wrong GITHUB_BRANCH,
+# which would cause installs to pull files from the wrong branch.
+#
+# Rules:
+#   main branch  → GITHUB_BRANCH="main"
+#   any other    → GITHUB_BRANCH must NOT be "main"
+# =============================================================================
+
+# Only check if install.sh is staged
+if ! git diff --cached --name-only | grep -q "^install\.sh$"; then
+    exit 0
+fi
+
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+
+# Read GITHUB_BRANCH value from the staged version of install.sh
+STAGED_BRANCH="$(git show :install.sh 2>/dev/null | grep '^GITHUB_BRANCH=' | head -1 | cut -d'"' -f2)"
+
+if [[ -z "${STAGED_BRANCH}" ]]; then
+    echo "⚠  pre-commit: could not read GITHUB_BRANCH from staged install.sh" >&2
+    exit 0  # non-fatal — let the commit proceed
+fi
+
+if [[ "${CURRENT_BRANCH}" == "main" && "${STAGED_BRANCH}" != "main" ]]; then
+    echo "" >&2
+    echo "✗  pre-commit: install.sh has GITHUB_BRANCH=\"${STAGED_BRANCH}\" but you are on 'main'" >&2
+    echo "   Fix: set GITHUB_BRANCH=\"main\" in install.sh before committing to main" >&2
+    echo "" >&2
+    exit 1
+fi
+
+if [[ "${CURRENT_BRANCH}" != "main" && "${STAGED_BRANCH}" == "main" ]]; then
+    echo "" >&2
+    echo "✗  pre-commit: install.sh has GITHUB_BRANCH=\"main\" but current branch is '${CURRENT_BRANCH}'" >&2
+    echo "   Fix: set GITHUB_BRANCH=\"${CURRENT_BRANCH}\" in install.sh before committing" >&2
+    echo "" >&2
+    exit 1
+fi
+
+exit 0

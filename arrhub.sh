@@ -371,12 +371,18 @@ ALL_APPS=(
 LOCAL_IMAGE_APPS=(arrhub_webui)
 
 # Full Stack Presets
+# Preset stacks — Homer and Homarr removed (ArrHub WebUI replaces them)
 MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr arrhub_webui)
 ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr qbittorrent seerr boxarr arrhub_webui)
-MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr seerr boxarr tautulli homer arrhub_webui)
+MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr seerr boxarr tautulli arrhub_webui)
 FULL_STACK_ARR=(prowlarr radarr sonarr lidarr bazarr whisparr doplarr boxarr seerr recyclarr unpackerr notifiarr)
-FULL_STACK_TOOLS=(seerr tautulli flaresolverr homer homarr arrhub_webui)
+FULL_STACK_TOOLS=(seerr tautulli flaresolverr launcharr arrhub_webui)
 FULL_STACK_MONITORING=(grafana prometheus uptime_kuma dozzle watchtower scrutiny speedtest)
+# New smart preset stacks
+MOVIES_PRESET=(plex qbittorrent prowlarr radarr unpackerr seerr tautulli arrhub_webui)
+MUSIC_PRESET=(navidrome qbittorrent prowlarr lidarr seerr arrhub_webui)
+PHOTOS_PRESET=(immich arrhub_webui)
+HOMELAB_PRESET=(portainer dozzle watchtower uptime_kuma nginx arrhub_webui)
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -1776,14 +1782,14 @@ deploy_media_wizard() {
             "Select which ARR apps to deploy (ESC = back to Step 1):" "${arr_items[@]}") || continue
         sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
 
-        # Step 4 — Request & Tools (ESC goes back to Step 1)
+        # Step 4 — Request & Tools (Homer/Homarr removed — ArrHub WebUI handles dashboards)
         local tools_items=(
-            "seerr"        "Seerr (media requests)" "on"
-            "tautulli"     "Tautulli (watch stats)" "on"
-            "flaresolverr" "FlareSolverr (captcha solver)" "on"
-            "launcharr"    "Launcharr (app launcher dashboard)" "off"
-            "homer"        "Homer (dashboard)" "off"
-            "homarr"       "Homarr (dashboard)" "off"
+            "seerr"         "Seerr (media requests — recommended)" "on"
+            "tautulli"      "Tautulli (Plex/Jellyfin watch stats)" "on"
+            "flaresolverr"  "FlareSolverr (captcha solver for indexers)" "on"
+            "launcharr"     "Launcharr (app launcher)" "off"
+            "uptime_kuma"   "Uptime Kuma (service health monitor)" "off"
+            "watchtower"    "Watchtower (auto-update containers)" "off"
         )
 
         local sel_tools
@@ -1820,28 +1826,78 @@ Proceed?"; then
     done
 }
 
+# ---------------------------------------------------------------------------
+# detect_installed_services — Auto-detect which services are already running
+# Returns a space-separated list of recognised container/service names.
+# ---------------------------------------------------------------------------
+detect_installed_services() {
+    # Collect running container names from Docker (gracefully handle no Docker)
+    local running=()
+    if command -v docker &>/dev/null; then
+        while IFS= read -r name; do
+            [[ -n "${name}" ]] && running+=("${name,,}")   # lowercase
+        done < <(docker ps --format '{{.Names}}' 2>/dev/null)
+    fi
+    echo "${running[*]}"
+}
+
+# Suggest a preset based on what services are already running
+# Prints a short multi-line suggestion message for the dialog header
+_smart_preset_hint() {
+    local installed
+    installed=$(detect_installed_services)
+    local hint=""
+
+    _has() { [[ " ${installed} " == *" $1 "* ]]; }
+
+    _has plex      && hint+="Plex "
+    _has jellyfin  && hint+="Jellyfin "
+    _has radarr    && hint+="Radarr "
+    _has sonarr    && hint+="Sonarr "
+    _has lidarr    && hint+="Lidarr "
+    _has navidrome && hint+="Navidrome "
+    _has immich    && hint+="Immich "
+
+    if [[ -n "${hint}" ]]; then
+        printf "Already running: %s\n(Smart presets avoid re-deploying existing services)" "${hint}"
+    else
+        printf "No services detected — all presets available."
+    fi
+}
+
 deploy_quick_preset() {
     while true; do
+        local hint
+        hint=$(_smart_preset_hint)
+
         local preset
-        preset=$(d_menu "Quick Deploy Preset" "Choose a preset stack:" \
-            "1" "Minimal — Jellyfin + qBit + basic ARR" \
-            "2" "ARR Only — all ARR apps + downloader" \
-            "3" "Media + ARR — full media stack" \
-            "4" "Full Stack — everything (no VPN)" \
-            "5" "Monitoring — Grafana, Prometheus, etc." \
-            "6" "Back") || return
+        preset=$(d_menu "Quick Deploy Preset" "${hint}" \
+            "1" "Minimal         — Jellyfin + qBit + basic ARR" \
+            "2" "ARR Only        — all ARR apps + downloader" \
+            "3" "Media + ARR     — full media stack (no VPN)" \
+            "4" "Full Stack      — everything (Plex + ARR + tools)" \
+            "5" "Monitoring      — Grafana, Prometheus, Uptime Kuma" \
+            "6" "Movies ★        — Plex + Radarr + Seerr + Tautulli" \
+            "7" "Music ★         — Navidrome + Lidarr + Seerr" \
+            "8" "Photos ★        — Immich" \
+            "9" "General Homelab — Portainer + Dozzle + Watchtower + NPM" \
+            "10" "Back") || return
 
         local selected=()
         case "${preset}" in
-            1) selected=("${MINIMAL_STACK[@]}") ;;
-            2) selected=("${ARR_ONLY_STACK[@]}") ;;
-            3) selected=("${MEDIA_ARR_STACK[@]}") ;;
+            1)  selected=("${MINIMAL_STACK[@]}") ;;
+            2)  selected=("${ARR_ONLY_STACK[@]}") ;;
+            3)  selected=("${MEDIA_ARR_STACK[@]}") ;;
             4)
                 selected=("${FULL_STACK_ARR[@]}" "${FULL_STACK_TOOLS[@]}")
-                selected+=(jellyfin qbittorrent)
+                selected+=(plex qbittorrent)
                 ;;
-            5) selected=("${FULL_STACK_MONITORING[@]}") ;;
-            6) return ;;
+            5)  selected=("${FULL_STACK_MONITORING[@]}") ;;
+            6)  selected=("${MOVIES_PRESET[@]}") ;;
+            7)  selected=("${MUSIC_PRESET[@]}") ;;
+            8)  selected=("${PHOTOS_PRESET[@]}") ;;
+            9)  selected=("${HOMELAB_PRESET[@]}") ;;
+            10) return ;;
         esac
 
         log INFO "Quick preset ${preset}: ${selected[*]}"
@@ -2809,18 +2865,31 @@ tailscale_lxc_install() {
         }
     fi
 
-    # Step 5: Start Tailscale (optionally with an auth key)
+    # Step 5: Start Tailscale
+    # Default to --tun=userspace-networking to avoid TUN device dependency in LXC.
+    # This is more reliable across all Proxmox/LXC configurations; the trade-off is
+    # slightly higher CPU usage vs kernel TUN but avoids the most common failure mode.
     if ${ok}; then
         local authkey
         authkey=$(d_inputbox "Tailscale Auth Key (optional)" \
-"Enter your Tailscale auth key to automatically authenticate.\nGet one at: https://login.tailscale.com/admin/settings/keys\n\nLeave blank to start without authenticating (you will see a URL to visit)." "") || authkey=""
+"Enter your Tailscale auth key to automatically authenticate.\nGet one at: https://login.tailscale.com/admin/settings/keys\n\nLeave blank to start without authenticating (a URL will be printed)." "") || authkey=""
 
-        printf '\033[1;33m[5/5]\033[0m Starting Tailscale in LXC %s...\n' "${ctid}"
-        if [[ -n "${authkey}" ]]; then
-            pct exec "${ctid}" -- tailscale up --authkey="${authkey}" --accept-routes 2>&1 | tee -a "${tmp}" || true
-        else
-            pct exec "${ctid}" -- tailscale up --accept-routes 2>&1 | tee -a "${tmp}" || true
+        printf '\033[1;33m[5/5]\033[0m Starting Tailscale in LXC %s (userspace networking)...\n' "${ctid}"
+        local up_cmd="tailscale up --accept-routes --tun=userspace-networking"
+        # If TUN device exists in the container, prefer kernel networking
+        if pct exec "${ctid}" -- test -e /dev/net/tun 2>/dev/null; then
+            up_cmd="tailscale up --accept-routes"
+            printf '  TUN device detected — using kernel networking mode\n'
         fi
+        [[ -n "${authkey}" ]] && up_cmd="${up_cmd} --authkey=${authkey}"
+
+        # Start tailscaled first with appropriate tun flag
+        pct exec "${ctid}" -- bash -c \
+            "mkdir -p /var/lib/tailscale /run/tailscale && \
+             tailscaled --state=/var/lib/tailscale/tailscaled.state \
+                        --socket=/run/tailscale/tailscaled.sock \
+                        ${up_cmd//tailscale up*/} &>/dev/null &
+             sleep 2 && ${up_cmd}" 2>&1 | tee -a "${tmp}" || true
 
         # Show IP
         printf '\n\033[1;32mTailscale IP in container %s:\033[0m\n' "${ctid}"
@@ -2838,6 +2907,86 @@ tailscale_lxc_install() {
     _live_wait_return
 }
 
+# ---------------------------------------------------------------------------
+# tailscale_pve_host_install — Install Tailscale directly on a Proxmox VE host
+# ---------------------------------------------------------------------------
+# This is the RECOMMENDED method for Proxmox environments.
+# Installing on the PVE host rather than inside a container avoids all TUN
+# device / cgroup permission issues that plague in-container installs.
+# The PVE host then acts as a Tailscale subnet router, making all LXC/VM
+# addresses reachable over the tailnet.
+tailscale_pve_host_install() {
+    _live_header "Tailscale — Proxmox VE Host Install" \
+        "Install on PVE host = no TUN device issues, subnet routing for all VMs"
+
+    # Verify we are on a Proxmox host
+    if ! command -v pveversion &>/dev/null && ! command -v pvesh &>/dev/null; then
+        printf '\033[1;31mNot a Proxmox VE host — pveversion not found.\033[0m\n'
+        printf 'Use "Install natively" from the Tailscale menu instead.\n'
+        _live_wait_return
+        return
+    fi
+
+    local pve_ver
+    pve_ver=$(pveversion --verbose 2>/dev/null | head -1 || echo "Proxmox VE (unknown version)")
+    printf '\033[1;36mHost detected:\033[0m %s\n\n' "${pve_ver}"
+
+    # Step 1 — Download and run Tailscale installer on the host
+    printf '\033[1;33m[1/4]\033[0m Installing Tailscale on PVE host...\n'
+    if ! curl -fsSL https://tailscale.com/install.sh | sh; then
+        printf '\033[1;31mFAILED — installer returned non-zero\033[0m\n'
+        _live_wait_return; return
+    fi
+
+    # Step 2 — Enable and start tailscaled
+    printf '\033[1;33m[2/4]\033[0m Enabling tailscaled service...\n'
+    if command -v systemctl &>/dev/null; then
+        systemctl enable --now tailscaled 2>/dev/null || true
+    fi
+    # Poll until socket is ready (max 20 s)
+    printf '  Waiting for tailscaled socket'
+    local _waited=0
+    until [[ -S "/run/tailscale/tailscaled.sock" ]] || (( _waited >= 20 )); do
+        printf '.'; sleep 1; (( _waited++ ))
+    done
+    printf '\n'
+    if [[ ! -S "/run/tailscale/tailscaled.sock" ]]; then
+        printf '\033[1;31m  Socket not ready after 20 s — check: systemctl status tailscaled\033[0m\n'
+        _live_wait_return; return
+    fi
+
+    # Step 3 — Optionally advertise local subnet so VMs/LXCs are reachable
+    local subnet
+    subnet=$(d_inputbox "Advertise Subnet (optional)" \
+"To make all LXC/VM addresses reachable over Tailscale, enter your local subnet.
+Leave blank to skip.\n\nExamples:\n  192.168.1.0/24\n  10.0.0.0/16" "192.168.1.0/24") || subnet=""
+
+    # Step 4 — Authenticate
+    local authkey
+    authkey=$(d_inputbox "Tailscale Auth Key (optional)" \
+"Enter your Tailscale auth key to auto-authenticate.
+Get one at: https://login.tailscale.com/admin/settings/keys\n\nLeave blank — a URL will be printed." "") || authkey=""
+
+    printf '\033[1;33m[4/4]\033[0m Bringing up Tailscale...\n'
+    local up_flags="--accept-routes"
+    [[ -n "${subnet}" ]] && up_flags="${up_flags} --advertise-routes=${subnet}"
+    [[ -n "${authkey}" ]] && up_flags="${up_flags} --authkey=${authkey}"
+
+    # shellcheck disable=SC2086
+    if tailscale up ${up_flags}; then
+        printf '\n\033[1;32m✓ Tailscale is up on PVE host\033[0m\n'
+        tailscale ip 2>/dev/null || true
+        if [[ -n "${subnet}" ]]; then
+            printf '\n\033[1;33mImportant:\033[0m Approve the subnet route in the Tailscale admin console:\n'
+            printf '  https://login.tailscale.com/admin/machines\n'
+        fi
+        log INFO "Tailscale PVE host install complete; subnet=${subnet:-none}"
+    else
+        printf '\033[1;31mFailed to connect — run: tailscale up\033[0m\n'
+    fi
+    _live_wait_return
+}
+
 tailscale_menu() {
     # Detect where tailscale is: native binary or in a container
     local ts_cmd=""
@@ -2847,28 +2996,31 @@ tailscale_menu() {
         ts_cmd="docker exec tailscale tailscale"
     fi
 
-    # Show install options if tailscale not found (but keep LXC option available)
+    # Show install options if tailscale not found
     if [[ -z "${ts_cmd}" ]]; then
         local install_choice
         install_choice=$(d_menu "Tailscale Not Found" \
-"Tailscale is not installed or not running." \
-            "1" "Install in Proxmox LXC   — guided TUN + install (Proxmox hosts only)" \
-            "2" "Install natively          — run official install script on this host" \
-            "3" "Deploy as Docker container — via Deploy menu" \
-            "4" "Back") || return
+"Tailscale is not installed or not running.\n\nRECOMMENDED: Install on the Proxmox VE host (option 1) for the most reliable setup — avoids all TUN/cgroup issues inside containers." \
+            "1" "Install on Proxmox VE HOST ★ — subnet router, no TUN issues" \
+            "2" "Install in Proxmox LXC        — guided TUN + in-container install" \
+            "3" "Install natively on this host  — official install.sh" \
+            "4" "Deploy as Docker container     — via Deploy menu" \
+            "5" "Back") || return
         case "${install_choice}" in
-            1) tailscale_lxc_install; return ;;
-            2)
+            1) tailscale_pve_host_install; return ;;      # NEW: PVE host install (recommended)
+            2) tailscale_lxc_install; return ;;           # LXC guided install
+            3)
+                # Native install on whatever host is running the TUI
                 _live_header "Install Tailscale — Native"
-                curl -fsSL https://tailscale.com/install.sh | sh
-                # Ensure tailscaled daemon is running after install (needed in LXC / non-systemd hosts)
+                printf '\033[1;33mRunning official Tailscale install script...\033[0m\n'
+                curl -fsSL https://tailscale.com/install.sh | sh || true
                 if ! pgrep -x tailscaled &>/dev/null; then
                     printf '\033[1;33m  Starting tailscaled daemon...\033[0m\n'
                     if command -v systemctl &>/dev/null && systemctl start tailscaled 2>/dev/null; then
                         printf '\033[1;32m  tailscaled started via systemctl\033[0m\n'
                     else
                         mkdir -p /var/lib/tailscale /run/tailscale
-                        # LXC: use userspace networking if TUN device is unavailable
+                        # Use userspace networking if TUN device unavailable (unprivileged LXC)
                         local _ts_tun_flag=""
                         [[ ! -e /dev/net/tun ]] && _ts_tun_flag="--tun=userspace-networking"
                         tailscaled --state=/var/lib/tailscale/tailscaled.state \
@@ -2877,27 +3029,24 @@ tailscale_menu() {
                         printf '\033[1;32m  tailscaled started in background\033[0m\n'
                     fi
                 fi
-                # Poll for socket readiness instead of a fixed sleep (LXC can be slow to init)
                 printf '\033[1;33m  Waiting for tailscaled socket'
                 local _ts_waited=0
                 until [[ -S "/run/tailscale/tailscaled.sock" ]] || (( _ts_waited >= 20 )); do
-                    printf '.'
-                    sleep 1
-                    (( _ts_waited++ ))
+                    printf '.'; sleep 1; (( _ts_waited++ ))
                 done
                 printf '\033[0m\n'
-                if [[ ! -S "/run/tailscale/tailscaled.sock" ]]; then
-                    printf '\033[1;31m  tailscaled socket not ready — check: systemctl status tailscaled\033[0m\n'
-                fi
-                printf '\033[1;32m  Tailscale installed. Use menu option 2 (Connect) to authenticate.\033[0m\n'
+                [[ ! -S "/run/tailscale/tailscaled.sock" ]] && \
+                    printf '\033[1;31m  Socket not ready — check: systemctl status tailscaled\033[0m\n'
+                printf '\033[1;32m  Done. Run: tailscale up\033[0m\n'
                 _live_wait_return
                 return
                 ;;
-            3)
-                d_msgbox "Deploy Tailscale" "Go to: Main Menu → Deploy → Search → 'tailscale'"
+            4)
+                d_msgbox "Deploy Tailscale Container" \
+                    "Go to: Main Menu → Deploy → Search & Deploy → type 'tailscale'"
                 return
                 ;;
-            4) return ;;
+            5) return ;;
         esac
         return
     fi

@@ -4195,49 +4195,112 @@ async function loadDockerInfo() {
 }
 
 // ── RSS Feeds ─────────────────────────────────────────────────────────
-let allFeeds = [];
-let rssFilter = 'all';
+let rssCatFilter = 'All';
+let rssView = 'feeds';
+
+function setRSSView(v) {
+    rssView = v;
+    document.getElementById('rss-feeds-view').style.display = v === 'feeds' ? '' : 'none';
+    document.getElementById('rss-live-view').style.display  = v === 'live'  ? '' : 'none';
+    document.querySelectorAll('#rss-view-feeds,#rss-view-live').forEach(b => b.classList.remove('active'));
+    document.getElementById('rss-view-' + v).classList.add('active');
+}
 
 async function loadRSSFeeds() {
-    const grid = document.getElementById('rss-grid');
-    grid.innerHTML = '<div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Loading feeds...</div></div>';
+    const content = document.getElementById('rss-content');
+    if (content) content.innerHTML = '<div style="color:var(--text3);padding:20px">Loading feeds\u2026</div>';
     try {
         const r = await fetch(API + '/api/rss/feeds');
         const d = await r.json();
-        allFeeds = d.feeds || [];
-        renderRSS();
+        const cats = d.categories || {};
+
+        // Build category pills
+        const pillsEl = document.getElementById('rss-cat-pills');
+        if (pillsEl) {
+            const allCats = ['All', ...Object.keys(cats)];
+            pillsEl.innerHTML = allCats.map(c =>
+                `<div class="filter-pill${c===rssCatFilter?' active':''}" onclick="rssSetCat('${c}')">${c}</div>`
+            ).join('');
+        }
+
+        // Render feed columns
+        renderRSSFeeds(cats);
     } catch(e) {
-        grid.innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load feeds</div></div>';
+        if (content) content.innerHTML = '<div style="color:var(--red);padding:20px">Failed to load feeds</div>';
     }
 }
 
-function filterRSS(cat, el) {
-    rssFilter = cat;
-    document.querySelectorAll('#rss-filters .filter-pill').forEach(p => p.classList.remove('active'));
-    if (el) el.classList.add('active');
-    renderRSS();
+function rssSetCat(cat) {
+    rssCatFilter = cat;
+    document.querySelectorAll('#rss-cat-pills .filter-pill').forEach(p => {
+        p.classList.toggle('active', p.textContent === cat);
+    });
+    // Re-render with current data (re-fetch to keep fresh)
+    loadRSSFeeds();
 }
 
-function renderRSS() {
-    const grid = document.getElementById('rss-grid');
-    let feeds = allFeeds;
-    if (rssFilter !== 'all') feeds = feeds.filter(f => f.category === rssFilter);
-    if (!feeds.length) {
-        grid.innerHTML = '<div class="empty"><div class="empty-icon">📡</div><div class="empty-text">No feeds in this category</div></div>';
-        return;
+async function renderRSSFeeds(cats) {
+    const content = document.getElementById('rss-content');
+    if (!content) return;
+
+    const toLoad = rssCatFilter === 'All'
+        ? Object.entries(cats)
+        : Object.entries(cats).filter(([k]) => k === rssCatFilter);
+
+    // Render placeholder columns first
+    content.innerHTML = toLoad.map(([cat, feeds]) => `
+        <div class="panel rss-col" id="rss-col-${cat.replace(/\s/g,'_')}">
+          <div class="panel-title" style="font-size:13px;font-weight:700">
+            ${feeds[0]&&feeds[0].icon ? feeds[0].icon : '\u{1F4F0}'} ${cat}
+          </div>
+          <div class="rss-feed-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
+            ${feeds.map((f,i) => `<button class="filter-pill${i===0?' active':''}" style="font-size:10px;padding:2px 8px" onclick="loadFeedItems('${cat.replace(/\s/g,'_')}','${encodeURIComponent(f.url)}','${encodeURIComponent(f.name)}',this)">${f.icon} ${f.name}</button>`).join('')}
+          </div>
+          <div class="rss-items" id="rss-items-${cat.replace(/\s/g,'_')}">
+            <div style="color:var(--text3);font-size:12px;padding:8px">Loading\u2026</div>
+          </div>
+        </div>`).join('');
+
+    // Load first feed for each category
+    for (const [cat, feeds] of toLoad) {
+        if (feeds.length > 0) {
+            loadFeedItems(cat.replace(/\s/g,'_'), encodeURIComponent(feeds[0].url), encodeURIComponent(feeds[0].name), null);
+        }
     }
-    grid.innerHTML = feeds.map(feed => `
-      <div class="cat-card">
-        <div class="cat-card-header">
-          <div class="cat-icon">📰</div>
-          <div><div class="cat-name">${feed.source}</div><div class="cat-cat">${feed.category}</div></div>
-        </div>
-        ${(feed.articles || []).map(a => `
-          <div style="padding:6px 0;border-bottom:1px solid var(--border)">
-            <a href="${a.link}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;font-size:12.5px;line-height:1.4;display:block">${a.title}</a>
-            <div style="font-size:10px;color:var(--text3);margin-top:2px">${a.pubdate || ''}</div>
-          </div>`).join('')}
-      </div>`).join('');
+}
+
+async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
+    // Update active tab
+    const col = document.getElementById('rss-col-' + catId);
+    if (col && btnEl) {
+        col.querySelectorAll('.rss-feed-tabs .filter-pill').forEach(b => b.classList.remove('active'));
+        btnEl.classList.add('active');
+    }
+
+    const itemsEl = document.getElementById('rss-items-' + catId);
+    if (!itemsEl) return;
+    itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">Loading\u2026</div>';
+
+    try {
+        const url = decodeURIComponent(encodedUrl);
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}`);
+        const d = await r.json();
+        const items = d.items || [];
+
+        if (!items.length) {
+            itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No items found</div>';
+            return;
+        }
+
+        itemsEl.innerHTML = items.slice(0,12).map(item => `
+            <a href="${item.link}" target="_blank" rel="noopener" style="display:block;text-decoration:none;padding:8px 4px;border-bottom:1px solid var(--border);">
+              <div style="font-size:12px;font-weight:500;color:var(--text);line-height:1.4;margin-bottom:3px">${item.title}</div>
+              <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
+            </a>`).join('') +
+            `<div style="padding:6px 4px;font-size:10px;color:var(--text3)">${decodeURIComponent(encodedName)}</div>`;
+    } catch(e) {
+        itemsEl.innerHTML = '<div style="color:var(--red);font-size:11px;padding:8px">Failed to load feed</div>';
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════

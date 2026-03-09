@@ -3,7 +3,10 @@
 # ArrHub — Master Installer v3.7.0
 # =============================================================================
 #
-# ONE-COMMAND INSTALL:
+# ONE-COMMAND INSTALL (dev branch — always uses latest dev code):
+#   curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/dev/install.sh | sudo bash
+#
+# STABLE (main branch):
 #   curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/main/install.sh | sudo bash
 #
 # LOCAL INSTALL (from cloned repo):
@@ -21,7 +24,9 @@ set -euo pipefail
 # ── GitHub source — update to match your fork ────────────────────────────────
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
-GITHUB_BRANCH="dev"
+# GITHUB_BRANCH is set for the branch this file lives on (dev/main).
+# Override via env var:  ARRHUB_BRANCH=main sudo bash install.sh
+GITHUB_BRANCH="${ARRHUB_BRANCH:-dev}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────

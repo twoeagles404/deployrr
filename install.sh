@@ -293,8 +293,9 @@ ok "Usage: media [update|help]"
 # =============================================================================
 # STEP 7 — Get & start the WebUI Docker container
 # =============================================================================
-# Strategy: pull the pre-built image from ghcr.io first (fastest).
-# If the pull fails (no internet, no tag yet), fall back to local build.
+# Strategy: always build locally from the downloaded source files.
+# This guarantees the running container matches the installed branch exactly.
+# A stale pre-built image on ghcr.io would otherwise silently override new code.
 # The catalog.json is ALWAYS mounted at runtime — never baked into the image.
 
 WEBUI_IMAGE="ghcr.io/${GITHUB_USER}/${GITHUB_REPO}:latest"
@@ -304,27 +305,23 @@ if [[ "${DOCKER_OK}" == "true" ]]; then
 
     IMAGE_READY=false
 
-    # ── Try 1: pull pre-built image from GitHub Container Registry ──
-    step "Pulling ArrHub WebUI image"
-    info "Trying: docker pull ${WEBUI_IMAGE}"
-    if docker pull "${WEBUI_IMAGE}" >> "${LOG}" 2>&1; then
-        docker tag "${WEBUI_IMAGE}" "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1 || true
-        ok "Image pulled from ghcr.io"
+    # ── Build locally from downloaded source (always current) ──
+    step "Building ArrHub WebUI image"
+    info "Building from ${DEST}/arrhub-webui (may take 60-90 seconds)..."
+    if docker build -q -t "${WEBUI_LOCAL_TAG}" "${DEST}/arrhub-webui" >> "${LOG}" 2>&1; then
+        ok "Image built: ${WEBUI_LOCAL_TAG}"
         IMAGE_READY=true
     else
-        warn "Could not pull from ghcr.io — falling back to local build"
-    fi
-
-    # ── Try 2: local build as fallback ──
-    if [[ "${IMAGE_READY}" != "true" ]]; then
-        step "Building ArrHub WebUI image locally"
-        info "Building from ${DEST}/arrhub-webui (may take 60-90 seconds)..."
-        if docker build -q -t "${WEBUI_LOCAL_TAG}" "${DEST}/arrhub-webui" >> "${LOG}" 2>&1; then
-            ok "Image built: ${WEBUI_LOCAL_TAG}"
+        # ── Fallback: try ghcr.io if local build failed ──
+        warn "Local build failed — trying ghcr.io fallback"
+        info "Trying: docker pull ${WEBUI_IMAGE}"
+        if docker pull "${WEBUI_IMAGE}" >> "${LOG}" 2>&1; then
+            docker tag "${WEBUI_IMAGE}" "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1 || true
+            ok "Fallback image pulled from ghcr.io (may not include latest fixes)"
             IMAGE_READY=true
         else
-            warn "Image build failed — check ${LOG}"
-            warn "Retry: media → WebUI Control → Rebuild image"
+            warn "Image build and pull both failed — check ${LOG}"
+            warn "Retry: arrhub → WebUI Control → Rebuild image"
         fi
     fi
 

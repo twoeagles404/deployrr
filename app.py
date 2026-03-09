@@ -2109,6 +2109,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
 <style>
 /* =====================================================================
    ARRHUB — PegaProx-inspired dark dashboard
@@ -2144,6 +2145,87 @@ _HTML_SPA = r"""<!DOCTYPE html>
   --ui:       'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
   --transition: .15s ease;
 }
+/* ── Themes ─────────────────────────────────────────────────────────── */
+[data-theme="light"]{
+  --bg:#f6f8fa;--bg2:#ffffff;--bg3:#f0f2f5;
+  --surface:#e9ecef;--surface2:#dee2e6;
+  --border:#d0d7de;--border2:#b8bfc7;
+  --text:#1f2328;--text2:#656d76;--text3:#9198a1;
+}
+[data-theme="nord"]{
+  --bg:#2e3440;--bg2:#3b4252;--bg3:#434c5e;
+  --surface:#434c5e;--surface2:#4c566a;
+  --border:#4c566a;--border2:#616e88;
+  --text:#eceff4;--text2:#d8dee9;--text3:#81a1c1;
+  --blue:#88c0d0;--blue2:rgba(136,192,208,.15);
+  --green:#a3be8c;--green2:rgba(163,190,140,.15);
+  --purple:#b48ead;--purple2:rgba(180,142,173,.15);
+}
+[data-theme="catppuccin"]{
+  --bg:#1e1e2e;--bg2:#181825;--bg3:#313244;
+  --surface:#313244;--surface2:#45475a;
+  --border:#45475a;--border2:#585b70;
+  --text:#cdd6f4;--text2:#a6adc8;--text3:#7f849c;
+  --blue:#89b4fa;--blue2:rgba(137,180,250,.15);
+  --green:#a6e3a1;--green2:rgba(166,227,161,.15);
+  --purple:#cba6f7;--purple2:rgba(203,166,247,.15);
+}
+[data-theme="dracula"]{
+  --bg:#282a36;--bg2:#1e1f29;--bg3:#343746;
+  --surface:#343746;--surface2:#44475a;
+  --border:#44475a;--border2:#6272a4;
+  --text:#f8f8f2;--text2:#d0d0e0;--text3:#6272a4;
+  --blue:#8be9fd;--blue2:rgba(139,233,253,.15);
+  --green:#50fa7b;--green2:rgba(80,250,123,.15);
+  --purple:#bd93f9;--purple2:rgba(189,147,249,.15);
+}
+/* ── Accent color overrides ─── */
+[data-accent="purple"]{--blue:#bc8cff;--blue2:rgba(188,140,255,.15);}
+[data-accent="green"]{--blue:#3fb950;--blue2:rgba(63,185,80,.15);}
+[data-accent="orange"]{--blue:#f78166;--blue2:rgba(247,129,102,.15);}
+[data-accent="pink"]{--blue:#f778ba;--blue2:rgba(247,120,186,.15);}
+[data-accent="cyan"]{--blue:#56d9e0;--blue2:rgba(86,217,224,.15);}
+
+/* ── Background image layer ─────────────────────────────────────────── */
+#bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
+#app{position:relative;z-index:1;}
+
+/* ── GridStack Dashboard Widgets ────────────────────────────────────── */
+.grid-stack{width:100%;}
+.grid-stack-item-content{
+  overflow:auto;
+  height:100%;
+  border-radius:var(--r);
+}
+.grid-stack-item-content .panel{
+  margin:0;
+  height:100%;
+  border-radius:var(--r);
+  overflow:auto;
+}
+/* Drag handle shown when in edit mode */
+.gs-editing .grid-stack-item>.grid-stack-item-content::before{
+  content:'⠿  drag to rearrange · resize from corner';
+  display:block;
+  padding:4px 10px;
+  font-size:10px;
+  color:var(--text3);
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  border-radius:var(--r) var(--r) 0 0;
+  cursor:grab;
+  user-select:none;
+  letter-spacing:.03em;
+}
+.gs-editing .grid-stack-item>.grid-stack-item-content .panel{
+  border-radius:0 0 var(--r) var(--r);
+}
+.gs-editing .grid-stack-item{outline:1px dashed var(--border2);}
+/* Theme button active state */
+.theme-btn.active{background:var(--blue2)!important;color:var(--blue)!important;border-color:var(--blue)!important;}
+/* Accent swatch selected ring */
+.accent-swatch.active{outline:3px solid var(--text);outline-offset:2px;}
+
 *{margin:0;padding:0;box-sizing:border-box;}
 html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-family:var(--ui);font-size:14px;line-height:1.5;overflow:hidden;}
 
@@ -2753,6 +2835,9 @@ body.sse-disconnected #app{padding-top:38px;}
 <!-- ══ SIDEBAR OVERLAY (mobile) ══ -->
 <div id="sidebar-overlay" onclick="closeSidebar()"></div>
 
+<!-- Background image layer (below everything, z-index:0) -->
+<div id="bg-layer"></div>
+
 <div id="app">
 
 <!-- ═══════════════════════════════════════════════════════════
@@ -2913,6 +2998,10 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="section-title">System Overview</div>
           <div class="section-sub" id="ov-hostname">Loading...</div>
         </div>
+        <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px">
+          <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+          Edit Layout
+        </button>
       </div>
 
       <!-- Gauges row -->
@@ -2975,157 +3064,149 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
       </div>
 
-      <!-- Quick stats -->
-      <div class="panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          System Info
-        </div>
-        <div class="stat-grid" id="sys-info-grid">
-          <div class="stat-card"><div class="stat-card-val" id="si-os">—</div><div class="stat-card-label">OS</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="si-kernel">—</div><div class="stat-card-label">Kernel</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="si-arch">—</div><div class="stat-card-label">Architecture</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="si-python">—</div><div class="stat-card-label">Python</div></div>
-        </div>
-      </div>
+      <!-- ── Overview GridStack Dashboard ─────────────────────────────────
+           Click "Edit Layout" in the header to enter drag-and-drop mode.
+           Positions are saved to localStorage (key: arrhub_grid).        -->
+      <div class="grid-stack" id="ov-grid">
 
-      <!-- Weather Widget — current conditions + 5-day forecast -->
-      <div class="panel" id="weather-panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
-          Weather
-          <span id="weather-location" style="margin-left:8px;font-weight:400;font-size:11px;color:var(--text3)"></span>
-        </div>
-        <div id="weather-widget" style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:10px;align-items:center">
-          <!-- Current conditions -->
-          <div style="display:flex;align-items:center;gap:10px;padding:4px 12px 4px 0;border-right:1px solid var(--border)">
-            <div id="weather-icon" style="font-size:36px;line-height:1">🌤️</div>
-            <div>
-              <div id="weather-temp" style="font-size:26px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
-              <div id="weather-desc" style="font-size:11px;color:var(--text3);margin-top:2px">Loading…</div>
+        <!-- ① System Info widget  (default: left half, row 0) -->
+        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
+          <div class="grid-stack-item-content">
+            <div class="panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                System Info
+              </div>
+              <div class="stat-grid" id="sys-info-grid">
+                <div class="stat-card"><div class="stat-card-val" id="si-os">—</div><div class="stat-card-label">OS</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="si-kernel">—</div><div class="stat-card-label">Kernel</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="si-arch">—</div><div class="stat-card-label">Architecture</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="si-python">—</div><div class="stat-card-label">Python</div></div>
+              </div>
             </div>
           </div>
-          <!-- Humidity -->
-          <div class="stat-card">
-            <div class="stat-card-val" id="weather-humidity">—</div>
-            <div class="stat-card-label">Humidity</div>
-          </div>
-          <!-- Wind -->
-          <div class="stat-card">
-            <div class="stat-card-val" id="weather-wind">—</div>
-            <div class="stat-card-label">Wind</div>
-          </div>
-          <!-- Feels like -->
-          <div class="stat-card">
-            <div class="stat-card-val" id="weather-feels">—</div>
-            <div class="stat-card-label">Feels Like</div>
-          </div>
         </div>
-        <!-- 5-day forecast strip -->
-        <div id="weather-forecast" style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;padding-bottom:4px"></div>
-      </div>
 
-      <!-- Service Cards row (Radarr / Sonarr / Plex / Seerr) -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:0" id="service-cards-row">
-
-        <!-- Radarr Calendar -->
-        <div class="panel" style="margin:0" id="radarr-card">
-          <div class="panel-title">
-            🎥 Radarr — Upcoming
-            <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span>
-          </div>
-          <div id="radarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
-            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
+        <!-- ② Weather widget  (default: right half, row 0) -->
+        <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
+          <div class="grid-stack-item-content">
+            <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
+                Weather
+                <span id="weather-location" style="margin-left:8px;font-weight:400;font-size:11px;color:var(--text3)"></span>
+              </div>
+              <div id="weather-widget" style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:10px;align-items:center">
+                <div style="display:flex;align-items:center;gap:10px;padding:4px 12px 4px 0;border-right:1px solid var(--border)">
+                  <div id="weather-icon" style="font-size:36px;line-height:1">🌤️</div>
+                  <div>
+                    <div id="weather-temp" style="font-size:26px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
+                    <div id="weather-desc" style="font-size:11px;color:var(--text3);margin-top:2px">Loading…</div>
+                  </div>
+                </div>
+                <div class="stat-card"><div class="stat-card-val" id="weather-humidity">—</div><div class="stat-card-label">Humidity</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="weather-wind">—</div><div class="stat-card-label">Wind</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="weather-feels">—</div><div class="stat-card-label">Feels Like</div></div>
+              </div>
+              <div id="weather-forecast" style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;padding-bottom:4px"></div>
+            </div>
           </div>
         </div>
 
-        <!-- Sonarr Calendar -->
-        <div class="panel" style="margin:0" id="sonarr-card">
-          <div class="panel-title">
-            📺 Sonarr — Upcoming
-            <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 7 days</span>
-          </div>
-          <div id="sonarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
-            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
-          </div>
-        </div>
-
-        <!-- Plex Now Playing -->
-        <div class="panel" style="margin:0" id="plex-card">
-          <div class="panel-title">
-            ▶ Plex — Now Playing
-            <span id="plex-stream-count" style="margin-left:auto;background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600"></span>
-          </div>
-          <div id="plex-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
-            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
-          </div>
-        </div>
-
-        <!-- Seerr Requests -->
-        <div class="panel" style="margin:0" id="seerr-card">
-          <div class="panel-title">
-            🎬 Seerr — Requests
-            <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Recent</span>
-          </div>
-          <div id="seerr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px">
-            <div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>
+        <!-- ③ Service Cards row  (default: full width, row 4) -->
+        <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
+          <div class="grid-stack-item-content" style="overflow:auto">
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box" id="service-cards-row">
+              <div class="panel" style="margin:0" id="radarr-card">
+                <div class="panel-title">🎥 Radarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span></div>
+                <div id="radarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+              <div class="panel" style="margin:0" id="sonarr-card">
+                <div class="panel-title">📺 Sonarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 7 days</span></div>
+                <div id="sonarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+              <div class="panel" style="margin:0" id="plex-card">
+                <div class="panel-title">▶ Plex — Now Playing<span id="plex-stream-count" style="margin-left:auto;background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600"></span></div>
+                <div id="plex-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+              <div class="panel" style="margin:0" id="seerr-card">
+                <div class="panel-title">🎬 Seerr — Requests<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Recent</span></div>
+                <div id="seerr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+            </div>
           </div>
         </div>
 
-      </div>
+        <!-- ④ Docker info  (default: left 6 cols, row 9) -->
+        <div class="grid-stack-item" gs-id="docker" gs-x="0" gs-y="9" gs-w="6" gs-h="3">
+          <div class="grid-stack-item-content">
+            <div class="panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                Docker
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+                <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Disk Used</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
 
-      <!-- Docker Info -->
-      <div class="panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-          Docker
+        <!-- ⑤ Network I/O  (default: right 6 cols, row 9) -->
+        <div class="grid-stack-item" gs-id="network" gs-x="6" gs-y="9" gs-w="6" gs-h="3">
+          <div class="grid-stack-item-content">
+            <div class="panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
+                Network I/O
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Total Sent</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Total Received</div></div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-          <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Disk Used</div></div>
-        </div>
-      </div>
 
-      <!-- Recent Logs Excerpt -->
-      <div class="panel">
-        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-          <span>
-            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-            Recent Logs
-          </span>
-          <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('logs',null)">View All</button>
+        <!-- ⑥ Recent Logs  (default: left 4 cols, row 12) -->
+        <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="12" gs-w="4" gs-h="4">
+          <div class="grid-stack-item-content">
+            <div class="panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+                <span>
+                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  Recent Logs
+                </span>
+                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('logs',null)">View All</button>
+              </div>
+              <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
+            </div>
+          </div>
         </div>
-        <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:120px;overflow:hidden;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
-      </div>
 
-      <!-- Containers Live Panel -->
-      <div class="panel">
-        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-          <span style="display:flex;align-items:center;gap:6px">
-            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-            Containers
-            <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
-          </span>
-          <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">View All</button>
+        <!-- ⑦ Containers Live  (default: right 8 cols, row 12) -->
+        <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="12" gs-w="8" gs-h="4">
+          <div class="grid-stack-item-content">
+            <div class="panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+                <span style="display:flex;align-items:center;gap:6px">
+                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                  Containers
+                  <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
+                </span>
+                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">View All</button>
+              </div>
+              <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+                <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
-          <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
-        </div>
-      </div>
 
-      <!-- Network I/O Quick Stats -->
-      <div class="panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
-          Network I/O
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Total Sent</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Total Received</div></div>
-        </div>
-      </div>
+      </div><!-- /ov-grid -->
     </div>
 
     <!-- ── CONTAINERS ── -->
@@ -3344,6 +3425,57 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSvcSettings()">Save Integrations</button>
       </div>
+
+      <!-- ── Appearance ── -->
+      <div class="panel">
+        <div class="panel-title">🎨 Appearance</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:14px">Theme, accent color, and background. Saved to localStorage — persists across sessions.</div>
+
+        <!-- Theme buttons -->
+        <div class="field">
+          <label style="margin-bottom:6px;display:block">Theme</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="theme-btn" data-t="dark"       onclick="applyTheme('dark')"       style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🌑 Dark</button>
+            <button class="theme-btn" data-t="light"      onclick="applyTheme('light')"      style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">☀️ Light</button>
+            <button class="theme-btn" data-t="nord"       onclick="applyTheme('nord')"       style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🧊 Nord</button>
+            <button class="theme-btn" data-t="catppuccin" onclick="applyTheme('catppuccin')" style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🐱 Catppuccin</button>
+            <button class="theme-btn" data-t="dracula"    onclick="applyTheme('dracula')"    style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🧛 Dracula</button>
+          </div>
+        </div>
+
+        <!-- Accent color swatches -->
+        <div class="field" style="margin-top:14px">
+          <label style="margin-bottom:6px;display:block">Accent Color</label>
+          <div style="display:flex;gap:10px;align-items:center">
+            <button class="accent-swatch" data-a="blue"   onclick="applyAccent('blue')"   title="Blue"   style="width:30px;height:30px;border-radius:50%;background:#388bfd;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="purple" onclick="applyAccent('purple')" title="Purple" style="width:30px;height:30px;border-radius:50%;background:#bc8cff;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="green"  onclick="applyAccent('green')"  title="Green"  style="width:30px;height:30px;border-radius:50%;background:#3fb950;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="orange" onclick="applyAccent('orange')" title="Orange" style="width:30px;height:30px;border-radius:50%;background:#f78166;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="pink"   onclick="applyAccent('pink')"   title="Pink"   style="width:30px;height:30px;border-radius:50%;background:#f778ba;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="cyan"   onclick="applyAccent('cyan')"   title="Cyan"   style="width:30px;height:30px;border-radius:50%;background:#56d9e0;border:2px solid transparent;cursor:pointer"></button>
+          </div>
+        </div>
+
+        <!-- Background image -->
+        <div class="field" style="margin-top:14px">
+          <label>Background Image URL</label>
+          <input type="text" id="bg-url-input" placeholder="https://example.com/wallpaper.jpg or leave blank">
+          <div class="field-hint">Paste any image URL. Leave blank for solid background color.</div>
+        </div>
+        <div class="field">
+          <label>Blur: <span id="bg-blur-val">4</span>px</label>
+          <input type="range" id="bg-blur-input" min="0" max="20" value="4" oninput="document.getElementById('bg-blur-val').textContent=this.value" style="width:100%;accent-color:var(--blue)">
+        </div>
+        <div class="field">
+          <label>Overlay Darkness: <span id="bg-overlay-val">70</span>%</label>
+          <input type="range" id="bg-overlay-input" min="0" max="95" value="70" oninput="document.getElementById('bg-overlay-val').textContent=this.value" style="width:100%;accent-color:var(--blue)">
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn-primary" onclick="saveAppearance()">Apply Background</button>
+          <button class="btn" onclick="resetAppearance()">Reset All</button>
+        </div>
+      </div>
+
       <div class="panel">
         <div class="panel-title">About</div>
         <div class="ctr-row"><span>ArrHub Version</span><span>3.5.0</span></div>
@@ -3372,24 +3504,37 @@ body.sse-disconnected #app{padding-top:38px;}
         <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px"></div>
       </div>
 
-      <!-- Live News iframes view -->
+      <!-- Live News YouTube streams view -->
+      <!-- Note: direct news site iframes are blocked by X-Frame-Options headers on most major sites.
+           YouTube live streams are used instead — these are the official 24/7 streams for each channel. -->
       <div id="rss-live-view" style="display:none">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
+          📺 Live streams via YouTube — official 24/7 channels
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(480px,1fr));gap:12px">
           <div class="panel">
-            <div class="panel-title">🇬🇧 BBC News Live</div>
-            <iframe src="https://www.bbc.com/news" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            <div class="panel-title">🇬🇧 BBC News</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCBi2mrWuNuyYy4gbM6fU18Q&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
           <div class="panel">
-            <div class="panel-title">🌍 Al Jazeera Live</div>
-            <iframe src="https://www.aljazeera.com" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            <div class="panel-title">🌍 Al Jazeera English</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCNye-wNBqNL5ZzHSJj3l8Bg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
           <div class="panel">
-            <div class="panel-title">🏆 Sky Sports</div>
-            <iframe src="https://www.skysports.com" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            <div class="panel-title">🇬🇧 Sky News</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCoMdktPbSTixAyNGwb-UYkQ&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
           <div class="panel">
             <div class="panel-title">📊 Bloomberg Markets</div>
-            <iframe src="https://www.bloomberg.com/markets" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCIALMKvObZNtJ6AmdCLP7Lg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🇩🇪 DW News</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCW39zufHfsuGgpLviKh297Q&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🇫🇷 France 24 English</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCQfwfsi5VrQ8yKZ-UGuIzgA&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
         </div>
       </div>
@@ -5139,7 +5284,127 @@ loadOverviewExtras();   // also calls loadDashboardContainers()
 startSSE();
 // Initial alerts render (will be updated once containers load)
 setTimeout(refreshAlerts, 2000);
+
+// ── Theme & Appearance ────────────────────────────────────────────────────
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t || 'dark');
+  localStorage.setItem('arrhub_theme', t);
+  document.querySelectorAll('.theme-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.t === t));
+}
+function applyAccent(a) {
+  if (a === 'blue') {
+    document.documentElement.removeAttribute('data-accent');
+  } else {
+    document.documentElement.setAttribute('data-accent', a);
+  }
+  localStorage.setItem('arrhub_accent', a);
+  document.querySelectorAll('.accent-swatch').forEach(b =>
+    b.classList.toggle('active', b.dataset.a === a));
+}
+function saveAppearance() {
+  const url     = document.getElementById('bg-url-input')?.value.trim() || '';
+  const blur    = parseInt(document.getElementById('bg-blur-input')?.value || 4);
+  const overlay = parseInt(document.getElementById('bg-overlay-input')?.value || 70);
+  _applyBg(url, blur, overlay);
+  localStorage.setItem('arrhub_bg', JSON.stringify({url, blur, overlay}));
+  showToast('Background applied', 'success', 2000);
+}
+function resetAppearance() {
+  applyTheme('dark');
+  applyAccent('blue');
+  _applyBg('', 4, 70);
+  localStorage.removeItem('arrhub_bg');
+  localStorage.removeItem('arrhub_theme');
+  localStorage.removeItem('arrhub_accent');
+  showToast('Appearance reset to defaults', 'info', 2000);
+}
+function _applyBg(url, blur, overlay) {
+  const el = document.getElementById('bg-layer');
+  if (!el) return;
+  if (url) {
+    el.style.cssText = `display:block;position:fixed;inset:0;z-index:0;`
+      + `background:url(${url}) center/cover no-repeat;`
+      + `filter:blur(${blur}px) brightness(${(100 - overlay) / 100});`
+      + `transform:scale(1.05);`; // slightly enlarge to hide blur edges
+  } else {
+    el.style.display = 'none';
+  }
+  // Also sync sliders if visible
+  const bi = document.getElementById('bg-blur-input');
+  const oi = document.getElementById('bg-overlay-input');
+  if (bi) { bi.value = blur; document.getElementById('bg-blur-val').textContent = blur; }
+  if (oi) { oi.value = overlay; document.getElementById('bg-overlay-val').textContent = overlay; }
+  const ui = document.getElementById('bg-url-input');
+  if (ui) ui.value = url;
+}
+// Restore saved appearance on load
+(function _restoreAppearance() {
+  const t  = localStorage.getItem('arrhub_theme') || 'dark';
+  const a  = localStorage.getItem('arrhub_accent') || 'blue';
+  applyTheme(t);
+  applyAccent(a);
+  const bgRaw = localStorage.getItem('arrhub_bg');
+  if (bgRaw) {
+    try { const bg = JSON.parse(bgRaw); _applyBg(bg.url||'', bg.blur||4, bg.overlay||70); } catch(e) {}
+  }
+})();
+
+// ── GridStack Drag-and-Drop Dashboard ─────────────────────────────────────
+// Requires gridstack@10 loaded below. Activated only when "Edit Layout" clicked.
+let _gs  = null;
+let _gsEditing = false;
+
+function _gsInit() {
+  if (_gs || typeof GridStack === 'undefined') return false;
+  const el = document.getElementById('ov-grid');
+  if (!el) return false;
+  _gs = GridStack.init({
+    cellHeight: 80,
+    column: 12,
+    margin: 8,
+    staticGrid: true,   // non-draggable by default
+    animate: true,
+    float: false,
+    resizable: { handles: 'se' },
+  }, el);
+  // Restore saved layout
+  const saved = localStorage.getItem('arrhub_grid');
+  if (saved) {
+    try { _gs.load(JSON.parse(saved), false); } catch(e) {}
+  }
+  return true;
+}
+
+function toggleGridEdit() {
+  _gsInit();
+  if (!_gs) { showToast('GridStack not loaded yet', 'error'); return; }
+  _gsEditing = !_gsEditing;
+  const btn  = document.getElementById('ov-edit-btn');
+  const grid = document.getElementById('ov-grid');
+  if (_gsEditing) {
+    _gs.setStatic(false);
+    _gs.on('change', () => localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false))));
+    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg> Save Layout';
+    btn.style.background = 'var(--blue2)';
+    btn.style.color      = 'var(--blue)';
+    grid.classList.add('gs-editing');
+    showToast('Drag panels to reorder · resize from corner · click Save when done', 'info', 4000);
+  } else {
+    _gs.setStatic(true);
+    localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false)));
+    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> Edit Layout';
+    btn.style.background = '';
+    btn.style.color      = '';
+    grid.classList.remove('gs-editing');
+    showToast('Layout saved', 'success', 2000);
+  }
+}
+
+// Init GridStack in static mode on load to apply any saved positions
+window.addEventListener('load', () => { setTimeout(_gsInit, 400); });
 </script>
+<script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
 </body>
 </html>
 

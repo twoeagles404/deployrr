@@ -381,6 +381,67 @@ def api_container_action(cname, action):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/container/<cname>/update", methods=["POST"])
+@require_auth
+def api_container_update(cname):
+    """Pull latest image for a container and recreate it with the same config."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+    try:
+        container = _dc.containers.get(cname)
+        image_name = container.image.tags[0] if container.image.tags else None
+        if not image_name:
+            return jsonify({"error": "No image tag found — cannot pull"}), 400
+
+        # Capture current config before stopping
+        cfg = container.attrs.get("HostConfig", {})
+        net_cfg = container.attrs.get("NetworkSettings", {})
+        inspect = container.attrs
+
+        # Pull the latest image
+        _dc.images.pull(image_name)
+
+        # Gather restart policy
+        restart_policy = cfg.get("RestartPolicy", {"Name": "unless-stopped"})
+
+        # Gather port bindings  {container_port/proto: host_port}
+        port_bindings = cfg.get("PortBindings") or {}
+
+        # Gather volume bindings
+        binds = cfg.get("Binds") or []
+
+        # Gather env
+        env = inspect.get("Config", {}).get("Env") or []
+
+        # Stop and remove existing container
+        try:
+            container.stop(timeout=15)
+        except Exception:
+            pass
+        try:
+            container.remove()
+        except Exception:
+            pass
+
+        # Recreate with same config
+        new_container = _dc.containers.run(
+            image_name,
+            name=cname,
+            detach=True,
+            ports=port_bindings if port_bindings else None,
+            volumes=binds if binds else None,
+            environment=env if env else None,
+            restart_policy=restart_policy,
+        )
+        return jsonify({
+            "status": "updated",
+            "name": cname,
+            "image": image_name,
+            "container_id": new_container.short_id,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/container/<cname>/logs")
 def api_container_logs(cname):
     """Get container logs."""
@@ -2217,16 +2278,278 @@ tbody tr:last-child{border-bottom:none;}
 .cat-footer{margin-top:auto;display:flex;align-items:center;justify-content:space-between;}
 .cat-image{font-size:11px;font-family:var(--mono);color:var(--text3);}
 
-/* ── Responsive ── */
+/* ── Responsive — original ── */
 @media(max-width:700px){
-  #sidebar{display:none;}
   .container-grid{grid-template-columns:1fr;}
   .settings-grid{grid-template-columns:1fr;}
   .stat-grid{grid-template-columns:repeat(2,1fr);}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   1. TOAST NOTIFICATION SYSTEM
+   ══════════════════════════════════════════════════════════════ */
+#toast-container{
+  position:fixed;bottom:20px;right:20px;
+  display:flex;flex-direction:column;gap:8px;
+  z-index:9999;pointer-events:none;
+}
+.toast{
+  display:flex;align-items:flex-start;gap:10px;
+  background:var(--bg2);border:1px solid var(--border2);
+  border-radius:var(--r);padding:12px 14px;
+  min-width:260px;max-width:380px;
+  box-shadow:0 8px 24px rgba(0,0,0,.5);
+  pointer-events:all;
+  animation:toastIn .25s ease forwards;
+  border-left:4px solid var(--blue);
+}
+.toast.success{border-left-color:var(--green);}
+.toast.error{border-left-color:var(--red);}
+.toast.warn{border-left-color:var(--yellow);}
+.toast.info{border-left-color:var(--blue);}
+.toast.toast-exit{animation:toastOut .25s ease forwards;}
+.toast-icon{font-size:16px;flex-shrink:0;margin-top:1px;}
+.toast-body{flex:1;min-width:0;}
+.toast-msg{font-size:13px;color:var(--text);line-height:1.4;word-break:break-word;}
+.toast-close{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  padding:0 2px;font-size:16px;line-height:1;flex-shrink:0;
+}
+.toast-close:hover{color:var(--text);}
+@keyframes toastIn{
+  from{opacity:0;transform:translateX(40px);}
+  to{opacity:1;transform:translateX(0);}
+}
+@keyframes toastOut{
+  from{opacity:1;transform:translateX(0);}
+  to{opacity:0;transform:translateX(40px);}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   2. SSE DISCONNECTED BANNER
+   ══════════════════════════════════════════════════════════════ */
+#sse-banner{
+  position:fixed;top:0;left:0;right:0;
+  background:#7a5c00;border-bottom:2px solid var(--yellow);
+  color:#fff;font-size:13px;font-weight:600;
+  padding:8px 20px;
+  display:none;align-items:center;justify-content:center;gap:12px;
+  z-index:8000;
+}
+#sse-banner.visible{display:flex;}
+#sse-banner button{
+  background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.5);
+  color:#fff;border-radius:6px;padding:3px 12px;font-size:12px;cursor:pointer;
+}
+#sse-banner button:hover{background:rgba(255,255,255,.35);}
+
+/* Push content down when banner visible */
+body.sse-disconnected #app{padding-top:38px;}
+
+/* ══════════════════════════════════════════════════════════════
+   3. MOBILE RESPONSIVE LAYOUT
+   ══════════════════════════════════════════════════════════════ */
+
+/* Hamburger button — hidden on desktop */
+#hamburger{
+  display:none;
+  background:none;border:none;color:var(--text2);cursor:pointer;
+  padding:4px 6px;border-radius:6px;
+  align-items:center;justify-content:center;
+}
+#hamburger:hover{background:var(--surface2);color:var(--text);}
+#hamburger svg{width:20px;height:20px;}
+
+/* Mobile bottom nav — hidden on desktop */
+#bottom-nav{
+  display:none;
+  position:fixed;bottom:0;left:0;right:0;
+  height:60px;
+  background:var(--bg2);border-top:1px solid var(--border);
+  z-index:700;
+  justify-content:space-around;align-items:stretch;
+}
+.bn-item{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:3px;cursor:pointer;color:var(--text3);font-size:10px;font-weight:500;
+  border:none;background:none;padding:4px 2px;
+  transition:color var(--transition);
+}
+.bn-item:hover,.bn-item.active{color:var(--blue);}
+.bn-item svg{width:20px;height:20px;}
+
+/* ── 900px breakpoint: sidebar → bottom nav ── */
+@media(max-width:900px){
+  #sidebar{
+    position:fixed;top:0;left:0;bottom:60px;
+    z-index:800;
+    transform:translateX(-100%);
+    transition:transform .25s ease;
+    width:var(--sb-w);
+    box-shadow:4px 0 20px rgba(0,0,0,.5);
+  }
+  #sidebar.sidebar-open{transform:translateX(0);}
+  #hamburger{display:flex;}
+  #bottom-nav{display:flex;}
+  #main{margin-bottom:60px;}
+  /* Overlay when sidebar open */
+  #sidebar-overlay{
+    display:none;
+    position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:799;
+  }
+  #sidebar-overlay.visible{display:block;}
+}
+
+/* ── 600px breakpoint ── */
+@media(max-width:600px){
+  .stat-grid{grid-template-columns:repeat(2,1fr);}
+  .container-grid{grid-template-columns:1fr;}
+  .cat-grid{grid-template-columns:1fr;}
+  .settings-grid{grid-template-columns:1fr;}
+  #topbar .tb-stat:nth-child(4){display:none;} /* hide Load stat */
+  .topbar-hostname{display:none;}
+}
+
+/* Touch-friendly minimum heights */
+@media(max-width:900px){
+  .btn,.filter-pill,.tab-btn{min-height:40px;}
+  .bn-item{min-height:40px;}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   4. LOADING SKELETON SHIMMER
+   ══════════════════════════════════════════════════════════════ */
+@keyframes shimmer{
+  0%{background-position:-400px 0;}
+  100%{background-position:400px 0;}
+}
+.skeleton{
+  background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
+  background-size:800px 100%;
+  animation:shimmer 1.4s infinite linear;
+  border-radius:var(--r);
+}
+.skeleton-card{
+  background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--r);padding:14px;
+  display:flex;flex-direction:column;gap:10px;
+}
+.sk-line{height:12px;border-radius:4px;}
+.sk-line.short{width:50%;}
+.sk-line.med{width:70%;}
+.sk-line.full{width:100%;}
+.sk-circle{width:48px;height:48px;border-radius:50%;flex-shrink:0;}
+.sk-rect{height:80px;border-radius:var(--r);}
+
+/* ══════════════════════════════════════════════════════════════
+   5. DEPLOY TAB IMPROVEMENTS
+   ══════════════════════════════════════════════════════════════ */
+#deploy-controls{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;
+}
+#cat-sort{
+  background:var(--surface);border:1px solid var(--border);
+  color:var(--text);border-radius:var(--r);padding:6px 10px;
+  font-family:var(--ui);font-size:13px;outline:none;cursor:pointer;
+}
+#cat-sort:focus{border-color:var(--blue);}
+#cat-count{font-size:12px;color:var(--text3);margin-left:auto;}
+.fav-section{
+  margin-bottom:16px;padding:12px;
+  background:var(--bg2);border:1px solid var(--yellow);
+  border-radius:var(--r);
+}
+.fav-section-title{
+  font-size:12px;font-weight:600;color:var(--yellow);
+  margin-bottom:10px;display:flex;align-items:center;gap:6px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   6. CONTAINER MEMORY PROGRESS BARS
+   ══════════════════════════════════════════════════════════════ */
+.mem-bar-wrap{
+  margin:4px 0 0;
+  height:4px;background:var(--surface2);
+  border-radius:2px;overflow:hidden;width:100%;
+}
+.mem-bar{
+  height:100%;border-radius:2px;
+  transition:width .6s ease,background .4s;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   7. UPDATE BUTTON
+   ══════════════════════════════════════════════════════════════ */
+.btn.purple{border-color:rgba(188,140,255,.4);color:var(--purple);}
+.btn.purple:hover{background:var(--purple2);}
+
+/* ══════════════════════════════════════════════════════════════
+   8. FAVORITES — star button on catalog cards
+   ══════════════════════════════════════════════════════════════ */
+.fav-btn{
+  background:none;border:none;cursor:pointer;
+  font-size:16px;color:var(--text3);padding:2px 4px;
+  transition:color var(--transition),transform .15s;
+  line-height:1;
+}
+.fav-btn:hover{transform:scale(1.2);}
+.fav-btn.starred{color:var(--yellow);}
+
+/* ══════════════════════════════════════════════════════════════
+   9. SORTABLE TABLE VIEW FOR CONTAINERS
+   ══════════════════════════════════════════════════════════════ */
+#ctr-table-wrap{display:none;overflow-x:auto;}
+#ctr-table-wrap table{min-width:900px;}
+#ctr-table-wrap thead th{cursor:pointer;user-select:none;white-space:nowrap;}
+#ctr-table-wrap thead th:hover{color:var(--blue);}
+#ctr-table-wrap thead th .sort-arrow{margin-left:4px;opacity:.5;}
+#ctr-table-wrap thead th.sorted .sort-arrow{opacity:1;color:var(--blue);}
+.view-toggle{display:flex;gap:6px;align-items:center;}
+.view-btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:4px 10px;border-radius:6px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text2);font-size:12px;cursor:pointer;
+  transition:all var(--transition);
+}
+.view-btn.active{background:var(--blue2);border-color:rgba(56,139,253,.5);color:var(--blue);}
+
+/* ══════════════════════════════════════════════════════════════
+   10. ALERTS BAR
+   ══════════════════════════════════════════════════════════════ */
+#alerts-bar{
+  border-radius:var(--r);margin-bottom:16px;
+  border:1px solid var(--border);
+  overflow:hidden;
+}
+#alerts-bar-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 14px;background:var(--bg2);cursor:pointer;
+  font-size:13px;font-weight:600;
+}
+#alerts-bar-header:hover{background:var(--surface);}
+#alerts-body{padding:0 14px 10px;background:var(--bg2);}
+#alerts-body.collapsed{display:none;}
+.alert-row{
+  display:flex;align-items:center;gap:8px;
+  padding:5px 0;font-size:12px;color:var(--text);
+  border-bottom:1px solid var(--border);
+}
+.alert-row:last-child{border-bottom:none;}
 </style>
 </head>
 <body>
+<!-- ══ TOAST CONTAINER ══ -->
+<div id="toast-container"></div>
+
+<!-- ══ SSE DISCONNECTED BANNER ══ -->
+<div id="sse-banner">
+  ⚠ Live metrics disconnected — Reconnecting…
+  <button onclick="retrySSE()">Retry</button>
+</div>
+
+<!-- ══ SIDEBAR OVERLAY (mobile) ══ -->
+<div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
 <div id="app">
 
 <!-- ═══════════════════════════════════════════════════════════
@@ -2338,6 +2661,10 @@ tbody tr:last-child{border-bottom:none;}
 
   <!-- TOP BAR -->
   <div id="topbar">
+    <!-- Hamburger for mobile -->
+    <button id="hamburger" onclick="toggleSidebar()" aria-label="Menu">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
     <div class="tb-stat">
       <span class="tb-stat-label">Containers</span>
       <span class="tb-stat-val green" id="tb-running">—</span>
@@ -2368,6 +2695,16 @@ tbody tr:last-child{border-bottom:none;}
 
     <!-- ── DASHBOARD ── -->
     <div id="tab-overview" class="tab-panel active fade-in">
+      <!-- ALERTS BAR -->
+      <div id="alerts-bar">
+        <div id="alerts-bar-header" onclick="toggleAlerts()">
+          <span id="alerts-title">🔔 Alerts</span>
+          <span id="alerts-chevron" style="color:var(--text3);font-size:11px">▼</span>
+        </div>
+        <div id="alerts-body">
+          <div class="alert-row"><span>🟢</span><span>Loading alerts...</span></div>
+        </div>
+      </div>
       <div class="section-header">
         <div>
           <div class="section-title">System Overview</div>
@@ -2535,10 +2872,22 @@ tbody tr:last-child{border-bottom:none;}
     <div id="tab-containers" class="tab-panel">
       <div class="section-header">
         <div class="section-title">Containers</div>
-        <button class="btn-primary" onclick="loadContainers()">
-          <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-          Refresh
-        </button>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div class="view-toggle">
+            <button class="view-btn active" id="btn-grid-view" onclick="setCtrView('grid')">
+              <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm10 0a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zm10-3a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1v-7z"/></svg>
+              Grid
+            </button>
+            <button class="view-btn" id="btn-table-view" onclick="setCtrView('table')">
+              <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 6h18M3 14h18M3 18h18"/></svg>
+              Table
+            </button>
+          </div>
+          <button class="btn-primary" onclick="loadContainers()">
+            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Refresh
+          </button>
+        </div>
       </div>
       <div class="filter-row">
         <div class="filter-pill active" onclick="filterContainers('all',this)">All</div>
@@ -2546,8 +2895,29 @@ tbody tr:last-child{border-bottom:none;}
         <div class="filter-pill" onclick="filterContainers('exited',this)">Stopped</div>
         <div class="filter-pill" onclick="filterContainers('restarting',this)">Restarting</div>
       </div>
+      <!-- Grid view -->
       <div class="container-grid" id="ctr-grid">
         <div class="empty"><div class="empty-icon">📦</div><div class="empty-text">Loading containers...</div></div>
+      </div>
+      <!-- Table view -->
+      <div id="ctr-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th onclick="sortCtrTable('name')">Name <span class="sort-arrow">↕</span></th>
+              <th onclick="sortCtrTable('image')">Image <span class="sort-arrow">↕</span></th>
+              <th onclick="sortCtrTable('status')">Status <span class="sort-arrow">↕</span></th>
+              <th onclick="sortCtrTable('cpu')">CPU% <span class="sort-arrow">↕</span></th>
+              <th onclick="sortCtrTable('mem')">MEM <span class="sort-arrow">↕</span></th>
+              <th>Ports</th>
+              <th onclick="sortCtrTable('uptime')">Uptime <span class="sort-arrow">↕</span></th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="ctr-table-body">
+            <tr><td colspan="8" style="text-align:center;color:var(--text3);padding:20px">Switch to Table view to load</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -2630,7 +3000,21 @@ tbody tr:last-child{border-bottom:none;}
           <input type="text" id="cat-search" placeholder="Search apps..." oninput="filterCatalog()">
         </div>
       </div>
-      <div id="cat-categories" class="filter-row" style="margin-bottom:16px"></div>
+      <!-- Favorites row (hidden when empty) -->
+      <div id="fav-section" class="fav-section" style="display:none">
+        <div class="fav-section-title">⭐ Favorites</div>
+        <div class="cat-grid" id="fav-grid" style="gap:10px"></div>
+      </div>
+      <!-- Controls: category pills + sort + count -->
+      <div id="cat-categories" class="filter-row" style="margin-bottom:8px"></div>
+      <div id="deploy-controls">
+        <select id="cat-sort" onchange="renderCatalog()">
+          <option value="az">Name A–Z</option>
+          <option value="za">Name Z–A</option>
+          <option value="cat">Category</option>
+        </select>
+        <span id="cat-count" style="font-size:12px;color:var(--text3)"></span>
+      </div>
       <div class="cat-grid" id="cat-grid">
         <div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">Loading catalog...</div></div>
       </div>
@@ -2720,6 +3104,30 @@ tbody tr:last-child{border-bottom:none;}
 </div><!-- /main -->
 </div><!-- /app -->
 
+<!-- ══ MOBILE BOTTOM NAV ══ -->
+<nav id="bottom-nav">
+  <button class="bn-item active" onclick="showTab('overview',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm10 0a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zm10-3a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1v-7z"/></svg>
+    <span>Overview</span>
+  </button>
+  <button class="bn-item" onclick="showTab('containers',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+    <span>Containers</span>
+  </button>
+  <button class="bn-item" onclick="showTab('deploy',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+    <span>Deploy</span>
+  </button>
+  <button class="bn-item" onclick="showTab('logs',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+    <span>Logs</span>
+  </button>
+  <button class="bn-item" onclick="toggleSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+    <span>More</span>
+  </button>
+</nav>
+
 <!-- ═══ LOG MODAL ═══ -->
 <div class="modal-overlay" id="log-modal">
   <div class="modal">
@@ -2738,6 +3146,8 @@ tbody tr:last-child{border-bottom:none;}
 <script>
 /* =====================================================================
    ARRHUB FRONTEND — no auth, pure vanilla JS
+   All new features: toasts, SSE banner, mobile, skeletons, favorites,
+   alerts bar, update-recreate, sort, table view.
    ===================================================================== */
 
 const API = '';
@@ -2746,6 +3156,75 @@ let allContainers = [];
 let ctrFilter = 'all';
 let allCatalog = [];
 let catFilter = 'all';
+
+// ── Container table view state ─────────────────────────────────────────
+let ctrViewMode = 'grid';         // 'grid' | 'table'
+let ctrTableSort = {col: 'name', dir: 'asc'};
+let ctrStatsCache = {};           // name -> {cpu_pct, mem_pct, mem_usage_mb}
+
+// ══════════════════════════════════════════════════════════════════════
+// 1. TOAST SYSTEM
+// ══════════════════════════════════════════════════════════════════════
+const TOAST_ICONS = {success:'✓', error:'✕', info:'ℹ', warn:'⚠'};
+
+/**
+ * showToast(msg, type, duration)
+ * type: 'success' | 'error' | 'info' | 'warn'
+ */
+function showToast(msg, type='info', duration=4000) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    const el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.innerHTML = `
+        <span class="toast-icon">${TOAST_ICONS[type] || 'ℹ'}</span>
+        <div class="toast-body"><div class="toast-msg">${msg}</div></div>
+        <button class="toast-close" onclick="dismissToast(this.parentElement)">×</button>`;
+    container.appendChild(el);
+    // Auto-dismiss
+    const timer = setTimeout(() => dismissToast(el), duration);
+    el._timer = timer;
+}
+
+function dismissToast(el) {
+    if (!el || el._dismissed) return;
+    el._dismissed = true;
+    clearTimeout(el._timer);
+    el.classList.add('toast-exit');
+    setTimeout(() => el.remove(), 280);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 2. SSE DISCONNECTED BANNER
+// ══════════════════════════════════════════════════════════════════════
+function showSSEBanner() {
+    const b = document.getElementById('sse-banner');
+    if (b) { b.classList.add('visible'); document.body.classList.add('sse-disconnected'); }
+}
+function hideSSEBanner() {
+    const b = document.getElementById('sse-banner');
+    if (b) { b.classList.remove('visible'); document.body.classList.remove('sse-disconnected'); }
+}
+function retrySSE() {
+    if (evtSource) { evtSource.close(); evtSource = null; }
+    startSSE();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 3. MOBILE SIDEBAR
+// ══════════════════════════════════════════════════════════════════════
+function toggleSidebar() {
+    const sb = document.getElementById('sidebar');
+    const ov = document.getElementById('sidebar-overlay');
+    if (sb) sb.classList.toggle('sidebar-open');
+    if (ov) ov.classList.toggle('visible');
+}
+function closeSidebar() {
+    const sb = document.getElementById('sidebar');
+    const ov = document.getElementById('sidebar-overlay');
+    if (sb) sb.classList.remove('sidebar-open');
+    if (ov) ov.classList.remove('visible');
+}
 
 // ── Time ─────────────────────────────────────────────────────────────
 function updateTime() {
@@ -2759,6 +3238,7 @@ updateTime();
 function showTab(name, el) {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
+    document.querySelectorAll('.bn-item').forEach(i => i.classList.remove('active'));
     const panel = document.getElementById('tab-' + name);
     if (panel) { panel.classList.add('active'); panel.classList.add('fade-in'); }
     if (el) el.classList.add('active');
@@ -2837,11 +3317,18 @@ function pbarColor(pct) {
 
 // ── SSE live stream ───────────────────────────────────────────────────
 let evtSource = null;
+let _sseWasConnected = false;
 function startSSE() {
     if (evtSource) return;
     evtSource = new EventSource(API + '/api/stream');
     const badge = document.getElementById('live-badge');
-    evtSource.onopen = () => { if (badge) badge.style.display = 'inline-flex'; };
+    evtSource.onopen = () => {
+        if (badge) badge.style.display = 'inline-flex';
+        hideSSEBanner();
+        // Show "restored" toast only if we had previously connected and then lost it
+        if (_sseWasConnected) showToast('Live metrics restored', 'success', 3000);
+        _sseWasConnected = true;
+    };
     evtSource.onmessage = (e) => {
         try {
             const d = JSON.parse(e.data);
@@ -2871,6 +3358,8 @@ function startSSE() {
     evtSource.onerror = () => {
         if (badge) badge.style.display = 'none';
         evtSource.close(); evtSource = null;
+        // Only show the banner if we had ever connected (avoid on initial page load failure)
+        if (_sseWasConnected) showSSEBanner();
         setTimeout(startSSE, 5000);
     };
 }
@@ -2917,8 +3406,41 @@ async function loadOverview() {
     } catch(e) {}
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// 4. SKELETON HELPERS
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * showSkeleton(containerId, count) — inject skeleton placeholder cards
+ */
+function showSkeleton(containerId, count=3) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    el.innerHTML = Array.from({length: count}, () => `
+        <div class="skeleton-card">
+          <div style="display:flex;gap:10px;align-items:center">
+            <div class="sk-circle skeleton"></div>
+            <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+              <div class="sk-line med skeleton"></div>
+              <div class="sk-line short skeleton"></div>
+            </div>
+          </div>
+          <div class="sk-rect skeleton"></div>
+          <div class="sk-line full skeleton"></div>
+        </div>`).join('');
+}
+
+/**
+ * clearSkeleton(containerId) — remove skeleton cards (actual content replaces)
+ */
+function clearSkeleton(containerId) {
+    // Content will be directly replaced by renderContainers() etc; this is a no-op
+    // but kept as hook if needed for explicit clearing.
+}
+
 // ── Containers ─────────────────────────────────────────────────────────
 async function loadContainers() {
+    // Show skeleton while loading
+    if (!allContainers.length) showSkeleton('ctr-grid', 3);
     try {
         const r = await fetch(API + '/api/containers');
         const d = await r.json();
@@ -2933,6 +3455,8 @@ async function loadContainers() {
         setEl('ctr-stopped-count', stopped);
         setEl('ctr-total-count', allContainers.length);
         renderContainers();
+        // Refresh alerts since container state changed
+        refreshAlerts();
     } catch(e) {
         document.getElementById('ctr-grid').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Docker not available</div></div>';
     }
@@ -2973,12 +3497,25 @@ function statusClass(status) {
     return 'exited';
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// 9. CONTAINER VIEW MODE (grid / table)
+// ══════════════════════════════════════════════════════════════════════
+function setCtrView(mode) {
+    ctrViewMode = mode;
+    document.getElementById('ctr-grid').style.display = mode === 'grid' ? '' : 'none';
+    document.getElementById('ctr-table-wrap').style.display = mode === 'table' ? '' : 'none';
+    document.getElementById('btn-grid-view').classList.toggle('active', mode === 'grid');
+    document.getElementById('btn-table-view').classList.toggle('active', mode === 'table');
+    if (mode === 'table') renderContainerTable();
+}
+
 function renderContainers() {
     const grid = document.getElementById('ctr-grid');
     let ctrs = allContainers;
     if (ctrFilter !== 'all') ctrs = ctrs.filter(c => c.status === ctrFilter);
     if (!ctrs.length) {
         grid.innerHTML = '<div class="empty"><div class="empty-icon">📦</div><div class="empty-text">No containers match filter</div></div>';
+        if (ctrViewMode === 'table') renderContainerTable();
         return;
     }
     // Sort: running first
@@ -2993,6 +3530,7 @@ function renderContainers() {
         const ports = c.ports && c.ports.length ? c.ports.join(', ') : '—';
         const uptime = c.uptime || '—';
         const isRunning = c.status === 'running';
+        // 6. Memory progress bar (initially hidden; updated in loadCtrStats)
         return `
 <div class="ctr-card" id="card-${c.name}">
   <div class="ctr-header">
@@ -3023,7 +3561,7 @@ function renderContainers() {
       </svg>
       <div style="font-size:10px;color:var(--text3);margin-top:2px">CPU</div>
     </div>
-    <div style="text-align:center">
+    <div style="text-align:center;flex:1">
       <svg width="48" height="48" viewBox="0 0 48 48">
         <circle cx="24" cy="24" r="18" fill="none" stroke="var(--border)" stroke-width="4"/>
         <circle cx="24" cy="24" r="18" fill="none" stroke="var(--purple)" stroke-width="4"
@@ -3032,29 +3570,61 @@ function renderContainers() {
         <text x="24" y="26" text-anchor="middle" fill="var(--text2)" font-size="9" font-family="var(--mono)" id="stat-mem-${c.name}">—</text>
       </svg>
       <div style="font-size:10px;color:var(--text3);margin-top:2px">MEM</div>
+      <!-- 6. Horizontal memory bar -->
+      <div class="mem-bar-wrap" style="margin-top:4px;width:80px;margin-left:auto;margin-right:auto">
+        <div class="mem-bar" id="mem-bar-${c.name}" style="width:0%;background:var(--green)"></div>
+      </div>
     </div>
   </div>
   <div class="ctr-footer">
-    ${isRunning ? `<button class="btn red" onclick="ctrAction('${c.name}','stop')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" stroke-width="2"/></svg>Stop</button>` : `<button class="btn green" onclick="ctrAction('${c.name}','start')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>Start</button>`}
+    ${isRunning
+      ? `<button class="btn red" onclick="ctrAction('${c.name}','stop')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" stroke-width="2"/></svg>Stop</button>`
+      : `<button class="btn green" onclick="ctrAction('${c.name}','start')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>Start</button>`}
     <button class="btn orange" onclick="ctrAction('${c.name}','restart')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Restart</button>
     <button class="btn blue" onclick="openLogs('${c.name}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Logs</button>
+    <!-- 7. Update & Recreate button (running containers only) -->
+    ${isRunning ? `<button class="btn purple" onclick="updateContainer('${c.name}')">⬆ Update</button>` : ''}
     <button class="btn red" onclick="ctrAction('${c.name}','remove')" style="margin-left:auto"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
   </div>
 </div>`;
     }).join('');
 
-    // Load stats for running containers
+    // Load stats for running containers (also updates mem bar)
     ctrs.filter(c=>c.status==='running').forEach(c => loadCtrStats(c.name));
+    // If table is visible, sync it
+    if (ctrViewMode === 'table') renderContainerTable();
 }
 
 async function ctrAction(name, action) {
     if (action === 'remove' && !confirm('Remove container ' + name + '?')) return;
+    const actionLabels = {start:'Starting', stop:'Stopping', restart:'Restarting', remove:'Removing'};
+    showToast((actionLabels[action] || action) + ' ' + name + '…', 'info', 3000);
     try {
         const r = await fetch(API + `/api/container/${name}/${action}`, {method:'POST'});
         const d = await r.json();
-        if (d.error) alert('Error: ' + d.error);
-        else setTimeout(loadContainers, 800);
-    } catch(e) { alert('Request failed'); }
+        if (d.error) {
+            showToast('Error: ' + d.error, 'error');
+        } else {
+            const doneLabels = {start:'started', stop:'stopped', restart:'restarted', remove:'removed'};
+            showToast(name + ' ' + (doneLabels[action] || action), 'success');
+            setTimeout(loadContainers, 800);
+        }
+    } catch(e) { showToast('Request failed', 'error'); }
+}
+
+// ── 7. Update & Recreate ────────────────────────────────────────────────
+async function updateContainer(name) {
+    showToast('Pulling latest image for ' + name + '…', 'info', 8000);
+    try {
+        const r = await fetch(API + `/api/container/${name}/update`, {method:'POST'});
+        const d = await r.json();
+        if (d.error) {
+            showToast('Update failed: ' + d.error, 'error');
+        } else {
+            showToast('✓ ' + name + ' updated and recreated', 'success', 5000);
+            setTimeout(loadContainers, 1200);
+        }
+    } catch(e) { showToast('Update request failed', 'error'); }
 }
 
 async function loadCtrStats(name) {
@@ -3062,10 +3632,15 @@ async function loadCtrStats(name) {
         const r = await fetch(API + `/api/container/${name}/stats`);
         const d = await r.json();
         if (d.error) return;
+
+        // Cache for table view
+        ctrStatsCache[name] = d;
+
         const cpuEl = document.getElementById('stat-cpu-' + name);
         const memEl = document.getElementById('stat-mem-' + name);
         const cpuDonut = document.getElementById('donut-cpu-' + name);
         const memDonut = document.getElementById('donut-mem-' + name);
+        const memBar  = document.getElementById('mem-bar-' + name);
         const circumference = 113.1;
         if (cpuEl) cpuEl.textContent = d.cpu_pct + '%';
         if (memEl) memEl.textContent = d.mem_usage_mb + ' MB';
@@ -3077,7 +3652,80 @@ async function loadCtrStats(name) {
             memDonut.style.strokeDashoffset = circumference - (Math.min(d.mem_pct,100)/100)*circumference;
             memDonut.style.stroke = d.mem_pct < 50 ? 'var(--purple)' : d.mem_pct < 80 ? 'var(--orange)' : 'var(--red)';
         }
+        // 6. Horizontal memory bar
+        if (memBar) {
+            const pct = Math.min(d.mem_pct, 100);
+            memBar.style.width = pct + '%';
+            memBar.style.background = pct < 60 ? 'var(--green)' : pct < 80 ? 'var(--yellow)' : 'var(--red)';
+        }
     } catch(e) {}
+}
+
+// ── Container Table View ──────────────────────────────────────────────
+function renderContainerTable() {
+    const tbody = document.getElementById('ctr-table-body');
+    if (!tbody) return;
+    let ctrs = [...allContainers];
+    if (ctrFilter !== 'all') ctrs = ctrs.filter(c => c.status === ctrFilter);
+    if (!ctrs.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:20px">No containers match filter</td></tr>';
+        return;
+    }
+    // Sort by ctrTableSort
+    const {col, dir} = ctrTableSort;
+    ctrs.sort((a, b) => {
+        let va, vb;
+        if (col === 'cpu')    { va = (ctrStatsCache[a.name]||{}).cpu_pct||0;  vb = (ctrStatsCache[b.name]||{}).cpu_pct||0; }
+        else if (col === 'mem') { va = (ctrStatsCache[a.name]||{}).mem_pct||0; vb = (ctrStatsCache[b.name]||{}).mem_pct||0; }
+        else if (col === 'uptime') { va = a.uptime||''; vb = b.uptime||''; }
+        else { va = (a[col]||'').toString(); vb = (b[col]||'').toString(); }
+        if (va < vb) return dir === 'asc' ? -1 : 1;
+        if (va > vb) return dir === 'asc' ? 1 : -1;
+        return 0;
+    });
+    // Update sort arrow classes
+    document.querySelectorAll('#ctr-table-wrap thead th').forEach(th => th.classList.remove('sorted'));
+    tbody.innerHTML = ctrs.map(c => {
+        const sc = statusClass(c.status);
+        const isRunning = c.status === 'running';
+        const stats = ctrStatsCache[c.name] || {};
+        const cpuPct = stats.cpu_pct !== undefined ? stats.cpu_pct + '%' : '—';
+        const memStr = stats.mem_usage_mb !== undefined ? stats.mem_usage_mb + ' MB' : '—';
+        const ports = (c.ports||[]).slice(0,3).join(' ') || '—';
+        const icon = ctrIcon(c.name);
+        return `<tr>
+          <td><span style="margin-right:6px">${icon}</span><b>${c.name}</b></td>
+          <td style="font-family:var(--mono);font-size:11px;color:var(--text2)">${c.image}</td>
+          <td><span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${c.status}</span></td>
+          <td style="font-family:var(--mono)">${cpuPct}</td>
+          <td style="font-family:var(--mono)">${memStr}</td>
+          <td style="font-family:var(--mono);font-size:11px;color:var(--blue)">${ports}</td>
+          <td style="font-family:var(--mono)">${c.uptime||'—'}</td>
+          <td>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              ${isRunning
+                ? `<button class="btn red" style="padding:2px 7px;font-size:11px" onclick="ctrAction('${c.name}','stop')">Stop</button>
+                   <button class="btn orange" style="padding:2px 7px;font-size:11px" onclick="ctrAction('${c.name}','restart')">Restart</button>
+                   <button class="btn purple" style="padding:2px 7px;font-size:11px" onclick="updateContainer('${c.name}')">⬆</button>`
+                : `<button class="btn green" style="padding:2px 7px;font-size:11px" onclick="ctrAction('${c.name}','start')">Start</button>`}
+              <button class="btn blue" style="padding:2px 7px;font-size:11px" onclick="openLogs('${c.name}')">Logs</button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+    // Load stats for running ones (if not yet cached)
+    ctrs.filter(c => c.status === 'running').forEach(c => {
+        if (!ctrStatsCache[c.name]) loadCtrStats(c.name);
+    });
+}
+
+function sortCtrTable(col) {
+    if (ctrTableSort.col === col) {
+        ctrTableSort.dir = ctrTableSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+        ctrTableSort = {col, dir: 'asc'};
+    }
+    renderContainerTable();
 }
 
 // ── Log Modal ─────────────────────────────────────────────────────────
@@ -3228,16 +3876,43 @@ async function loadLogs() {
     } catch(e) { el.textContent = 'Failed to load logs'; }
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// 8. FAVORITES SYSTEM (localStorage)
+// ══════════════════════════════════════════════════════════════════════
+function getFavorites() {
+    try { return JSON.parse(localStorage.getItem('arrhub_favorites') || '[]'); } catch(e) { return []; }
+}
+function saveFavorites(ids) {
+    try { localStorage.setItem('arrhub_favorites', JSON.stringify(ids)); } catch(e) {}
+}
+function toggleFavorite(appId) {
+    let favs = getFavorites();
+    if (favs.includes(appId)) {
+        favs = favs.filter(id => id !== appId);
+    } else {
+        favs.push(appId);
+    }
+    saveFavorites(favs);
+    renderCatalog(); // re-render to update star and fav section
+}
+function isFavorite(appId) { return getFavorites().includes(appId); }
+
 // ── Catalog ───────────────────────────────────────────────────────────
 async function loadCatalog() {
+    showSkeleton('cat-grid', 6);
     try {
         const r = await fetch(API + '/api/catalog');
         const d = await r.json();
         allCatalog = d.apps || [];
-        // Build category pills
-        const cats = ['All', ...new Set(allCatalog.map(a=>a.category).filter(Boolean))].sort();
+        // Build category pills — include "Favorites" pill
+        const cats = ['All', 'Favorites', ...new Set(allCatalog.map(a=>a.category).filter(Boolean))].sort((a,b)=>{
+            // Pin All/Favorites to front
+            if (a==='All') return -1; if (b==='All') return 1;
+            if (a==='Favorites') return -1; if (b==='Favorites') return 1;
+            return a.localeCompare(b);
+        });
         const catEl = document.getElementById('cat-categories');
-        catEl.innerHTML = cats.map(c=>`<div class="filter-pill${c==='All'?' active':''}" onclick="filterCat('${c}',this)">${c}</div>`).join('');
+        catEl.innerHTML = cats.map(c=>`<div class="filter-pill${c==='All'?' active':''}" onclick="filterCat('${c}',this)">${c==='Favorites'?'⭐ ':''  }${c}</div>`).join('');
         renderCatalog();
     } catch(e) {
         document.getElementById('cat-grid').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Catalog unavailable</div></div>';
@@ -3251,42 +3926,96 @@ function filterCat(cat, el) {
     renderCatalog();
 }
 
-function filterCatalog() {
-    renderCatalog();
-}
+// Real-time search filter (called by oninput)
+function filterCatalog() { renderCatalog(); }
 
-function renderCatalog() {
-    const search = (document.getElementById('cat-search')?.value || '').toLowerCase();
-    let apps = allCatalog;
-    if (catFilter !== 'All') apps = apps.filter(a=>a.category===catFilter);
-    if (search) apps = apps.filter(a=>(a.name+a.description+a.category).toLowerCase().includes(search));
-    const grid = document.getElementById('cat-grid');
-    if (!apps.length) { grid.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">No apps found</div></div>'; return; }
-    grid.innerHTML = apps.map(a=>`
+function _buildAppCard(a, showFavStar=true) {
+    const starred = isFavorite(a.id);
+    return `
       <div class="cat-card">
         <div class="cat-card-header">
           <div class="cat-icon">${a.icon||'📦'}</div>
-          <div><div class="cat-name">${a.name}</div><div class="cat-cat">${a.category}</div></div>
+          <div style="flex:1;min-width:0"><div class="cat-name">${a.name}</div><div class="cat-cat">${a.category}</div></div>
+          ${showFavStar ? `<button class="fav-btn${starred?' starred':''}" onclick="toggleFavorite('${a.id}')" title="${starred?'Remove from favorites':'Add to favorites'}">${starred?'⭐':'☆'}</button>` : ''}
         </div>
         <div class="cat-desc">${a.description||''}</div>
         <div class="cat-footer">
           <div class="cat-image">${(a.image||'').split(':')[0].split('/').pop()}</div>
           <button class="btn blue" onclick="deployApp('${a.id}','${a.name}')">Deploy</button>
         </div>
-      </div>`).join('');
+      </div>`;
+}
+
+function renderCatalog() {
+    const search = (document.getElementById('cat-search')?.value || '').toLowerCase();
+    const sortVal = document.getElementById('cat-sort')?.value || 'az';
+    const favs = getFavorites();
+
+    // Render favorites section at top
+    const favApps = allCatalog.filter(a => favs.includes(a.id));
+    const favSection = document.getElementById('fav-section');
+    const favGrid = document.getElementById('fav-grid');
+    if (favSection && favGrid) {
+        if (favApps.length > 0) {
+            favSection.style.display = '';
+            favGrid.innerHTML = favApps.map(a => _buildAppCard(a, true)).join('');
+        } else {
+            favSection.style.display = 'none';
+        }
+    }
+
+    let apps = allCatalog;
+
+    // Apply category filter
+    if (catFilter === 'Favorites') {
+        apps = apps.filter(a => favs.includes(a.id));
+    } else if (catFilter !== 'All') {
+        apps = apps.filter(a => a.category === catFilter);
+    }
+
+    // Apply search
+    if (search) apps = apps.filter(a => (a.name + a.description + a.category + a.id).toLowerCase().includes(search));
+
+    // Apply sort
+    if (sortVal === 'az') apps = [...apps].sort((a,b) => a.name.localeCompare(b.name));
+    else if (sortVal === 'za') apps = [...apps].sort((a,b) => b.name.localeCompare(a.name));
+    else if (sortVal === 'cat') apps = [...apps].sort((a,b) => (a.category||'').localeCompare(b.category||'') || a.name.localeCompare(b.name));
+
+    const grid = document.getElementById('cat-grid');
+    const countEl = document.getElementById('cat-count');
+
+    // Update count badge
+    if (countEl) countEl.textContent = `Showing ${apps.length} of ${allCatalog.length} apps`;
+
+    if (!apps.length) {
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
+          <div class="empty-icon">🔍</div>
+          <div class="empty-text">No apps match your search</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:4px">Try adjusting your filters or search term</div>
+        </div>`;
+        return;
+    }
+    grid.innerHTML = apps.map(a => _buildAppCard(a, true)).join('');
 }
 
 async function deployApp(id, name) {
     if (!confirm('Deploy ' + name + '?')) return;
+    showToast('Deploying ' + name + '…', 'info', 10000);
     try {
         const r = await fetch(API + '/api/deploy', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({app_id:id})});
         const d = await r.json();
-        alert(d.error ? 'Error: ' + d.error : name + ' deployed successfully!');
-    } catch(e) { alert('Deploy request failed'); }
+        if (d.error) {
+            showToast('Deploy failed: ' + d.error, 'error');
+        } else {
+            showToast(name + ' deployed successfully!', 'success', 5000);
+            setTimeout(loadContainers, 2000);
+        }
+    } catch(e) { showToast('Deploy request failed', 'error'); }
 }
 
 // ── Stack Manager ─────────────────────────────────────────────────────
 async function loadStackManager() {
+    showSkeleton('stacks-list', 3);
     try {
         const r = await fetch(API + '/api/stacks');
         const d = await r.json();
@@ -3353,12 +4082,14 @@ async function loadBackups() {
 }
 
 async function createBackup() {
+    showToast('Creating backup…', 'info', 10000);
     try {
         const r = await fetch(API + '/api/backup', {method:'POST'});
         const d = await r.json();
-        alert(d.error ? 'Error: '+d.error : 'Backup created: ' + d.file);
+        if (d.error) showToast('Backup error: ' + d.error, 'error');
+        else showToast('Backup created: ' + (d.file || d.path || 'done'), 'success', 5000);
         loadBackups();
-    } catch(e) { alert('Backup failed'); }
+    } catch(e) { showToast('Backup failed', 'error'); }
 }
 
 // ── Settings ──────────────────────────────────────────────────────────
@@ -3388,8 +4119,9 @@ async function saveSettings() {
     try {
         const r = await fetch(API + '/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
         const d = await r.json();
-        alert(d.error ? 'Error: '+d.error : 'Settings saved!');
-    } catch(e) { alert('Save failed'); }
+        if (d.error) showToast('Error: ' + d.error, 'error');
+        else showToast('Settings saved!', 'success');
+    } catch(e) { showToast('Save failed', 'error'); }
 }
 
 // ── Weather & Docker Info ─────────────────────────────────────────────
@@ -3471,6 +4203,70 @@ function renderRSS() {
           </div>`).join('')}
       </div>`).join('');
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// 10. ALERTS BAR
+// ══════════════════════════════════════════════════════════════════════
+let _alertsCollapsed = false;
+
+function toggleAlerts() {
+    _alertsCollapsed = !_alertsCollapsed;
+    const body = document.getElementById('alerts-body');
+    const chev = document.getElementById('alerts-chevron');
+    if (body) body.classList.toggle('collapsed', _alertsCollapsed);
+    if (chev) chev.textContent = _alertsCollapsed ? '▶' : '▼';
+}
+
+async function refreshAlerts() {
+    const body = document.getElementById('alerts-body');
+    const title = document.getElementById('alerts-title');
+    if (!body) return;
+    try {
+        const alerts = [];
+
+        // Check containers for non-running state
+        if (allContainers.length) {
+            allContainers.filter(c => c.status !== 'running').forEach(c => {
+                alerts.push({level:'red', msg:`Container <b>${c.name}</b> is ${c.status}`});
+            });
+        }
+
+        // Check disk usage from storage API
+        try {
+            const r = await fetch(API + '/api/storage');
+            const d = await r.json();
+            (d.filesystems || []).forEach(fs => {
+                if (fs.percent > 85) {
+                    alerts.push({level:'yellow', msg:`Disk usage high: <b>${fs.mountpoint}</b> at ${fs.percent}%`});
+                }
+            });
+        } catch(e) {}
+
+        // Update title
+        if (title) {
+            if (alerts.length === 0) {
+                title.textContent = '🟢 All systems nominal';
+                title.style.color = 'var(--green)';
+            } else {
+                const hasRed = alerts.some(a => a.level === 'red');
+                title.textContent = (hasRed ? '🔴 ' : '🟡 ') + alerts.length + ' alert' + (alerts.length > 1 ? 's' : '');
+                title.style.color = hasRed ? 'var(--red)' : 'var(--yellow)';
+            }
+        }
+
+        if (alerts.length === 0) {
+            body.innerHTML = '<div class="alert-row"><span>🟢</span><span>All systems nominal</span></div>';
+        } else {
+            body.innerHTML = alerts.map(a => {
+                const icon = a.level === 'red' ? '🔴' : a.level === 'yellow' ? '🟡' : '🟢';
+                return `<div class="alert-row"><span>${icon}</span><span>${a.msg}</span></div>`;
+            }).join('');
+        }
+    } catch(e) {}
+}
+
+// Refresh alerts every 30 seconds
+setInterval(refreshAlerts, 30000);
 
 // ── Overview Extras ───────────────────────────────────────────────────
 async function loadOverviewExtras() {
@@ -3565,12 +4361,17 @@ async function loadOvCtrStats(name) {
 
 // ── Stack Actions ─────────────────────────────────────────────────────
 async function stackAction(name, action) {
+    showToast('Stack ' + name + ' ' + action + '…', 'info', 3000);
     try {
         const r = await fetch(API + `/api/stack/${name}/${action}`, {method:'POST'});
         const d = await r.json();
-        if (d.error) alert('Stack ' + action + ' error: ' + d.error);
-        else { setTimeout(loadStackManager, 800); }
-    } catch(e) { alert('Request failed'); }
+        if (d.error) {
+            showToast('Stack error: ' + d.error, 'error');
+        } else {
+            showToast('Stack ' + name + ' ' + (action === 'up' ? 'started' : 'stopped'), 'success');
+            setTimeout(loadStackManager, 800);
+        }
+    } catch(e) { showToast('Request failed', 'error'); }
 }
 
 // ── Logs Auto-refresh ─────────────────────────────────────────────────
@@ -3598,11 +4399,13 @@ setInterval(() => {
 // ── Boot ──────────────────────────────────────────────────────────────
 initGauges();
 loadOverview();
-loadContainers();
+loadContainers();   // also populates allContainers for alerts
 loadWeather();
 loadDockerInfo();
 loadOverviewExtras();   // also calls loadDashboardContainers()
 startSSE();
+// Initial alerts render (will be updated once containers load)
+setTimeout(refreshAlerts, 2000);
 </script>
 </body>
 </html>

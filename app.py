@@ -934,7 +934,16 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.10.0"
+            "version": "3.10.0",
+            # Service integration keys — returned so the UI can re-populate fields on revisit
+            "radarr_url":     _db_get("radarr_url", ""),
+            "radarr_api_key": _db_get("radarr_api_key", ""),
+            "sonarr_url":     _db_get("sonarr_url", ""),
+            "sonarr_api_key": _db_get("sonarr_api_key", ""),
+            "plex_url":       _db_get("plex_url", ""),
+            "plex_token":     _db_get("plex_token", ""),
+            "seerr_url":      _db_get("seerr_url", ""),
+            "seerr_api_key":  _db_get("seerr_api_key", ""),
         }
     })
 
@@ -3113,10 +3122,16 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="section-title">System Overview</div>
           <div class="section-sub" id="ov-hostname">Loading...</div>
         </div>
-        <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px">
-          <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-          Edit Layout
-        </button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button id="ov-reset-btn" class="btn" onclick="resetGridLayout()" style="font-size:11px;padding:4px 12px;gap:4px;display:none">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Reset
+          </button>
+          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Edit Layout
+          </button>
+        </div>
       </div>
 
       <!-- Gauges row -->
@@ -3372,22 +3387,28 @@ body.sse-disconnected #app{padding-top:38px;}
 
     <!-- ── STORAGE ── -->
     <div id="tab-stornet" class="tab-panel">
-      <div class="section-header"><div class="section-title">Storage &amp; Network</div></div>
+      <div class="section-header">
+        <div>
+          <div class="section-title">💾 Storage &amp; 📡 Network</div>
+          <div class="section-sub">Disk usage and live bandwidth in one view</div>
+        </div>
+        <button class="btn-primary" onclick="loadStorage();loadNetwork()">↺ Refresh</button>
+      </div>
       <!-- ── Storage ── -->
-      <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">💾 Storage</div>
-      <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-bottom:20px"></div>
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Disk Usage</div>
+      <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:18px"></div>
       <!-- ── Network ── -->
-      <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">📡 Network</div>
-      <div class="panel" style="margin-bottom:14px">
-        <div class="panel-title">Live Bandwidth</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Network</div>
+      <div class="panel" style="margin-bottom:14px;padding:10px 14px">
+        <div class="panel-title" style="margin-bottom:8px">📈 Live Bandwidth</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
-            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">↑ TX Rate (Upload)</div>
-            <canvas id="net-tx-chart" height="100"></canvas>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↑ TX (Upload)</div>
+            <canvas id="net-tx-chart" height="55"></canvas>
           </div>
           <div>
-            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">↓ RX Rate (Download)</div>
-            <canvas id="net-rx-chart" height="100"></canvas>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↓ RX (Download)</div>
+            <canvas id="net-rx-chart" height="55"></canvas>
           </div>
         </div>
       </div>
@@ -3615,62 +3636,85 @@ body.sse-disconnected #app{padding-top:38px;}
         <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px"></div>
       </div>
 
-      <!-- Live News YouTube streams view -->
-      <!-- Note: direct news site iframes are blocked by X-Frame-Options headers on most major sites.
-           YouTube live streams are used instead — these are the official 24/7 streams for each channel. -->
+      <!-- Live News view — confirmed-working embeds + quick-launch cards for the rest -->
+      <!-- YouTube's live_stream?channel= embed only works when the channel explicitly
+           allows embedding. Al Jazeera and France 24 allow it; others often block it.
+           For blocked channels, quick-launch cards open the stream in a new tab. -->
       <div id="rss-live-view" style="display:none">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-          📺 Official 24/7 YouTube live streams — free &amp; ad-supported. Click a stream to start playback.
+        <div style="font-size:11px;color:var(--text3);margin-bottom:12px">
+          📺 Live news streams — confirmed embeds play inline; others open YouTube in a new tab.
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
-          <div class="panel">
-            <div class="panel-title">🇬🇧 BBC News</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCBi2mrWuNuyYy4gbM6fU18Q&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
+
+        <!-- ── Confirmed embeds ──────────────────────────────────────────── -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin-bottom:20px">
           <div class="panel">
             <div class="panel-title">🌍 Al Jazeera English</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCNye-wNBqNL5ZzHSJj3l8Bg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🇬🇧 Sky News</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCoMdktPbSTixAyNGwb-UYkQ&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
-          <div class="panel">
-            <div class="panel-title">📊 Bloomberg Markets</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCIALMKvObZNtJ6AmdCLP7Lg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🇩🇪 DW News</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCW39zufHfsuGgpLviKh297Q&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCNye-wNBqNL5ZzHSJj3l8Bg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <a href="https://www.youtube.com/@aljazeeraenglish/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
           </div>
           <div class="panel">
             <div class="panel-title">🇫🇷 France 24 English</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCQfwfsi5VrQ8yKZ-UGuIzgA&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCQfwfsi5VrQ8yKZ-UGuIzgA&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <a href="https://www.youtube.com/@FRANCE24English/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
           </div>
           <div class="panel">
-            <div class="panel-title">🇺🇸 ABC News Live</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCBi2mrWuNuyYy4gbM6fU18Q&list=PLB7CF74B8AD4B4D6E&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <div class="panel-title">🇩🇪 DW News</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCknLrEdhRCp1aegoMqRaCZg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <a href="https://www.youtube.com/@dwnews/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
           </div>
-          <div class="panel">
-            <div class="panel-title">📡 Euronews English</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCg4nqEVXwDPGFSa8IISP9_A&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🌏 NHK World</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCfQem_4hQYrDL4FjMnD5v3g&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🇷🇺 RT International</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCpwvZwUam-URkxB7g4USKpg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🎵 Lofi Girl — Study</div>
-            <iframe src="https://www.youtube.com/embed/jfKfPfyJRdk?autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🌿 Nature & Relax — 8K</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCiyZqDEhm2Jbj-Sg-JQMuSg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:300px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-          </div>
+        </div>
+
+        <!-- ── Quick-launch cards (open YouTube live in new tab) ─────────── -->
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <span>⚡ More Live Streams</span>
+          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens YouTube — some may block embedded playback)</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:20px">
+          <a href="https://www.youtube.com/@BBCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🇬🇧</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">BBC World News</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@SkyNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🌐</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Sky News</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@Bloomberg/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">📊</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Bloomberg</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@ABCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🇺🇸</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">ABC News Live</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@euronews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🇪🇺</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Euronews</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@NHKWorldNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🌏</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">NHK World</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@wionews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🌍</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">WION</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@CBSnews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🎙️</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">CBS News</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@lofimusic/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🎵</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Lofi Girl</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
         </div>
       </div>
 
@@ -4365,6 +4409,9 @@ function _ctrCardUpdate(c) {
 
 function renderContainers() {
     const grid = document.getElementById('ctr-grid');
+    // Always clear skeleton/placeholder elements first (prevents ghost cards)
+    [...grid.children].forEach(el => { if (!el.classList.contains('ctr-card')) el.remove(); });
+
     let ctrs = allContainers;
     if (ctrFilter !== 'all') ctrs = ctrs.filter(c => c.status === ctrFilter);
 
@@ -5956,30 +6003,37 @@ function _gsInit() {
   if (!el) return false;
   const isMobile = window.innerWidth < 900;
   _gs = GridStack.init({
-    cellHeight: 80,
-    column: isMobile ? 1 : 12, // single column on mobile for readability
+    cellHeight: 60,           // smaller cells → finer positional control
+    column: isMobile ? 1 : 12,
     margin: 8,
-    staticGrid: true,   // non-draggable by default; edit mode enables drag+resize
+    staticGrid: true,
     animate: true,
     float: false,
-    disableDrag: isMobile,    // no drag on touch screens
-    disableResize: isMobile,  // no resize on touch screens
-    resizable: { handles: 'se' },
+    disableDrag: isMobile,
+    disableResize: isMobile,
+    resizable: { handles: 'e,se,s,sw,w' },  // resize from all sides
+    draggable: { handle: '.panel-title' },   // drag by title bar only
   }, el);
-  // When a widget is resized, tell any Chart.js canvases inside to resize too
+  // When a widget is resized, tell Chart.js canvases inside to resize too
   _gs.on('resizestop', (event, element) => {
     element.querySelectorAll('canvas').forEach(canvas => {
       const chart = (typeof Chart !== 'undefined' && Chart.getChart) ? Chart.getChart(canvas) : null;
       if (chart) { chart.resize(); }
     });
-    // Also trigger a reflow for any flex/grid content that needs it
     element.querySelectorAll('.panel,.stat-grid').forEach(el => { el.style.opacity = '0.99'; requestAnimationFrame(() => { el.style.opacity = ''; }); });
   });
   // Restore saved layout
   const saved = localStorage.getItem('arrhub_grid');
   if (saved) {
-    try { _gs.load(JSON.parse(saved), false); } catch(e) {}
+    try {
+      const items = JSON.parse(saved);
+      // Only apply saved positions if item IDs match current widgets
+      _gs.load(items, false);
+    } catch(e) { localStorage.removeItem('arrhub_grid'); }
   }
+  // Show Reset button if a saved layout exists
+  const resetBtn = document.getElementById('ov-reset-btn');
+  if (resetBtn && localStorage.getItem('arrhub_grid')) resetBtn.style.display = '';
   return true;
 }
 
@@ -5987,16 +6041,20 @@ function toggleGridEdit() {
   _gsInit();
   if (!_gs) { showToast('GridStack not loaded yet', 'error'); return; }
   _gsEditing = !_gsEditing;
-  const btn  = document.getElementById('ov-edit-btn');
-  const grid = document.getElementById('ov-grid');
+  const btn      = document.getElementById('ov-edit-btn');
+  const resetBtn = document.getElementById('ov-reset-btn');
+  const grid     = document.getElementById('ov-grid');
   if (_gsEditing) {
     _gs.setStatic(false);
-    _gs.on('change', () => localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false))));
+    _gs.on('change', () => {
+      localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false)));
+      if (resetBtn) resetBtn.style.display = '';
+    });
     btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg> Save Layout';
     btn.style.background = 'var(--blue2)';
     btn.style.color      = 'var(--blue)';
     grid.classList.add('gs-editing');
-    showToast('Drag panels to reorder · resize from corner · click Save when done', 'info', 4000);
+    showToast('Drag by title bar · resize from edges · click Save when done', 'info', 5000);
   } else {
     _gs.setStatic(true);
     localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false)));
@@ -6008,8 +6066,17 @@ function toggleGridEdit() {
   }
 }
 
+function resetGridLayout() {
+  if (!confirm('Reset overview layout to defaults?')) return;
+  localStorage.removeItem('arrhub_grid');
+  const resetBtn = document.getElementById('ov-reset-btn');
+  if (resetBtn) resetBtn.style.display = 'none';
+  // Reload the page to restore default gs-x/gs-y/gs-w/gs-h from HTML attributes
+  location.reload();
+}
+
 // Init GridStack in static mode on load to apply any saved positions
-window.addEventListener('load', () => { setTimeout(_gsInit, 400); });
+window.addEventListener('load', () => { setTimeout(_gsInit, 600); });
 </script>
 <script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>

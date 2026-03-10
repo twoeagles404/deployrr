@@ -17,8 +17,10 @@ VERSION="3.8.0"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
-# Override via env var:  ARRHUB_BRANCH=main media update
-GITHUB_BRANCH="${ARRHUB_BRANCH:-dev}"
+# CI validates this plain line — keep it matching the actual branch name.
+GITHUB_BRANCH="dev"
+# Allow env-var override for testing:  ARRHUB_BRANCH=main media update
+GITHUB_BRANCH="${ARRHUB_BRANCH:-${GITHUB_BRANCH}}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ---------------------------------------------------------------------------

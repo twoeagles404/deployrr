@@ -6,6 +6,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.10.0] — 2026-03-09
+
+### Fixed
+- **Service API keys not persisting** — `POST /api/settings` allowed-list was missing all service
+  integration keys (`seerr_url`, `seerr_api_key`, `radarr_*`, `sonarr_*`, `plex_*`). They were
+  sent correctly by the JS but silently discarded server-side. Now all 8 service fields are saved.
+- **GridStack widget scrollbars on resize** — shrinking a widget now scales text/emojis down
+  instead of showing a scrollbar. Fixed by: (a) setting `overflow:hidden` on
+  `.grid-stack-item-content` and all widget panels, and (b) adding CSS container queries on
+  `.stat-card` so values and labels shrink proportionally when the card is ≤130px or ≤90px wide.
+
+### Changed
+- **Storage & Network merged in sidebar** — the two separate "Storage" and "Network" nav entries
+  are now a single "Storage & Network" item that opens a combined tab showing disk info (top)
+  and live bandwidth charts + interface table (bottom).
+- **RSS feed list overhauled** — replaced deprecated/paywalled sources with working alternatives:
+  CNN→AP News, Reuters→NPR+DW, IGN Feedburner→feeds.ign.com, Bloomberg→MarketWatch,
+  FT→Economist, Goal.com→BBC Football, Sky Sports kept, New Scientist→Phys.org+Space.com.
+
+---
+
 ## [3.9.0] — 2026-03-09
 
 ### Added

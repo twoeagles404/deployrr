@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.12.0",
+            "version": "3.13.0",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -2149,6 +2149,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
 <style>
 /* =====================================================================
@@ -2232,6 +2233,8 @@ _HTML_SPA = r"""<!DOCTYPE html>
 #app{position:relative;z-index:1;}
 
 /* ── GridStack Dashboard Widgets ────────────────────────────────────── */
+/* Hide widgets before GridStack positions them — prevents 600ms stacking flash */
+.grid-stack:not(.gs-ready) > .grid-stack-item { visibility:hidden; }
 .grid-stack{width:100%;}
 .grid-stack-item-content{
   overflow:hidden;
@@ -6104,6 +6107,8 @@ function _gsInit() {
   // Show Reset button if a saved layout exists
   const resetBtn = document.getElementById('ov-reset-btn');
   if (resetBtn && localStorage.getItem('arrhub_grid')) resetBtn.style.display = '';
+  // Mark grid as ready — removes the visibility:hidden that prevents stacking flash
+  el.classList.add('gs-ready');
   return true;
 }
 
@@ -6231,7 +6236,7 @@ async function loadServiceLauncher() {
   try {
     const r = await fetch('/api/containers');
     const data = await r.json();
-    const running = data.filter(c => c.state === 'running');
+    const running = (data.containers || []).filter(c => c.status === 'running');
     if (!running.length) {
       el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No running containers found.</div>';
       return;
@@ -6303,11 +6308,10 @@ function resetGridLayout() {
 // Init GridStack in static mode on load to apply any saved positions
 window.addEventListener('load', async () => {
   await _loadWidgetConfig();   // apply hidden widgets from server before init
-  setTimeout(_gsInit, 600);
+  _gsInit();                   // GridStack is available by window.load time
   loadServiceLauncher();       // populate launcher widget
 });
 </script>
-<script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 </body>
 </html>

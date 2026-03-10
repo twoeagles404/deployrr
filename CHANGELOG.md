@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.13.0] — 2026-03-10
+
+### Fixed
+- **Service Launcher widget** — `loadServiceLauncher()` was calling `data.filter()` on the API
+  response object instead of `data.containers`, throwing `TypeError: data.filter is not a function`.
+  Also fixed `c.state === 'running'` → `c.status === 'running'` to match the actual API field.
+- **GridStack stacking flash on fresh install** — widgets were visible as a stacked pile before
+  GridStack positioned them. Fixed by: moving gridstack-all.js to `<head>`, using
+  `visibility:hidden` via `.grid-stack:not(.gs-ready)` CSS, and removing the 600ms `setTimeout`.
+
+---
+
 ## [3.12.0] — 2026-03-10
 
 ### Fixed

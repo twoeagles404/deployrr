@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.5.0 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.10.0 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,10 +13,14 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.5.0"
+VERSION="3.12.0"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
-GITHUB_BRANCH="main"
+# GITHUB_BRANCH is set for the branch this file lives on (dev/main).
+# CI validates this plain line — keep it matching the actual branch name.
+GITHUB_BRANCH="dev"
+# Allow env-var override for testing:  ARRHUB_BRANCH=main media update
+GITHUB_BRANCH="${ARRHUB_BRANCH:-${GITHUB_BRANCH}}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ---------------------------------------------------------------------------
@@ -212,7 +216,9 @@ load_catalog() {
 
     # -- Media Tools --
     define_app tdarr    "Tdarr"      "ghcr.io/haveagitgat/tdarr:latest"  "Media Tools"  "8265:8265 8266:8266"
+    APP_CUSTOM_SVC[tdarr]="yes"
     define_app fileflows "FileFlows" "revenz/fileflows:latest"             "Media Tools"  "19200:5000"
+    APP_CUSTOM_SVC[fileflows]="yes"
     define_app handbrake "HandBrake" "jlesage/handbrake:latest"            "Media Tools"  "5800:5800"
     define_app kometa   "Kometa"     "kometateam/kometa:latest"            "Media Tools"  ""
     define_app wizarr   "Wizarr"     "ghcr.io/wizarrrr/wizarr:latest"      "Media Tools"  "5690:5690"
@@ -246,9 +252,6 @@ load_catalog() {
     define_app speedtest  "Speedtest"   "lscr.io/linuxserver/speedtest-tracker:latest" "Monitoring" "8765:80"
 
     # -- Dashboards --
-    define_app homer     "Homer"      "ghcr.io/bastienwirtz/homer:latest"     "Dashboards"  "8085:8080"
-    APP_CUSTOM_SVC[homer]="yes"
-    define_app homarr    "Homarr"     "ghcr.io/ajnart/homarr:latest"          "Dashboards"  "7575:7575"
     define_app launcharr "Launcharr"  "mickygx/launcharr:latest"              "Dashboards"  "3333:3333"  "false"
     APP_CUSTOM_SVC[launcharr]="yes"
     define_app dasherr   "Dasherr"    "ghcr.io/erwin-kok/dasherr:latest"      "Dashboards"  "3080:3080"
@@ -345,7 +348,7 @@ ALL_APPS=(
     seerr ombi requestrr tautulli flaresolverr
     grafana prometheus uptime_kuma netdata glances dozzle portainer watchtower scrutiny speedtest
     # Dashboards
-    homer homarr launcharr dasherr flame heimdall organizr
+    launcharr dasherr flame heimdall organizr
     # Reverse Proxies
     traefik npm caddy swag
     # VPN & Network
@@ -371,12 +374,23 @@ ALL_APPS=(
 LOCAL_IMAGE_APPS=(arrhub_webui)
 
 # Full Stack Presets
-MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr arrhub_webui)
-ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr qbittorrent seerr boxarr arrhub_webui)
-MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr seerr boxarr tautulli homer arrhub_webui)
+# Preset stacks — Homer and Homarr removed (ArrHub WebUI replaces them)
+MINIMAL_STACK=(jellyfin qbittorrent prowlarr sonarr radarr)
+ARR_ONLY_STACK=(prowlarr radarr sonarr lidarr bazarr whisparr qbittorrent seerr boxarr)
+MEDIA_ARR_STACK=(jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr whisparr seerr boxarr tautulli)
 FULL_STACK_ARR=(prowlarr radarr sonarr lidarr bazarr whisparr doplarr boxarr seerr recyclarr unpackerr notifiarr)
-FULL_STACK_TOOLS=(seerr tautulli flaresolverr homer homarr arrhub_webui)
+FULL_STACK_TOOLS=(seerr tautulli flaresolverr launcharr)
 FULL_STACK_MONITORING=(grafana prometheus uptime_kuma dozzle watchtower scrutiny speedtest)
+# Smart preset stacks — arrhub_webui is excluded here as install.sh already installs it first
+MOVIES_PRESET=(plex qbittorrent prowlarr radarr unpackerr seerr tautulli)
+MUSIC_PRESET=(navidrome qbittorrent prowlarr lidarr seerr)
+PHOTOS_PRESET=(immich)
+HOMELAB_PRESET=(portainer dozzle watchtower uptime_kuma nginx)
+GAMING_PRESET=(sunshine moonlight_host watchtower)
+HOME_AUTO_PRESET=(homeassistant mosquitto node_red zigbee2mqtt esphome)
+DEV_PRESET=(gitea code_server portainer drone)
+SECURITY_PRESET=(vaultwarden authentik uptime_kuma)
+DOWNLOADS_PRESET=(qbittorrent sabnzbd prowlarr radarr sonarr unpackerr)
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -682,6 +696,13 @@ add_service_seerr() {
 
 add_service_arrhub_webui() {
     local id="${1:-arrhub_webui}"
+
+    # Skip entirely if the container is already running — prevents double-install
+    if docker ps --filter "name=^${id}$" --filter "status=running" -q 2>/dev/null | grep -q .; then
+        log INFO "${id} is already running — skipping re-install"
+        return 0
+    fi
+
     local f; f="$(app_compose "${id}")"
     local webui_dir="${SCRIPT_DIR}/arrhub-webui"
 
@@ -847,6 +868,76 @@ add_service_launcharr() {
     } >> "${f}"
     mkdir -p "${CONFIG_DIR}/launcharr/config" "${CONFIG_DIR}/launcharr/data" 2>/dev/null || true
     log INFO "Launcharr web port: ${hp_3333}"
+}
+
+add_service_tdarr() {
+    local id="${1:-tdarr}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_8265; hp_8265=$(find_free_port 8265)
+    local hp_8266; hp_8266=$(find_free_port 8266)
+    if [[ "${hp_8265}" != "8265" ]]; then log WARN "Port 8265 in use — tdarr WebUI reassigned to ${hp_8265}"; fi
+    if [[ "${hp_8266}" != "8266" ]]; then log WARN "Port 8266 in use — tdarr server reassigned to ${hp_8266}"; fi
+
+    mkdir -p "${CONFIG_DIR}/tdarr/server" "${CONFIG_DIR}/tdarr/configs" "${CONFIG_DIR}/tdarr/logs" 2>/dev/null || true
+
+    {
+        echo ""
+        echo "  tdarr:"
+        echo "    image: ghcr.io/haveagitgat/tdarr:latest"
+        echo "    container_name: tdarr"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - TZ=${TZ_VAL}"
+        echo "      - PUID=${PUID_VAL}"
+        echo "      - PGID=${PGID_VAL}"
+        echo "      - serverIP=0.0.0.0"
+        echo "      - serverPort=${hp_8266}"
+        echo "      - webUIPort=${hp_8265}"
+        echo "      - internalNode=true"
+        echo "      - internalNodeID=MainNode"
+        echo "      - nodeName=ArrHub-Node"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/tdarr/server:/app/server"
+        echo "      - ${CONFIG_DIR}/tdarr/configs:/app/configs"
+        echo "      - ${CONFIG_DIR}/tdarr/logs:/app/logs"
+        echo "      - ${MEDIA_DIR}:/media"
+        echo "    ports:"
+        echo "      - \"${hp_8265}:${hp_8265}\""
+        echo "      - \"${hp_8266}:${hp_8266}\""
+    } >> "${f}"
+    log INFO "Tdarr WebUI: port ${hp_8265} | Server: port ${hp_8266} | Media dir: ${MEDIA_DIR}"
+    printf '\n\033[1;33m  ▶ Tdarr first-run: open WebUI, create a library pointing to /media, select a transcode plugin.\033[0m\n'
+    printf '\033[1;33m  ▶ The built-in ArrHub-Node will start transcoding automatically once a library is configured.\033[0m\n'
+}
+
+add_service_fileflows() {
+    local id="${1:-fileflows}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_19200; hp_19200=$(find_free_port 19200)
+    if [[ "${hp_19200}" != "19200" ]]; then log WARN "Port 19200 in use — fileflows reassigned to ${hp_19200}"; fi
+
+    mkdir -p "${CONFIG_DIR}/fileflows" "/tmp/fileflows" 2>/dev/null || true
+
+    {
+        echo ""
+        echo "  fileflows:"
+        echo "    image: revenz/fileflows:latest"
+        echo "    container_name: fileflows"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/fileflows:/app/Data"
+        echo "      - ${CONFIG_DIR}/fileflows/logs:/app/Logs"
+        echo "      - ${MEDIA_DIR}:/media"
+        echo "      - /tmp/fileflows:/temp"
+        echo "    ports:"
+        echo "      - \"${hp_19200}:5000\""
+    } >> "${f}"
+    log INFO "FileFlows WebUI: port ${hp_19200} | Media: ${MEDIA_DIR} | Temp: /tmp/fileflows"
+    printf '\n\033[1;33m  ▶ FileFlows first-run: create a flow for video files, add /media as a library source.\033[0m\n'
 }
 
 add_service_immich() {
@@ -1253,102 +1344,6 @@ add_service_watchtower() {
     log INFO "Watchtower configured — will poll for updates every 24h"
 }
 
-add_service_homer() {
-    local id="${1:-homer}"
-    local f; f="$(app_compose "${id}")"
-    mkdir -p "${CONFIG_DIR}/homer/assets" 2>/dev/null || true
-
-    # Resolve port conflict
-    local hp_8085; hp_8085=$(find_free_port 8085)
-
-    if [[ "${hp_8085}" != "8085" ]]; then
-        log WARN "Port 8085 in use — ${id} reassigned to ${hp_8085}"
-    fi
-
-    cat > "${CONFIG_DIR}/homer/config.yml" << 'HOMER_EOF'
-title: "My Homelab"
-subtitle: "Powered by ArrHub"
-logo: "assets/logo.png"
-header: true
-footer: '<p>ArrHub — <a href="https://github.com">GitHub</a></p>'
-
-theme: default
-colors:
-  light:
-    highlight-primary: "#3367d6"
-    highlight-secondary: "#4f7ef0"
-  dark:
-    highlight-primary: "#3367d6"
-    highlight-secondary: "#4f7ef0"
-
-links:
-  - name: "GitHub"
-    icon: "fab fa-github"
-    url: "https://github.com"
-
-services:
-  - name: "Media"
-    icon: "fas fa-film"
-    items:
-      - name: "Jellyfin"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/jellyfin.png"
-        url: "http://HOST_IP:8096"
-        subtitle: "Media Server"
-      - name: "Plex"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/plex.png"
-        url: "http://HOST_IP:32400/web"
-        subtitle: "Media Server"
-  - name: "ARR Suite"
-    icon: "fas fa-search"
-    items:
-      - name: "Prowlarr"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/prowlarr.png"
-        url: "http://HOST_IP:9696"
-        subtitle: "Indexer Manager"
-      - name: "Radarr"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/radarr.png"
-        url: "http://HOST_IP:7878"
-        subtitle: "Movies"
-      - name: "Sonarr"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/sonarr.png"
-        url: "http://HOST_IP:8989"
-        subtitle: "TV Shows"
-  - name: "Downloads"
-    icon: "fas fa-download"
-    items:
-      - name: "qBittorrent"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/qbittorrent.png"
-        url: "http://HOST_IP:8080"
-        subtitle: "Torrent Client"
-  - name: "Tools"
-    icon: "fas fa-tools"
-    items:
-      - name: "ArrHub"
-        icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/docker.png"
-        url: "http://HOST_IP:9999"
-        subtitle: "Server Dashboard"
-HOMER_EOF
-    
-    local server_ip
-    server_ip=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "localhost")
-    sed -i "s/HOST_IP/${server_ip}/g" "${CONFIG_DIR}/homer/config.yml" 2>/dev/null || true
-
-    {
-        echo ""
-        echo "  homer:"
-        echo "    image: ghcr.io/bastienwirtz/homer:latest"
-        echo "    container_name: homer"
-        echo "    restart: unless-stopped"
-        echo "    volumes:"
-        echo "      - ${CONFIG_DIR}/homer:/www/assets"
-        echo "    ports:"
-        echo "      - \"${hp_8085}:8080\""
-        echo "    environment:"
-        echo "      - INIT_ASSETS=0"
-    } >> "${f}"
-    log INFO "Homer configured with auto-generated config.yml (port ${hp_8085})"
-}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load app catalog from generated catalog.sh (auto-download from GitHub if missing)
@@ -1530,9 +1525,16 @@ deploy_apps() {
 
         if ${is_local}; then
             if docker image inspect "${image}" &>/dev/null 2>&1; then
-                log INFO "Pull SKIP (local image exists) [${idx}/${total}] ${id}  image=${image}"
-                ok_pull+=("${id}")
-                printf '%d\n# [LOCAL OK] %s\n' "${pct}" "${label}" >&9
+                # If the container is already running, skip the pull/start cycle entirely.
+                # The verify loop at the end will detect it running and count it as ok_start.
+                if docker ps --filter "name=^${id}$" --filter "status=running" -q 2>/dev/null | grep -q .; then
+                    log INFO "Pull SKIP (container already running) [${idx}/${total}] ${id} — preserving live instance"
+                    printf '%d\n# [RUNNING OK] %s\n' "${pct}" "${label}" >&9
+                else
+                    log INFO "Pull SKIP (local image exists) [${idx}/${total}] ${id}  image=${image}"
+                    ok_pull+=("${id}")
+                    printf '%d\n# [LOCAL OK] %s\n' "${pct}" "${label}" >&9
+                fi
             else
                 log_err "PULL" "${id} SKIPPED — local image ${image} not found (build failed or not yet built)"
                 fail_pull+=("${id}  [local image missing — run: docker build -t ${image} ${SCRIPT_DIR}/arrhub-webui]")
@@ -1776,14 +1778,14 @@ deploy_media_wizard() {
             "Select which ARR apps to deploy (ESC = back to Step 1):" "${arr_items[@]}") || continue
         sel_arr=$(printf '%s' "${sel_arr}" | tr -d '"')
 
-        # Step 4 — Request & Tools (ESC goes back to Step 1)
+        # Step 4 — Request & Tools (Homer/Homarr removed — ArrHub WebUI handles dashboards)
         local tools_items=(
-            "seerr"        "Seerr (media requests)" "on"
-            "tautulli"     "Tautulli (watch stats)" "on"
-            "flaresolverr" "FlareSolverr (captcha solver)" "on"
-            "launcharr"    "Launcharr (app launcher dashboard)" "off"
-            "homer"        "Homer (dashboard)" "off"
-            "homarr"       "Homarr (dashboard)" "off"
+            "seerr"         "Seerr (media requests — recommended)" "on"
+            "tautulli"      "Tautulli (Plex/Jellyfin watch stats)" "on"
+            "flaresolverr"  "FlareSolverr (captcha solver for indexers)" "on"
+            "launcharr"     "Launcharr (app launcher)" "off"
+            "uptime_kuma"   "Uptime Kuma (service health monitor)" "off"
+            "watchtower"    "Watchtower (auto-update containers)" "off"
         )
 
         local sel_tools
@@ -1797,8 +1799,6 @@ deploy_media_wizard() {
         [[ -n "${downloader}" ]] && final_selection+=("${downloader}")
         [[ -n "${sel_arr}" ]] && final_selection+=(${sel_arr})
         [[ -n "${sel_tools}" ]] && final_selection+=(${sel_tools})
-        # Always include WebUI
-        final_selection+=(arrhub_webui)
 
         # Build summary
         local summary="Media Server: ${media_server:-<none>}
@@ -1820,28 +1820,88 @@ Proceed?"; then
     done
 }
 
+# ---------------------------------------------------------------------------
+# detect_installed_services — Auto-detect which services are already running
+# Returns a space-separated list of recognised container/service names.
+# ---------------------------------------------------------------------------
+detect_installed_services() {
+    # Collect running container names from Docker (gracefully handle no Docker)
+    local running=()
+    if command -v docker &>/dev/null; then
+        while IFS= read -r name; do
+            [[ -n "${name}" ]] && running+=("${name,,}")   # lowercase
+        done < <(docker ps --format '{{.Names}}' 2>/dev/null)
+    fi
+    echo "${running[*]}"
+}
+
+# Suggest a preset based on what services are already running
+# Prints a short multi-line suggestion message for the dialog header
+_smart_preset_hint() {
+    local installed
+    installed=$(detect_installed_services)
+    local hint=""
+
+    _has() { [[ " ${installed} " == *" $1 "* ]]; }
+
+    _has plex      && hint+="Plex "
+    _has jellyfin  && hint+="Jellyfin "
+    _has radarr    && hint+="Radarr "
+    _has sonarr    && hint+="Sonarr "
+    _has lidarr    && hint+="Lidarr "
+    _has navidrome && hint+="Navidrome "
+    _has immich    && hint+="Immich "
+
+    if [[ -n "${hint}" ]]; then
+        printf "Already running: %s\n(Smart presets avoid re-deploying existing services)" "${hint}"
+    else
+        printf "No services detected — all presets available."
+    fi
+}
+
 deploy_quick_preset() {
     while true; do
+        local hint
+        hint=$(_smart_preset_hint)
+
         local preset
-        preset=$(d_menu "Quick Deploy Preset" "Choose a preset stack:" \
-            "1" "Minimal — Jellyfin + qBit + basic ARR" \
-            "2" "ARR Only — all ARR apps + downloader" \
-            "3" "Media + ARR — full media stack" \
-            "4" "Full Stack — everything (no VPN)" \
-            "5" "Monitoring — Grafana, Prometheus, etc." \
-            "6" "Back") || return
+        preset=$(d_menu "Quick Deploy Preset" "${hint}" \
+            "1"  "Minimal         — Jellyfin + qBit + basic ARR" \
+            "2"  "ARR Only        — all ARR apps + downloader" \
+            "3"  "Media + ARR     — full media stack (no VPN)" \
+            "4"  "Full Stack      — everything (Plex + ARR + tools)" \
+            "5"  "Monitoring      — Grafana, Prometheus, Uptime Kuma" \
+            "6"  "Movies ★        — Plex + Radarr + Seerr + Tautulli" \
+            "7"  "Music ★         — Navidrome + Lidarr + Seerr" \
+            "8"  "Photos ★        — Immich" \
+            "9"  "Homelab ★       — Portainer + Dozzle + Watchtower + NPM" \
+            "10" "Gaming ★        — Sunshine/Moonlight game streaming" \
+            "11" "Home Auto ★     — Home Assistant + Node-RED + Zigbee2MQTT" \
+            "12" "Dev Workstation — Gitea + Code-Server + Portainer" \
+            "13" "Security        — Vaultwarden + Authentik + Uptime Kuma" \
+            "14" "Downloads Only  — qBit + SABnzbd + Prowlarr + ARR" \
+            "15" "Back") || return
 
         local selected=()
         case "${preset}" in
-            1) selected=("${MINIMAL_STACK[@]}") ;;
-            2) selected=("${ARR_ONLY_STACK[@]}") ;;
-            3) selected=("${MEDIA_ARR_STACK[@]}") ;;
+            1)  selected=("${MINIMAL_STACK[@]}") ;;
+            2)  selected=("${ARR_ONLY_STACK[@]}") ;;
+            3)  selected=("${MEDIA_ARR_STACK[@]}") ;;
             4)
                 selected=("${FULL_STACK_ARR[@]}" "${FULL_STACK_TOOLS[@]}")
-                selected+=(jellyfin qbittorrent)
+                selected+=(plex qbittorrent)
                 ;;
-            5) selected=("${FULL_STACK_MONITORING[@]}") ;;
-            6) return ;;
+            5)  selected=("${FULL_STACK_MONITORING[@]}") ;;
+            6)  selected=("${MOVIES_PRESET[@]}") ;;
+            7)  selected=("${MUSIC_PRESET[@]}") ;;
+            8)  selected=("${PHOTOS_PRESET[@]}") ;;
+            9)  selected=("${HOMELAB_PRESET[@]}") ;;
+            10) selected=("${GAMING_PRESET[@]}") ;;
+            11) selected=("${HOME_AUTO_PRESET[@]}") ;;
+            12) selected=("${DEV_PRESET[@]}") ;;
+            13) selected=("${SECURITY_PRESET[@]}") ;;
+            14) selected=("${DOWNLOADS_PRESET[@]}") ;;
+            15) return ;;
         esac
 
         log INFO "Quick preset ${preset}: ${selected[*]}"
@@ -2800,27 +2860,66 @@ tailscale_lxc_install() {
         printf '\033[0;32m[1-3/5]\033[0m TUN already configured — skipping config patch.\n'
     fi
 
-    # Step 4: Install Tailscale inside the container
+    # Step 4: Install Tailscale inside the container (pinned v1.94.2 for LXC stability)
+    # v1.94.2 is pinned because it is the last known-good release for unprivileged LXC containers.
+    # Newer versions may fail in cgroup2-only environments without kernel TUN.
+    # Source: https://pkgs.tailscale.com/stable/
+    local TS_VERSION="1.94.2"
     if ${ok}; then
-        printf '\033[1;33m[4/5]\033[0m Installing Tailscale inside LXC %s...\n' "${ctid}"
-        pct exec "${ctid}" -- bash -c \
-            "curl -fsSL https://tailscale.com/install.sh | sh" 2>&1 | tee -a "${tmp}" || {
-            printf '\033[1;31mFAILED\033[0m — Tailscale install script failed\n'; ok=false
+        printf '\033[1;33m[4/5]\033[0m Installing Tailscale v%s inside LXC %s (pinned, stable for LXC)...\n' "${TS_VERSION}" "${ctid}"
+        pct exec "${ctid}" -- bash -c "
+set -e
+# Try pinned version from official package server first
+TS_VER=${TS_VERSION}
+TS_ARCH=\$(dpkg --print-architecture 2>/dev/null || echo 'amd64')
+TS_URL=\"https://pkgs.tailscale.com/stable/tailscale_\${TS_VER}_\${TS_ARCH}.tgz\"
+TMP_DIR=\$(mktemp -d)
+cd \"\${TMP_DIR}\"
+if curl -fsSL \"\${TS_URL}\" -o ts.tgz 2>/dev/null; then
+    tar xzf ts.tgz --strip-components=1
+    install -m 0755 tailscale tailscaled /usr/local/bin/
+    echo 'Installed Tailscale v\${TS_VER} from pkgs.tailscale.com'
+else
+    echo 'Pinned version not found for this arch — falling back to install.sh'
+    curl -fsSL https://tailscale.com/install.sh | sh
+fi
+rm -rf \"\${TMP_DIR}\"
+# Create systemd service if not already present
+if ! systemctl is-enabled tailscaled 2>/dev/null; then
+    tailscaled --cleanup 2>/dev/null || true
+    systemctl enable --now tailscaled 2>/dev/null || \
+        tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock &
+fi
+" 2>&1 | tee -a "${tmp}" || {
+            printf '\033[1;31mFAILED\033[0m — Tailscale install failed\n'; ok=false
         }
     fi
 
-    # Step 5: Start Tailscale (optionally with an auth key)
+    # Step 5: Start Tailscale
+    # Default to --tun=userspace-networking to avoid TUN device dependency in LXC.
+    # This is more reliable across all Proxmox/LXC configurations; the trade-off is
+    # slightly higher CPU usage vs kernel TUN but avoids the most common failure mode.
     if ${ok}; then
         local authkey
         authkey=$(d_inputbox "Tailscale Auth Key (optional)" \
-"Enter your Tailscale auth key to automatically authenticate.\nGet one at: https://login.tailscale.com/admin/settings/keys\n\nLeave blank to start without authenticating (you will see a URL to visit)." "") || authkey=""
+"Enter your Tailscale auth key to automatically authenticate.\nGet one at: https://login.tailscale.com/admin/settings/keys\n\nLeave blank to start without authenticating (a URL will be printed)." "") || authkey=""
 
-        printf '\033[1;33m[5/5]\033[0m Starting Tailscale in LXC %s...\n' "${ctid}"
-        if [[ -n "${authkey}" ]]; then
-            pct exec "${ctid}" -- tailscale up --authkey="${authkey}" --accept-routes 2>&1 | tee -a "${tmp}" || true
-        else
-            pct exec "${ctid}" -- tailscale up --accept-routes 2>&1 | tee -a "${tmp}" || true
+        printf '\033[1;33m[5/5]\033[0m Starting Tailscale in LXC %s (userspace networking)...\n' "${ctid}"
+        local up_cmd="tailscale up --accept-routes --tun=userspace-networking"
+        # If TUN device exists in the container, prefer kernel networking
+        if pct exec "${ctid}" -- test -e /dev/net/tun 2>/dev/null; then
+            up_cmd="tailscale up --accept-routes"
+            printf '  TUN device detected — using kernel networking mode\n'
         fi
+        [[ -n "${authkey}" ]] && up_cmd="${up_cmd} --authkey=${authkey}"
+
+        # Start tailscaled first with appropriate tun flag
+        pct exec "${ctid}" -- bash -c \
+            "mkdir -p /var/lib/tailscale /run/tailscale && \
+             tailscaled --state=/var/lib/tailscale/tailscaled.state \
+                        --socket=/run/tailscale/tailscaled.sock \
+                        ${up_cmd//tailscale up*/} &>/dev/null &
+             sleep 2 && ${up_cmd}" 2>&1 | tee -a "${tmp}" || true
 
         # Show IP
         printf '\n\033[1;32mTailscale IP in container %s:\033[0m\n' "${ctid}"
@@ -2838,6 +2937,86 @@ tailscale_lxc_install() {
     _live_wait_return
 }
 
+# ---------------------------------------------------------------------------
+# tailscale_pve_host_install — Install Tailscale directly on a Proxmox VE host
+# ---------------------------------------------------------------------------
+# This is the RECOMMENDED method for Proxmox environments.
+# Installing on the PVE host rather than inside a container avoids all TUN
+# device / cgroup permission issues that plague in-container installs.
+# The PVE host then acts as a Tailscale subnet router, making all LXC/VM
+# addresses reachable over the tailnet.
+tailscale_pve_host_install() {
+    _live_header "Tailscale — Proxmox VE Host Install" \
+        "Install on PVE host = no TUN device issues, subnet routing for all VMs"
+
+    # Verify we are on a Proxmox host
+    if ! command -v pveversion &>/dev/null && ! command -v pvesh &>/dev/null; then
+        printf '\033[1;31mNot a Proxmox VE host — pveversion not found.\033[0m\n'
+        printf 'Use "Install natively" from the Tailscale menu instead.\n'
+        _live_wait_return
+        return
+    fi
+
+    local pve_ver
+    pve_ver=$(pveversion --verbose 2>/dev/null | head -1 || echo "Proxmox VE (unknown version)")
+    printf '\033[1;36mHost detected:\033[0m %s\n\n' "${pve_ver}"
+
+    # Step 1 — Download and run Tailscale installer on the host
+    printf '\033[1;33m[1/4]\033[0m Installing Tailscale on PVE host...\n'
+    if ! curl -fsSL https://tailscale.com/install.sh | sh; then
+        printf '\033[1;31mFAILED — installer returned non-zero\033[0m\n'
+        _live_wait_return; return
+    fi
+
+    # Step 2 — Enable and start tailscaled
+    printf '\033[1;33m[2/4]\033[0m Enabling tailscaled service...\n'
+    if command -v systemctl &>/dev/null; then
+        systemctl enable --now tailscaled 2>/dev/null || true
+    fi
+    # Poll until socket is ready (max 20 s)
+    printf '  Waiting for tailscaled socket'
+    local _waited=0
+    until [[ -S "/run/tailscale/tailscaled.sock" ]] || (( _waited >= 20 )); do
+        printf '.'; sleep 1; (( _waited++ ))
+    done
+    printf '\n'
+    if [[ ! -S "/run/tailscale/tailscaled.sock" ]]; then
+        printf '\033[1;31m  Socket not ready after 20 s — check: systemctl status tailscaled\033[0m\n'
+        _live_wait_return; return
+    fi
+
+    # Step 3 — Optionally advertise local subnet so VMs/LXCs are reachable
+    local subnet
+    subnet=$(d_inputbox "Advertise Subnet (optional)" \
+"To make all LXC/VM addresses reachable over Tailscale, enter your local subnet.
+Leave blank to skip.\n\nExamples:\n  192.168.1.0/24\n  10.0.0.0/16" "192.168.1.0/24") || subnet=""
+
+    # Step 4 — Authenticate
+    local authkey
+    authkey=$(d_inputbox "Tailscale Auth Key (optional)" \
+"Enter your Tailscale auth key to auto-authenticate.
+Get one at: https://login.tailscale.com/admin/settings/keys\n\nLeave blank — a URL will be printed." "") || authkey=""
+
+    printf '\033[1;33m[4/4]\033[0m Bringing up Tailscale...\n'
+    local up_flags="--accept-routes"
+    [[ -n "${subnet}" ]] && up_flags="${up_flags} --advertise-routes=${subnet}"
+    [[ -n "${authkey}" ]] && up_flags="${up_flags} --authkey=${authkey}"
+
+    # shellcheck disable=SC2086
+    if tailscale up ${up_flags}; then
+        printf '\n\033[1;32m✓ Tailscale is up on PVE host\033[0m\n'
+        tailscale ip 2>/dev/null || true
+        if [[ -n "${subnet}" ]]; then
+            printf '\n\033[1;33mImportant:\033[0m Approve the subnet route in the Tailscale admin console:\n'
+            printf '  https://login.tailscale.com/admin/machines\n'
+        fi
+        log INFO "Tailscale PVE host install complete; subnet=${subnet:-none}"
+    else
+        printf '\033[1;31mFailed to connect — run: tailscale up\033[0m\n'
+    fi
+    _live_wait_return
+}
+
 tailscale_menu() {
     # Detect where tailscale is: native binary or in a container
     local ts_cmd=""
@@ -2847,28 +3026,31 @@ tailscale_menu() {
         ts_cmd="docker exec tailscale tailscale"
     fi
 
-    # Show install options if tailscale not found (but keep LXC option available)
+    # Show install options if tailscale not found
     if [[ -z "${ts_cmd}" ]]; then
         local install_choice
         install_choice=$(d_menu "Tailscale Not Found" \
-"Tailscale is not installed or not running." \
-            "1" "Install in Proxmox LXC   — guided TUN + install (Proxmox hosts only)" \
-            "2" "Install natively          — run official install script on this host" \
-            "3" "Deploy as Docker container — via Deploy menu" \
-            "4" "Back") || return
+"Tailscale is not installed or not running.\n\nRECOMMENDED: Install on the Proxmox VE host (option 1) for the most reliable setup — avoids all TUN/cgroup issues inside containers." \
+            "1" "Install on Proxmox VE HOST ★ — subnet router, no TUN issues" \
+            "2" "Install in Proxmox LXC        — guided TUN + in-container install" \
+            "3" "Install natively on this host  — official install.sh" \
+            "4" "Deploy as Docker container     — via Deploy menu" \
+            "5" "Back") || return
         case "${install_choice}" in
-            1) tailscale_lxc_install; return ;;
-            2)
+            1) tailscale_pve_host_install; return ;;      # NEW: PVE host install (recommended)
+            2) tailscale_lxc_install; return ;;           # LXC guided install
+            3)
+                # Native install on whatever host is running the TUI
                 _live_header "Install Tailscale — Native"
-                curl -fsSL https://tailscale.com/install.sh | sh
-                # Ensure tailscaled daemon is running after install (needed in LXC / non-systemd hosts)
+                printf '\033[1;33mRunning official Tailscale install script...\033[0m\n'
+                curl -fsSL https://tailscale.com/install.sh | sh || true
                 if ! pgrep -x tailscaled &>/dev/null; then
                     printf '\033[1;33m  Starting tailscaled daemon...\033[0m\n'
                     if command -v systemctl &>/dev/null && systemctl start tailscaled 2>/dev/null; then
                         printf '\033[1;32m  tailscaled started via systemctl\033[0m\n'
                     else
                         mkdir -p /var/lib/tailscale /run/tailscale
-                        # LXC: use userspace networking if TUN device is unavailable
+                        # Use userspace networking if TUN device unavailable (unprivileged LXC)
                         local _ts_tun_flag=""
                         [[ ! -e /dev/net/tun ]] && _ts_tun_flag="--tun=userspace-networking"
                         tailscaled --state=/var/lib/tailscale/tailscaled.state \
@@ -2877,27 +3059,24 @@ tailscale_menu() {
                         printf '\033[1;32m  tailscaled started in background\033[0m\n'
                     fi
                 fi
-                # Poll for socket readiness instead of a fixed sleep (LXC can be slow to init)
                 printf '\033[1;33m  Waiting for tailscaled socket'
                 local _ts_waited=0
                 until [[ -S "/run/tailscale/tailscaled.sock" ]] || (( _ts_waited >= 20 )); do
-                    printf '.'
-                    sleep 1
-                    (( _ts_waited++ ))
+                    printf '.'; sleep 1; (( _ts_waited++ ))
                 done
                 printf '\033[0m\n'
-                if [[ ! -S "/run/tailscale/tailscaled.sock" ]]; then
-                    printf '\033[1;31m  tailscaled socket not ready — check: systemctl status tailscaled\033[0m\n'
-                fi
-                printf '\033[1;32m  Tailscale installed. Use menu option 2 (Connect) to authenticate.\033[0m\n'
+                [[ ! -S "/run/tailscale/tailscaled.sock" ]] && \
+                    printf '\033[1;31m  Socket not ready — check: systemctl status tailscaled\033[0m\n'
+                printf '\033[1;32m  Done. Run: tailscale up\033[0m\n'
                 _live_wait_return
                 return
                 ;;
-            3)
-                d_msgbox "Deploy Tailscale" "Go to: Main Menu → Deploy → Search → 'tailscale'"
+            4)
+                d_msgbox "Deploy Tailscale Container" \
+                    "Go to: Main Menu → Deploy → Search & Deploy → type 'tailscale'"
                 return
                 ;;
-            4) return ;;
+            5) return ;;
         esac
         return
     fi
@@ -3015,18 +3194,20 @@ tailscale_menu() {
             8)
                 local port
                 port=$(d_inputbox "Tailscale Serve" \
-"Share a local service within your tailnet.\n\nEnter local port to share (or 'off' to disable):\n\nExample: 8096 (Jellyfin), 32400 (Plex)" "") || continue
+"Share a local service within your tailnet.\n\nEnter local port to share (or 'off' to disable):\n\nExamples:  8096 (Jellyfin)  32400 (Plex)  9999 (ArrHub)\n\nTip: Use --bg to run serve in the background (persistent across sessions)." "") || continue
                 _live_header "Tailscale Serve — Port ${port}"
-                ${ts_cmd} serve "${port}" 2>&1 | tee "${tmp}" || true
+                # Use --bg so the serve config persists as a background service
+                ${ts_cmd} serve --bg "${port}" 2>&1 | tee "${tmp}" || true
                 _live_wait_return
                 ;;
             9)
                 local port
                 port=$(d_inputbox "Tailscale Funnel" \
-"Expose a local service to the ENTIRE INTERNET.\nRequires: Tailscale account with Funnel enabled.\n\nEnter local port to expose (or 'off' to disable):\n\nExample: 8096, 9999" "") || continue
+"Expose a local service to the ENTIRE INTERNET.\nRequires: Tailscale account with Funnel enabled.\n\nEnter local port to expose (or 'off' to disable):\n\nExamples:  8096  9999\n\nTip: --bg makes the funnel persist as a background service." "") || continue
                 if d_yesno "Confirm Funnel" "This exposes port ${port} to the PUBLIC internet.\nOnly proceed if intentional."; then
                     _live_header "Tailscale Funnel — Port ${port}"
-                    ${ts_cmd} funnel "${port}" 2>&1 | tee "${tmp}" || true
+                    # Use --bg so the funnel config persists as a background service
+                    ${ts_cmd} funnel --bg "${port}" 2>&1 | tee "${tmp}" || true
                     _live_wait_return
                 fi
                 ;;

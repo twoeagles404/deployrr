@@ -1,9 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# ArrHub — Master Installer v3.5.0
+# ArrHub — Master Installer v3.10.0
 # =============================================================================
 #
-# ONE-COMMAND INSTALL:
+# ONE-COMMAND INSTALL (dev branch — always uses latest dev code):
+#   curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/dev/install.sh | sudo bash
+#
+# STABLE (main branch):
 #   curl -fsSL https://raw.githubusercontent.com/twoeagles404/arrhub/main/install.sh | sudo bash
 #
 # LOCAL INSTALL (from cloned repo):
@@ -21,11 +24,15 @@ set -euo pipefail
 # ── GitHub source — update to match your fork ────────────────────────────────
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
-GITHUB_BRANCH="main"
+# GITHUB_BRANCH is set for the branch this file lives on (dev/main).
+# CI validates this plain line — keep it matching the actual branch name.
+GITHUB_BRANCH="dev"
+# Allow env-var override for testing:  ARRHUB_BRANCH=main sudo bash install.sh
+GITHUB_BRANCH="${ARRHUB_BRANCH:-${GITHUB_BRANCH}}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="3.5.0"
+VERSION="3.12.0"
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Install paths ─────────────────────────────────────────────────────────────
@@ -56,7 +63,7 @@ hdr() {
     printf "${C}${B}            ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ${N}\n"
     printf "\n"
     printf "${G}${B}                             v${VERSION}${N}\n"
-    printf "${C}                        110+ apps · Pure Bash · MIT License${N}\n"
+    printf "${C}                        101 apps · Pure Bash · MIT License${N}\n"
     printf "\n"
     printf "${C}${B}%s${N}\n" "$(printf '═%.0s' {1..64})"
     echo

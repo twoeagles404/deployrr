@@ -2,11 +2,11 @@
 # =============================================================================
 # apps/catalog.sh — AUTO-GENERATED. DO NOT EDIT MANUALLY.
 # Run: python3 scripts/gen_catalog_sh.py
-# Total apps: 103
+# Total apps: 101
 # =============================================================================
 
 # All app IDs (space-separated)
-CATALOG_IDS=("qbittorrent" "transmission" "deluge" "sabnzbd" "nzbget" "jdownloader2" "pyload" "aria2" "pinchflat" "qbitrr" "prowlarr" "radarr" "sonarr" "lidarr" "bazarr" "whisparr" "mylar3" "doplarr" "boxarr" "recyclarr" "unpackerr" "notifiarr" "jellyfin" "plex" "emby" "navidrome" "kavita" "komga" "audiobookshelf" "tdarr" "fileflows" "handbrake" "kometa" "wizarr" "jellystat" "seerr" "ombi" "requestrr" "tautulli" "flaresolverr" "grafana" "prometheus" "uptime_kuma" "netdata" "glances" "dozzle" "portainer" "watchtower" "scrutiny" "speedtest" "homer" "homarr" "dasherr" "flame" "heimdall" "organizr" "traefik" "npm" "caddy" "swag" "wireguard" "tailscale" "gluetun" "wg_easy" "adguardhome" "pihole" "technitium" "n8n" "huginn" "changedetection" "node_red" "activepieces" "nextcloud" "filebrowser" "syncthing" "paperless_ngx" "immich" "photoprism" "stirling_pdf" "vaultwarden" "authentik" "authelia" "crowdsec" "ntfy" "gotify" "matrix_synapse" "gitea" "code_server" "drone" "mariadb" "postgres" "redis" "mongodb" "mealie" "grocy" "freshrss" "wallabag" "linkding" "calibre_web" "actual_budget" "cyberchef" "arrhub_webui")
+CATALOG_IDS=("qbittorrent" "transmission" "deluge" "sabnzbd" "nzbget" "jdownloader2" "pyload" "aria2" "pinchflat" "qbitrr" "prowlarr" "radarr" "sonarr" "lidarr" "bazarr" "whisparr" "mylar3" "doplarr" "boxarr" "recyclarr" "unpackerr" "notifiarr" "jellyfin" "plex" "emby" "navidrome" "kavita" "komga" "audiobookshelf" "tdarr" "fileflows" "handbrake" "kometa" "wizarr" "jellystat" "seerr" "ombi" "requestrr" "tautulli" "flaresolverr" "grafana" "prometheus" "uptime_kuma" "netdata" "glances" "dozzle" "portainer" "watchtower" "scrutiny" "speedtest" "dasherr" "flame" "heimdall" "organizr" "launcharr" "traefik" "npm" "caddy" "swag" "wireguard" "tailscale" "gluetun" "wg_easy" "adguardhome" "pihole" "technitium" "n8n" "huginn" "changedetection" "node_red" "activepieces" "nextcloud" "filebrowser" "syncthing" "paperless_ngx" "immich" "photoprism" "stirling_pdf" "vaultwarden" "authentik" "authelia" "crowdsec" "ntfy" "gotify" "matrix_synapse" "gitea" "code_server" "drone" "mariadb" "postgres" "redis" "mongodb" "mealie" "grocy" "freshrss" "wallabag" "linkding" "calibre_web" "actual_budget" "cyberchef" "arrhub_webui")
 
 # Associative arrays — one entry per app
 declare -A APP_NAME APP_CATEGORY APP_IMAGE APP_DESCRIPTION APP_PORTS APP_ICON APP_NOTES
@@ -15,7 +15,7 @@ APP_NAME["qbittorrent"]="qBittorrent"
 APP_CATEGORY["qbittorrent"]="Downloaders"
 APP_IMAGE["qbittorrent"]="lscr.io/linuxserver/qbittorrent:latest"
 APP_DESCRIPTION["qbittorrent"]="Popular, feature-rich BitTorrent client with a clean web UI."
-APP_PORTS["qbittorrent"]="8080:8080 6881:6881 6881:6881/udp"
+APP_PORTS["qbittorrent"]="8090:8080 6881:6881 6881:6881/udp"
 APP_ICON["qbittorrent"]="\u2b07\ufe0f"
 APP_NOTES["qbittorrent"]=""
 
@@ -139,11 +139,6 @@ APP_PORTS["whisparr"]="6969:6969"
 APP_ICON["whisparr"]="\ud83d\udce6"
 APP_NOTES["whisparr"]=""
 
-<<<<<<< HEAD
-=======
-
-
->>>>>>> feature/bugfixes-and-enhancements
 APP_NAME["mylar3"]="Mylar3"
 APP_CATEGORY["mylar3"]="ARR Suite"
 APP_IMAGE["mylar3"]="lscr.io/linuxserver/mylar3:latest"
@@ -162,9 +157,9 @@ APP_NOTES["doplarr"]="Requires Discord bot token and Sonarr/Radarr API keys post
 
 APP_NAME["boxarr"]="Boxarr"
 APP_CATEGORY["boxarr"]="ARR Suite"
-APP_IMAGE["boxarr"]="nicholasammann/boxarr:latest"
+APP_IMAGE["boxarr"]="ghcr.io/iongpt/boxarr:latest"
 APP_DESCRIPTION["boxarr"]="Physical media collection manager \u2014 track box sets alongside your digital library."
-APP_PORTS["boxarr"]="3579:3000"
+APP_PORTS["boxarr"]="8889:8888"
 APP_ICON["boxarr"]="\ud83d\udce6"
 APP_NOTES["boxarr"]="Tracks physical box sets (DVDs/Blu-rays) alongside your Radarr/Sonarr library."
 
@@ -416,22 +411,6 @@ APP_PORTS["speedtest"]="8765:80"
 APP_ICON["speedtest"]="\ud83d\udcc8"
 APP_NOTES["speedtest"]=""
 
-APP_NAME["homer"]="Homer"
-APP_CATEGORY["homer"]="Dashboards"
-APP_IMAGE["homer"]="ghcr.io/bastienwirtz/homer:latest"
-APP_DESCRIPTION["homer"]="Simple, static homepage for your homelab services."
-APP_PORTS["homer"]="8085:8080"
-APP_ICON["homer"]="\ud83d\udcca"
-APP_NOTES["homer"]=""
-
-APP_NAME["homarr"]="Homarr"
-APP_CATEGORY["homarr"]="Dashboards"
-APP_IMAGE["homarr"]="ghcr.io/ajnart/homarr:latest"
-APP_DESCRIPTION["homarr"]="Sleek, modern dashboard with drag-and-drop, service integrations, and widgets."
-APP_PORTS["homarr"]="7575:7575"
-APP_ICON["homarr"]="\ud83d\udcca"
-APP_NOTES["homarr"]=""
-
 APP_NAME["dasherr"]="Dasherr"
 APP_CATEGORY["dasherr"]="Dashboards"
 APP_IMAGE["dasherr"]="ghcr.io/erwin-kok/dasherr:latest"
@@ -463,6 +442,14 @@ APP_DESCRIPTION["organizr"]="HTPC/homelab organizer with tabbed interface and us
 APP_PORTS["organizr"]="8089:80"
 APP_ICON["organizr"]="\ud83d\udcca"
 APP_NOTES["organizr"]=""
+
+APP_NAME["launcharr"]="Launcharr"
+APP_CATEGORY["launcharr"]="Dashboards"
+APP_IMAGE["launcharr"]="mickygx/launcharr:latest"
+APP_DESCRIPTION["launcharr"]="A modern, customizable application launcher and dashboard for self-hosted services."
+APP_PORTS["launcharr"]="3333:3333"
+APP_ICON["launcharr"]="\ud83d\ude80"
+APP_NOTES["launcharr"]="Set SESSION_SECRET to a secure random string before deploying."
 
 APP_NAME["traefik"]="Traefik"
 APP_CATEGORY["traefik"]="Reverse Proxies"

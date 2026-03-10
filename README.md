@@ -4,7 +4,7 @@
 > One `curl | sudo bash` install. Pure Bash TUI + real-time Flask WebUI. **101 apps across 17 categories.** MIT licensed.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.10.0-blue)](https://github.com/twoeagles404/arrhub/releases)
+[![Version](https://img.shields.io/badge/version-3.12.0-blue)](https://github.com/twoeagles404/arrhub/releases)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-twoeagles404%2Farrhub-blue)](https://github.com/twoeagles404/arrhub/pkgs/container/arrhub)
 
 ---
@@ -109,7 +109,7 @@ docker run -e ARRHUB_TOKEN=your-secret-token ...
 | **Matrix Synapse** | Open, decentralized real-time communication server |
 | **ntfy** | Simple HTTP-based pub-sub notification service. Push to any device |
 
-### 🖥️ Dashboards (7)
+### 🖥️ Dashboards (5)
 | App | Description |
 |-----|-------------|
 | **Dasherr** | Minimal, lightweight app dashboard with customizable layout |

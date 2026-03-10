@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.9.0 · Full deployment, update management, and real-time monitoring
+Version: 3.10.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.9.0"
+            "version": "3.10.0"
         }
     })
 
@@ -943,7 +943,14 @@ def api_settings_get():
 def api_settings_set():
     """Save settings."""
     data = request.json or {}
-    allowed = ["config_dir", "media_dir", "tz", "puid", "pgid"]
+    allowed = [
+        "config_dir", "media_dir", "tz", "puid", "pgid",
+        # Service integration keys
+        "radarr_url", "radarr_api_key",
+        "sonarr_url", "sonarr_api_key",
+        "plex_url", "plex_token",
+        "seerr_url", "seerr_api_key",
+    ]
     for key in allowed:
         if key in data:
             _db_set(key, data[key])
@@ -1448,44 +1455,44 @@ def api_rss_feeds():
     """Return RSS feed categories and sources (no fetching — client fetches via /api/rss/fetch)."""
     feeds = {
         "World News": [
-            {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/world/rss.xml", "icon": "🇬🇧"},
-            {"name": "CNN Top Stories", "url": "http://rss.cnn.com/rss/edition.rss", "icon": "🇺🇸"},
+            {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "icon": "🇬🇧"},
+            {"name": "AP News", "url": "https://feeds.apnews.com/rss/apf-topnews", "icon": "🇺🇸"},
             {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "icon": "🌍"},
-            {"name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml", "icon": "🌐"},
-            {"name": "Reuters", "url": "https://feeds.reuters.com/reuters/topNews", "icon": "📰"},
             {"name": "The Guardian", "url": "https://www.theguardian.com/world/rss", "icon": "🗞️"},
+            {"name": "NPR News", "url": "https://feeds.npr.org/1001/rss.xml", "icon": "📻"},
+            {"name": "DW World", "url": "https://rss.dw.com/xml/rss-en-all", "icon": "🇩🇪"},
         ],
         "Technology": [
             {"name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index", "icon": "💻"},
             {"name": "The Verge", "url": "https://www.theverge.com/rss/index.xml", "icon": "⚡"},
             {"name": "Hacker News", "url": "https://hnrss.org/frontpage", "icon": "🟠"},
             {"name": "TechCrunch", "url": "https://techcrunch.com/feed/", "icon": "🚀"},
-            {"name": "Wired", "url": "https://www.wired.com/feed/rss", "icon": "🔌"},
+            {"name": "9to5Mac", "url": "https://9to5mac.com/feed/", "icon": "🍎"},
         ],
         "Sports": [
-            {"name": "BBC Sport", "url": "http://feeds.bbci.co.uk/sport/rss.xml", "icon": "⚽"},
-            {"name": "Sky Sports", "url": "https://www.skysports.com/rss/12040", "icon": "🏆"},
+            {"name": "BBC Sport", "url": "https://feeds.bbci.co.uk/sport/rss.xml", "icon": "⚽"},
+            {"name": "BBC Football", "url": "https://feeds.bbci.co.uk/sport/football/rss.xml", "icon": "⚽"},
             {"name": "ESPN", "url": "https://www.espn.com/espn/rss/news", "icon": "🏈"},
-            {"name": "Goal.com", "url": "https://www.goal.com/feeds/en/news", "icon": "⚽"},
             {"name": "Formula 1", "url": "https://www.formula1.com/content/fom-website/en/latest/all.xml", "icon": "🏎️"},
+            {"name": "UFC / MMA", "url": "https://www.bloodyelbow.com/rss/current", "icon": "🥊"},
         ],
         "Science": [
-            {"name": "NASA", "url": "https://www.nasa.gov/rss/dyn/breaking_news.rss", "icon": "🚀"},
-            {"name": "New Scientist", "url": "https://www.newscientist.com/feed/home", "icon": "🔬"},
+            {"name": "NASA Breaking", "url": "https://www.nasa.gov/rss/dyn/breaking_news.rss", "icon": "🚀"},
             {"name": "Science Daily", "url": "https://www.sciencedaily.com/rss/all.xml", "icon": "🧪"},
-            {"name": "Nature", "url": "https://www.nature.com/nature.rss", "icon": "🌿"},
+            {"name": "Phys.org", "url": "https://phys.org/rss-feed/", "icon": "⚛️"},
+            {"name": "Space.com", "url": "https://www.space.com/feeds/all", "icon": "🌌"},
         ],
         "Entertainment": [
             {"name": "Variety", "url": "https://variety.com/feed/", "icon": "🎬"},
-            {"name": "IGN", "url": "https://feeds.feedburner.com/ign/news", "icon": "🎮"},
-            {"name": "Rolling Stone", "url": "https://www.rollingstone.com/feed/", "icon": "🎵"},
+            {"name": "IGN", "url": "https://feeds.ign.com/ign/all", "icon": "🎮"},
+            {"name": "Eurogamer", "url": "https://www.eurogamer.net/?format=rss", "icon": "🕹️"},
             {"name": "Pitchfork", "url": "https://pitchfork.com/rss/news/", "icon": "🎸"},
         ],
         "Business": [
-            {"name": "Financial Times", "url": "https://www.ft.com/rss/home", "icon": "💹"},
-            {"name": "Bloomberg", "url": "https://feeds.bloomberg.com/markets/news.rss", "icon": "📊"},
-            {"name": "Forbes", "url": "https://www.forbes.com/real-time/feed2/", "icon": "💰"},
+            {"name": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories", "icon": "📊"},
             {"name": "CNBC", "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html", "icon": "📈"},
+            {"name": "Forbes", "url": "https://www.forbes.com/real-time/feed2/", "icon": "💰"},
+            {"name": "Economist", "url": "https://www.economist.com/the-world-this-week/rss.xml", "icon": "💹"},
         ],
         "YouTube": [
             {"name": "Linus Tech Tips", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw", "icon": "▶️"},
@@ -2218,7 +2225,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
 /* ── GridStack Dashboard Widgets ────────────────────────────────────── */
 .grid-stack{width:100%;}
 .grid-stack-item-content{
-  overflow:auto;
+  overflow:hidden;
   height:100%;
   border-radius:var(--r);
 }
@@ -2226,7 +2233,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
   margin:0;
   height:100%;
   border-radius:var(--r);
-  overflow:auto;
+  overflow:hidden;
 }
 /* Drag handle shown when in edit mode */
 .gs-editing .grid-stack-item>.grid-stack-item-content::before{
@@ -2359,11 +2366,24 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
   border-radius:var(--r);padding:14px 16px;
   display:flex;flex-direction:column;gap:6px;
   transition:border-color var(--transition);
+  container-type:inline-size;overflow:hidden;min-height:0;
 }
 .stat-card:hover{border-color:var(--border2);}
 .stat-card-icon{font-size:18px;margin-bottom:2px;}
 .stat-card-val{font-size:22px;font-weight:700;color:var(--text);font-family:var(--mono);}
 .stat-card-label{font-size:11px;color:var(--text2);}
+/* Scale stat-card content as widget shrinks */
+@container (max-width: 130px){
+  .stat-card-val{font-size:16px;}
+  .stat-card-label{font-size:9px;}
+  .stat-card-icon{font-size:14px;}
+  .stat-card{padding:8px 10px;gap:3px;}
+}
+@container (max-width: 90px){
+  .stat-card-val{font-size:12px;}
+  .stat-card-label{font-size:8px;}
+  .stat-card{padding:5px 7px;gap:2px;}
+}
 
 /* ── Progress bar ── */
 .pbar-wrap{width:100%;height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;}
@@ -2943,7 +2963,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.9.0</div>
+      <div class="sb-version">v3.10.0</div>
     </div>
   </div>
 
@@ -2958,13 +2978,9 @@ body.sse-disconnected #app{padding-top:38px;}
       Containers
       <span class="sb-badge" id="sb-ctr-count">0</span>
     </div>
-    <div class="sb-item" onclick="showTab('storage',this)">
+    <div class="sb-item" onclick="showTab('stornet',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-      Storage
-    </div>
-    <div class="sb-item" onclick="showTab('network',this)">
-      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/></svg>
-      Network
+      Storage &amp; Network
     </div>
     <div class="sb-item" onclick="showTab('ports',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -3171,7 +3187,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ① System Info widget  (default: left half, row 0) -->
         <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
           <div class="grid-stack-item-content">
-            <div class="panel" style="margin:0;height:100%;overflow:auto">
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 System Info
@@ -3189,7 +3205,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ② Weather widget  (default: right half, row 0) -->
         <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
           <div class="grid-stack-item-content">
-            <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:auto">
+            <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
                 Weather
@@ -3214,7 +3230,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
         <!-- ③ Service Cards row  (default: full width, row 4) -->
         <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
-          <div class="grid-stack-item-content" style="overflow:auto">
+          <div class="grid-stack-item-content" style="overflow:hidden">
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box" id="service-cards-row">
               <div class="panel" style="margin:0" id="radarr-card">
                 <div class="panel-title">🎥 Radarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span></div>
@@ -3239,7 +3255,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 9) -->
         <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="9" gs-w="12" gs-h="3">
           <div class="grid-stack-item-content">
-            <div class="panel" style="margin:0;height:100%;overflow:auto">
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                 Docker &amp; Network
@@ -3261,7 +3277,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ⑥ Recent Logs  (default: left 4 cols, row 12) -->
         <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="12" gs-w="4" gs-h="4">
           <div class="grid-stack-item-content">
-            <div class="panel" style="margin:0;height:100%;overflow:auto">
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span>
                   <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -3277,7 +3293,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ⑦ Containers Live  (default: right 8 cols, row 12) -->
         <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="12" gs-w="8" gs-h="4">
           <div class="grid-stack-item-content">
-            <div class="panel" style="margin:0;height:100%;overflow:auto">
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span style="display:flex;align-items:center;gap:6px">
                   <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
@@ -3355,14 +3371,13 @@ body.sse-disconnected #app{padding-top:38px;}
     </div>
 
     <!-- ── STORAGE ── -->
-    <div id="tab-storage" class="tab-panel">
-      <div class="section-header"><div class="section-title">Storage</div></div>
-      <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-bottom:0"></div>
-    </div>
-
-    <!-- ── NETWORK ── -->
-    <div id="tab-network" class="tab-panel">
-      <div class="section-header"><div class="section-title">Network</div></div>
+    <div id="tab-stornet" class="tab-panel">
+      <div class="section-header"><div class="section-title">Storage &amp; Network</div></div>
+      <!-- ── Storage ── -->
+      <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">💾 Storage</div>
+      <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-bottom:20px"></div>
+      <!-- ── Network ── -->
+      <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">📡 Network</div>
       <div class="panel" style="margin-bottom:14px">
         <div class="panel-title">Live Bandwidth</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
@@ -3569,7 +3584,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.9.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.10.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -3956,8 +3971,7 @@ function showTab(name, el) {
 
     // Lazy-load on first show
     if (name === 'containers') loadContainers();
-    else if (name === 'storage') loadStorage();
-    else if (name === 'network') loadNetwork();
+    else if (name === 'stornet') { loadStorage(); loadNetwork(); }
     else if (name === 'ports') loadPortMap();
     else if (name === 'hardware') loadHardware();
     else if (name === 'logs') loadLogs();

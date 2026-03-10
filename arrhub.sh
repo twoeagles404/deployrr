@@ -1453,9 +1453,16 @@ deploy_apps() {
 
         if ${is_local}; then
             if docker image inspect "${image}" &>/dev/null 2>&1; then
-                log INFO "Pull SKIP (local image exists) [${idx}/${total}] ${id}  image=${image}"
-                ok_pull+=("${id}")
-                printf '%d\n# [LOCAL OK] %s\n' "${pct}" "${label}" >&9
+                # If the container is already running, skip the pull/start cycle entirely.
+                # The verify loop at the end will detect it running and count it as ok_start.
+                if docker ps --filter "name=^${id}$" --filter "status=running" -q 2>/dev/null | grep -q .; then
+                    log INFO "Pull SKIP (container already running) [${idx}/${total}] ${id} — preserving live instance"
+                    printf '%d\n# [RUNNING OK] %s\n' "${pct}" "${label}" >&9
+                else
+                    log INFO "Pull SKIP (local image exists) [${idx}/${total}] ${id}  image=${image}"
+                    ok_pull+=("${id}")
+                    printf '%d\n# [LOCAL OK] %s\n' "${pct}" "${label}" >&9
+                fi
             else
                 log_err "PULL" "${id} SKIPPED — local image ${image} not found (build failed or not yet built)"
                 fail_pull+=("${id}  [local image missing — run: docker build -t ${image} ${SCRIPT_DIR}/arrhub-webui]")

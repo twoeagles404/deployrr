@@ -6,6 +6,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.11.0] — 2026-03-10
+
+### Fixed
+- **API keys clear on revisit** — `GET /api/settings` now returns all 8 service integration
+  fields (radarr/sonarr/plex/seerr urls + keys) so the Settings form repopulates correctly
+  when navigating back to the tab.
+- **arrhub_webui stopped by media wizard deploy** — `deploy_apps` was calling `docker rm -f`
+  on every LOCAL_IMAGE_APP in `ok_pull`, which killed a running `arrhub_webui` then failed to
+  restart it (compose file was empty because the early-return in `add_service_arrhub_webui`
+  skipped writing it). Fix: if a LOCAL_IMAGE_APP container is already running, skip it from
+  `ok_pull` entirely; the verify loop detects it running and counts it as `ok_start`.
+- **Container page ghost/skeleton cards** — `renderContainers()` now clears all
+  non-`.ctr-card` elements at the very start, including the early-return path for empty
+  filtered results that previously left skeleton cards in place.
+- **Live News broken embeds** — YouTube `live_stream?channel=` embedding is blocked by most
+  news channels at the channel level. Replaced with 3 confirmed-working embedded streams
+  (Al Jazeera, France 24, DW) + quick-launch cards (BBC, Sky, Bloomberg, ABC, Euronews, NHK,
+  WION, CBS, Lofi Girl) that open YouTube directly. Removed RT International (banned from
+  YouTube). Fixed ABC News using BBC's channel ID.
+
+### Changed
+- **Network bandwidth card** — canvas height reduced 100→55px, panel padding tightened;
+  card is now readable without dominating the Storage & Network tab.
+- **Storage & Network tab** — added combined section header with subtitle and Refresh button.
+- **Overview GridStack layout** — `cellHeight` 80→60 (finer snap), resize handles `se` only →
+  `e,se,s,sw,w` (all sides), drag bound to `.panel-title` bar, new **Reset Layout** button
+  appears after a custom layout is saved.
+
+---
+
 ## [3.10.0] — 2026-03-09
 
 ### Fixed

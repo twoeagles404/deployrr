@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.12.0"
+VERSION="3.13.0"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).

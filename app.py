@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.11.0",
+            "version": "3.12.0",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1922,10 +1922,10 @@ def api_plex_sessions():
     token = _get_setting("plex_token")
     if not url:
         return jsonify({"configured": False})
+    if not token:
+        return jsonify({"configured": False})
     try:
-        data = _svc_get(url, "/status/sessions", None,
-                        timeout=5)
-        # Plex requires token as query param, not header
+        # Plex requires token as header — never call _svc_get with None for auth
         full_url = url.rstrip('/') + "/status/sessions"
         r = requests.get(full_url, headers={"X-Plex-Token": token or "", "Accept": "application/json"}, timeout=5)
         r.raise_for_status()
@@ -2237,6 +2237,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
   overflow:hidden;
   height:100%;
   border-radius:var(--r);
+  position:relative;
 }
 .grid-stack-item-content .panel{
   margin:0;
@@ -2262,6 +2263,39 @@ _HTML_SPA = r"""<!DOCTYPE html>
   border-radius:0 0 var(--r) var(--r);
 }
 .gs-editing .grid-stack-item{outline:1px dashed var(--border2);}
+/* Widget remove button (shown in edit mode) */
+.gs-editing .widget-remove-btn{display:flex!important;}
+.widget-remove-btn{
+  display:none;position:absolute;top:4px;right:4px;z-index:10;
+  width:20px;height:20px;border-radius:50%;border:none;
+  background:var(--red2);color:var(--red);cursor:pointer;
+  font-size:12px;line-height:1;align-items:center;justify-content:center;
+  transition:background .15s;
+}
+.widget-remove-btn:hover{background:var(--red)!important;color:#fff!important;}
+/* Service launcher tiles */
+.launcher-tile{
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:10px 14px;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;text-decoration:none;color:var(--text);
+  min-width:80px;transition:background .15s,border-color .15s;cursor:pointer;
+}
+.launcher-tile:hover{background:var(--surface2);border-color:var(--blue);}
+.launcher-tile-icon{font-size:22px;line-height:1;}
+.launcher-tile-name{font-size:11px;font-weight:600;color:var(--text);text-align:center;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.launcher-tile-port{font-size:10px;color:var(--text3);font-family:var(--mono);}
+/* Widget palette cards */
+.widget-palette-card{
+  display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 8px;
+  background:var(--surface);border:2px solid var(--border);border-radius:8px;
+  cursor:pointer;transition:border-color .15s,background .15s;text-align:center;
+}
+.widget-palette-card:hover{border-color:var(--blue);background:var(--surface2);}
+.widget-palette-card.active{border-color:var(--green);background:var(--green2);}
+.widget-palette-card.active:hover{border-color:var(--red);background:var(--red2);}
+.widget-palette-card .wpc-icon{font-size:26px;line-height:1;}
+.widget-palette-card .wpc-name{font-size:11px;font-weight:600;color:var(--text);}
+.widget-palette-card .wpc-status{font-size:10px;color:var(--text3);margin-top:2px;}
 /* Theme button active state */
 .theme-btn.active{background:var(--blue2)!important;color:var(--blue)!important;border-color:var(--blue)!important;}
 /* Accent swatch selected ring */
@@ -3123,6 +3157,10 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="section-sub" id="ov-hostname">Loading...</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
+          <button id="ov-add-btn" class="btn" onclick="showWidgetPalette()" style="display:none;font-size:11px;padding:4px 12px;gap:4px">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Add Widget
+          </button>
           <button id="ov-reset-btn" class="btn" onclick="resetGridLayout()" style="font-size:11px;padding:4px 12px;gap:4px;display:none">
             <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Reset
@@ -3202,6 +3240,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ① System Info widget  (default: left half, row 0) -->
         <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
           <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -3220,6 +3259,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ② Weather widget  (default: right half, row 0) -->
         <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
           <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('weather')" title="Remove widget">✕</button>
             <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
@@ -3246,6 +3286,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ③ Service Cards row  (default: full width, row 4) -->
         <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
           <div class="grid-stack-item-content" style="overflow:hidden">
+            <button class="widget-remove-btn" onclick="removeWidget('services')" title="Remove widget">✕</button>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box" id="service-cards-row">
               <div class="panel" style="margin:0" id="radarr-card">
                 <div class="panel-title">🎥 Radarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span></div>
@@ -3270,6 +3311,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 9) -->
         <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="9" gs-w="12" gs-h="3">
           <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
@@ -3292,6 +3334,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ⑥ Recent Logs  (default: left 4 cols, row 12) -->
         <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="12" gs-w="4" gs-h="4">
           <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('logs')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span>
@@ -3308,6 +3351,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ⑦ Containers Live  (default: right 8 cols, row 12) -->
         <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="12" gs-w="8" gs-h="4">
           <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('ctrs')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span style="display:flex;align-items:center;gap:6px">
@@ -3324,7 +3368,32 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
+        <!-- ⑧ Service Launcher  (default: full width, row 16) -->
+        <div class="grid-stack-item" gs-id="launcher" gs-x="0" gs-y="16" gs-w="12" gs-h="3">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('launcher')" title="Remove widget">✕</button>
+            <div class="panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title">
+                🚀 Service Launcher
+                <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Click any tile to open</span>
+              </div>
+              <div id="launcher-tiles" style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 0"></div>
+            </div>
+          </div>
+        </div>
+
       </div><!-- /ov-grid -->
+
+      <!-- Widget Palette Modal -->
+      <div id="widget-palette-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;width:520px;max-width:95vw;max-height:80vh;overflow:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <div style="font-size:14px;font-weight:600;color:var(--text)">Add / Remove Widgets</div>
+            <button class="btn" onclick="document.getElementById('widget-palette-modal').style.display='none'" style="padding:4px 12px">✕ Close</button>
+          </div>
+          <div id="widget-palette-body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px"></div>
+        </div>
+      </div>
     </div>
 
     <!-- ── CONTAINERS ── -->
@@ -4014,7 +4083,8 @@ function showTab(name, el) {
     currentTab = name;
 
     // Lazy-load on first show
-    if (name === 'containers') loadContainers();
+    if (name === 'overview') loadServiceLauncher();
+    else if (name === 'containers') loadContainers();
     else if (name === 'stornet') { loadStorage(); loadNetwork(); }
     else if (name === 'ports') loadPortMap();
     else if (name === 'hardware') loadHardware();
@@ -6037,12 +6107,162 @@ function _gsInit() {
   return true;
 }
 
+// ── Widget palette definitions ────────────────────────────────────────────────
+const WIDGET_DEFS = {
+  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:4, dx:0,  dy:0  },
+  weather:  { label: 'Weather',          icon: '🌤️', dw:6,  dh:4, dx:6,  dy:0  },
+  services: { label: 'Service Cards',    icon: '🃏',  dw:12, dh:5, dx:0,  dy:4  },
+  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:3, dx:0,  dy:9  },
+  logs:     { label: 'Recent Logs',      icon: '📋',  dw:4,  dh:4, dx:0,  dy:12 },
+  ctrs:     { label: 'Containers',       icon: '📦',  dw:8,  dh:4, dx:4,  dy:12 },
+  launcher: { label: 'Service Launcher', icon: '🚀',  dw:12, dh:3, dx:0,  dy:16 },
+};
+
+let _hiddenWidgets = new Set();
+
+// Save full widget config (hidden list + grid positions) to server
+async function _saveWidgetConfig() {
+  try {
+    const config = {
+      hidden: [..._hiddenWidgets],
+      grid: _gs ? _gs.save(false) : null
+    };
+    await fetch('/api/widget_config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+  } catch(e) {}
+}
+
+// Load widget config from server and apply hidden list
+async function _loadWidgetConfig() {
+  try {
+    const r = await fetch('/api/widget_config');
+    const data = await r.json();
+    if (Array.isArray(data.hidden) && data.hidden.length) {
+      _hiddenWidgets = new Set(data.hidden);
+      _hiddenWidgets.forEach(id => {
+        const el = document.querySelector(\`.grid-stack-item[gs-id="\${id}"]\`);
+        if (el) el.style.display = 'none';
+      });
+    }
+    // Grid positions from server take priority over localStorage
+    if (data.grid && Array.isArray(data.grid)) {
+      localStorage.setItem('arrhub_grid', JSON.stringify(data.grid));
+    }
+  } catch(e) {}
+}
+
+// Remove a widget during edit mode
+function removeWidget(gsId) {
+  if (!_gsEditing || !_gs) return;
+  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
+  if (!el) return;
+  _hiddenWidgets.add(gsId);
+  _gs.removeWidget(el, false);       // remove from grid but keep DOM node
+  el.style.display = 'none';
+  document.getElementById('ov-grid').appendChild(el);  // keep in DOM so it can be restored
+  const addBtn = document.getElementById('ov-add-btn');
+  if (addBtn) addBtn.style.display = '';
+  showToast(\`"\${WIDGET_DEFS[gsId]?.label || gsId}" hidden — use Add Widget to restore\`, 'info', 3000);
+}
+
+// Restore a hidden widget
+function restoreWidget(gsId) {
+  const def = WIDGET_DEFS[gsId];
+  if (!def || !_gs) return;
+  _hiddenWidgets.delete(gsId);
+  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
+  if (el) {
+    el.style.display = '';
+    _gs.makeWidget(el);
+  }
+  if (_hiddenWidgets.size === 0) {
+    const addBtn = document.getElementById('ov-add-btn');
+    if (addBtn) addBtn.style.display = 'none';
+  }
+  document.getElementById('widget-palette-modal').style.display = 'none';
+  showToast(\`"\${def.label}" restored\`, 'success', 2000);
+}
+
+// Show widget palette modal
+function showWidgetPalette() {
+  const body = document.getElementById('widget-palette-body');
+  if (!body) return;
+  body.innerHTML = '';
+  Object.entries(WIDGET_DEFS).forEach(([id, def]) => {
+    const isHidden = _hiddenWidgets.has(id);
+    const div = document.createElement('div');
+    div.className = 'widget-palette-card' + (isHidden ? '' : ' active');
+    div.title = isHidden ? 'Click to restore' : 'Click to hide';
+    div.innerHTML = \`<div class="wpc-icon">\${def.icon}</div><div class="wpc-name">\${def.label}</div><div class="wpc-status">\${isHidden ? '➕ Hidden' : '✅ Visible'}</div>\`;
+    div.onclick = () => {
+      if (isHidden) restoreWidget(id);
+      else removeWidget(id);
+      showWidgetPalette();  // refresh palette
+    };
+    body.appendChild(div);
+  });
+  document.getElementById('widget-palette-modal').style.display = 'flex';
+}
+
+// ── Service Launcher ─────────────────────────────────────────────────────────
+const _svcIcons = {
+  radarr:'🎥', sonarr:'📺', lidarr:'🎵', bazarr:'💬', prowlarr:'🔍',
+  jellyfin:'🎬', plex:'▶️', emby:'📽️', qbittorrent:'⬇️', transmission:'⬇️',
+  seerr:'🎬', tautulli:'📊', portainer:'🐳', dozzle:'📋', grafana:'📈',
+  uptime_kuma:'🟢', tdarr:'📦', fileflows:'🔄', handbrake:'🔧',
+  nextcloud:'☁️', immich:'🖼️', navidrome:'🎼', watchtower:'🔄',
+  vaultwarden:'🔐', n8n:'⚡', node_red:'🔴', komga:'📚', kavita:'📖',
+  arrhub_webui:'🏠', pihole:'🕳️', adguardhome:'🛡️',
+};
+function _launcherIcon(name) {
+  const k = name.toLowerCase().replace(/[^a-z0-9_]/g,'_');
+  for (const [key, icon] of Object.entries(_svcIcons)) {
+    if (k.includes(key)) return icon;
+  }
+  return '📦';
+}
+
+async function loadServiceLauncher() {
+  const el = document.getElementById('launcher-tiles');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/containers');
+    const data = await r.json();
+    const running = data.filter(c => c.state === 'running');
+    if (!running.length) {
+      el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No running containers found.</div>';
+      return;
+    }
+    el.innerHTML = running.map(c => {
+      const name = (c.name || '').replace(/^\\//, '');
+      const ports = c.ports || [];
+      // Pick first host port that looks like an HTTP port
+      const portEntry = ports.find(p => /^\\d+:\\d+/.test(p));
+      const hostPort = portEntry ? portEntry.split(':')[0] : null;
+      const url = hostPort ? \`http://\${window.location.hostname}:\${hostPort}\` : null;
+      const icon = _launcherIcon(name);
+      const tileHtml = \`<div class="launcher-tile-icon">\${icon}</div>
+        <div class="launcher-tile-name">\${name}</div>
+        \${hostPort ? \`<div class="launcher-tile-port">:\${hostPort}</div>\` : ''}\`;
+      return url
+        ? \`<a href="\${url}" target="_blank" rel="noopener" class="launcher-tile">\${tileHtml}</a>\`
+        : \`<div class="launcher-tile" style="opacity:.5;cursor:default">\${tileHtml}</div>\`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px">Failed to load containers.</div>';
+  }
+}
+
 function toggleGridEdit() {
   _gsInit();
   if (!_gs) { showToast('GridStack not loaded yet', 'error'); return; }
   _gsEditing = !_gsEditing;
   const btn      = document.getElementById('ov-edit-btn');
   const resetBtn = document.getElementById('ov-reset-btn');
+  const addBtn   = document.getElementById('ov-add-btn');
   const grid     = document.getElementById('ov-grid');
   if (_gsEditing) {
     _gs.setStatic(false);
@@ -6054,29 +6274,38 @@ function toggleGridEdit() {
     btn.style.background = 'var(--blue2)';
     btn.style.color      = 'var(--blue)';
     grid.classList.add('gs-editing');
-    showToast('Drag by title bar · resize from edges · click Save when done', 'info', 5000);
+    if (addBtn) addBtn.style.display = '';
+    showToast('Drag by title bar · resize from edges · ✕ to hide widgets · click Save when done', 'info', 5000);
   } else {
     _gs.setStatic(true);
-    localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false)));
+    const gridData = _gs.save(false);
+    localStorage.setItem('arrhub_grid', JSON.stringify(gridData));
     btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> Edit Layout';
     btn.style.background = '';
     btn.style.color      = '';
     grid.classList.remove('gs-editing');
+    if (addBtn) addBtn.style.display = 'none';
+    _saveWidgetConfig();  // persist to server
     showToast('Layout saved', 'success', 2000);
   }
 }
 
 function resetGridLayout() {
-  if (!confirm('Reset overview layout to defaults?')) return;
+  if (!confirm('Reset overview layout to defaults? (all widget positions + hidden state reset)')) return;
   localStorage.removeItem('arrhub_grid');
+  _hiddenWidgets.clear();
+  _saveWidgetConfig();
   const resetBtn = document.getElementById('ov-reset-btn');
   if (resetBtn) resetBtn.style.display = 'none';
-  // Reload the page to restore default gs-x/gs-y/gs-w/gs-h from HTML attributes
   location.reload();
 }
 
 // Init GridStack in static mode on load to apply any saved positions
-window.addEventListener('load', () => { setTimeout(_gsInit, 600); });
+window.addEventListener('load', async () => {
+  await _loadWidgetConfig();   // apply hidden widgets from server before init
+  setTimeout(_gsInit, 600);
+  loadServiceLauncher();       // populate launcher widget
+});
 </script>
 <script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>

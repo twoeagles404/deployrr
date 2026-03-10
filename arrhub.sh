@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.11.0"
+VERSION="3.12.0"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -216,7 +216,9 @@ load_catalog() {
 
     # -- Media Tools --
     define_app tdarr    "Tdarr"      "ghcr.io/haveagitgat/tdarr:latest"  "Media Tools"  "8265:8265 8266:8266"
+    APP_CUSTOM_SVC[tdarr]="yes"
     define_app fileflows "FileFlows" "revenz/fileflows:latest"             "Media Tools"  "19200:5000"
+    APP_CUSTOM_SVC[fileflows]="yes"
     define_app handbrake "HandBrake" "jlesage/handbrake:latest"            "Media Tools"  "5800:5800"
     define_app kometa   "Kometa"     "kometateam/kometa:latest"            "Media Tools"  ""
     define_app wizarr   "Wizarr"     "ghcr.io/wizarrrr/wizarr:latest"      "Media Tools"  "5690:5690"
@@ -866,6 +868,76 @@ add_service_launcharr() {
     } >> "${f}"
     mkdir -p "${CONFIG_DIR}/launcharr/config" "${CONFIG_DIR}/launcharr/data" 2>/dev/null || true
     log INFO "Launcharr web port: ${hp_3333}"
+}
+
+add_service_tdarr() {
+    local id="${1:-tdarr}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_8265; hp_8265=$(find_free_port 8265)
+    local hp_8266; hp_8266=$(find_free_port 8266)
+    if [[ "${hp_8265}" != "8265" ]]; then log WARN "Port 8265 in use — tdarr WebUI reassigned to ${hp_8265}"; fi
+    if [[ "${hp_8266}" != "8266" ]]; then log WARN "Port 8266 in use — tdarr server reassigned to ${hp_8266}"; fi
+
+    mkdir -p "${CONFIG_DIR}/tdarr/server" "${CONFIG_DIR}/tdarr/configs" "${CONFIG_DIR}/tdarr/logs" 2>/dev/null || true
+
+    {
+        echo ""
+        echo "  tdarr:"
+        echo "    image: ghcr.io/haveagitgat/tdarr:latest"
+        echo "    container_name: tdarr"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - TZ=${TZ_VAL}"
+        echo "      - PUID=${PUID_VAL}"
+        echo "      - PGID=${PGID_VAL}"
+        echo "      - serverIP=0.0.0.0"
+        echo "      - serverPort=${hp_8266}"
+        echo "      - webUIPort=${hp_8265}"
+        echo "      - internalNode=true"
+        echo "      - internalNodeID=MainNode"
+        echo "      - nodeName=ArrHub-Node"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/tdarr/server:/app/server"
+        echo "      - ${CONFIG_DIR}/tdarr/configs:/app/configs"
+        echo "      - ${CONFIG_DIR}/tdarr/logs:/app/logs"
+        echo "      - ${MEDIA_DIR}:/media"
+        echo "    ports:"
+        echo "      - \"${hp_8265}:${hp_8265}\""
+        echo "      - \"${hp_8266}:${hp_8266}\""
+    } >> "${f}"
+    log INFO "Tdarr WebUI: port ${hp_8265} | Server: port ${hp_8266} | Media dir: ${MEDIA_DIR}"
+    printf '\n\033[1;33m  ▶ Tdarr first-run: open WebUI, create a library pointing to /media, select a transcode plugin.\033[0m\n'
+    printf '\033[1;33m  ▶ The built-in ArrHub-Node will start transcoding automatically once a library is configured.\033[0m\n'
+}
+
+add_service_fileflows() {
+    local id="${1:-fileflows}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_19200; hp_19200=$(find_free_port 19200)
+    if [[ "${hp_19200}" != "19200" ]]; then log WARN "Port 19200 in use — fileflows reassigned to ${hp_19200}"; fi
+
+    mkdir -p "${CONFIG_DIR}/fileflows" "/tmp/fileflows" 2>/dev/null || true
+
+    {
+        echo ""
+        echo "  fileflows:"
+        echo "    image: revenz/fileflows:latest"
+        echo "    container_name: fileflows"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/fileflows:/app/Data"
+        echo "      - ${CONFIG_DIR}/fileflows/logs:/app/Logs"
+        echo "      - ${MEDIA_DIR}:/media"
+        echo "      - /tmp/fileflows:/temp"
+        echo "    ports:"
+        echo "      - \"${hp_19200}:5000\""
+    } >> "${f}"
+    log INFO "FileFlows WebUI: port ${hp_19200} | Media: ${MEDIA_DIR} | Temp: /tmp/fileflows"
+    printf '\n\033[1;33m  ▶ FileFlows first-run: create a flow for video files, add /media as a library source.\033[0m\n'
 }
 
 add_service_immich() {

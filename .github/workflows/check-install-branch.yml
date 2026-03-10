@@ -1,0 +1,55 @@
+name: Validate branch consistency
+
+on:
+  push:
+    paths:
+      - install.sh
+      - arrhub.sh
+  pull_request:
+    paths:
+      - install.sh
+      - arrhub.sh
+
+jobs:
+  check-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check GITHUB_BRANCH in install.sh and arrhub.sh matches target branch
+        run: |
+          # For PRs, check against the base branch (where code will land)
+          # For pushes, check against the branch being pushed to
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            TARGET="${{ github.base_ref }}"
+          else
+            TARGET="${{ github.ref_name }}"
+          fi
+
+          FAIL=0
+
+          check_file() {
+            local file="$1"
+            # Read the hardcoded default (not the env-var override line)
+            local branch
+            branch=$(grep '^GITHUB_BRANCH=' "${file}" | grep -v 'ARRHUB_BRANCH' | head -1 | cut -d'"' -f2)
+            echo "Checking ${file}: GITHUB_BRANCH=\"${branch}\" vs target \"${TARGET}\""
+
+            if [[ -z "${branch}" ]]; then
+              echo "::error file=${file}::Could not read GITHUB_BRANCH from ${file}"
+              FAIL=1
+              return
+            fi
+
+            if [[ "${branch}" != "${TARGET}" ]]; then
+              echo "::error file=${file}::GITHUB_BRANCH=\"${branch}\" but target branch is \"${TARGET}\" — update GITHUB_BRANCH in ${file} to match"
+              FAIL=1
+            else
+              echo "✓ ${file}: GITHUB_BRANCH=\"${branch}\" matches \"${TARGET}\""
+            fi
+          }
+
+          [[ -f install.sh ]] && check_file install.sh
+          [[ -f arrhub.sh  ]] && check_file arrhub.sh
+
+          exit ${FAIL}

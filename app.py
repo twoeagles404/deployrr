@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.5.0 · Full deployment, update management, and real-time monitoring
+Version: 3.10.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -934,7 +934,16 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.5.0"
+            "version": "3.12.0",
+            # Service integration keys — returned so the UI can re-populate fields on revisit
+            "radarr_url":     _db_get("radarr_url", ""),
+            "radarr_api_key": _db_get("radarr_api_key", ""),
+            "sonarr_url":     _db_get("sonarr_url", ""),
+            "sonarr_api_key": _db_get("sonarr_api_key", ""),
+            "plex_url":       _db_get("plex_url", ""),
+            "plex_token":     _db_get("plex_token", ""),
+            "seerr_url":      _db_get("seerr_url", ""),
+            "seerr_api_key":  _db_get("seerr_api_key", ""),
         }
     })
 
@@ -943,7 +952,14 @@ def api_settings_get():
 def api_settings_set():
     """Save settings."""
     data = request.json or {}
-    allowed = ["config_dir", "media_dir", "tz", "puid", "pgid"]
+    allowed = [
+        "config_dir", "media_dir", "tz", "puid", "pgid",
+        # Service integration keys
+        "radarr_url", "radarr_api_key",
+        "sonarr_url", "sonarr_api_key",
+        "plex_url", "plex_token",
+        "seerr_url", "seerr_api_key",
+    ]
     for key in allowed:
         if key in data:
             _db_set(key, data[key])
@@ -1233,6 +1249,30 @@ def api_stack_down(name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/stack/<name>/pull", methods=["POST"])
+def api_stack_pull(name):
+    """Pull latest images for a stack without restarting it."""
+    if not DOCKER_OK:
+        return jsonify({"error": "Docker not available"}), 500
+    config_dir = _db_get("config_dir", "/docker")
+    compose_path = os.path.join(config_dir, name, "docker-compose.yml")
+    if not os.path.isfile(compose_path):
+        return jsonify({"error": f"Compose file not found: {compose_path}"}), 404
+    try:
+        result = subprocess.run(
+            [_DOCKER_BIN, "compose", "-f", compose_path, "pull"],
+            capture_output=True, text=True, timeout=300
+        )
+        return jsonify({
+            "status": "ok" if result.returncode == 0 else "error",
+            "stdout": result.stdout[-3000:],
+            "stderr": result.stderr[-2000:]
+        })
+    except FileNotFoundError:
+        return jsonify({"error": "docker CLI not found"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/stack/add", methods=["POST"])
 def api_stack_add():
     """Add a new docker-compose stack."""
@@ -1338,15 +1378,26 @@ def api_weather():
         geo = geo_resp.json()
         lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
 
-        # Get weather from open-meteo
+        # Get weather from open-meteo.
+        # current= gives real-time humidity/wind; daily= gives 5-day forecast.
         weather_resp = requests.get(
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto",
+            f"https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}"
+            f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,apparent_temperature"
+            f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum"
+            f"&wind_speed_unit=mph"
+            f"&timezone=auto",
             timeout=5
         )
         weather = weather_resp.json()
 
+        # Extract current conditions (humidity, wind, feels-like)
+        current = weather.get("current", {})
         result = {
             "location": f"{geo.get('city', 'Unknown')}, {geo.get('country_name', '')}",
+            "humidity": current.get("relative_humidity_2m"),
+            "wind_mph": round(current.get("wind_speed_10m", 0), 1),
+            "feels_like": current.get("apparent_temperature"),
             "daily": []
         }
 
@@ -1413,44 +1464,44 @@ def api_rss_feeds():
     """Return RSS feed categories and sources (no fetching — client fetches via /api/rss/fetch)."""
     feeds = {
         "World News": [
-            {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/world/rss.xml", "icon": "🇬🇧"},
-            {"name": "CNN Top Stories", "url": "http://rss.cnn.com/rss/edition.rss", "icon": "🇺🇸"},
+            {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "icon": "🇬🇧"},
+            {"name": "AP News", "url": "https://feeds.apnews.com/rss/apf-topnews", "icon": "🇺🇸"},
             {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml", "icon": "🌍"},
-            {"name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml", "icon": "🌐"},
-            {"name": "Reuters", "url": "https://feeds.reuters.com/reuters/topNews", "icon": "📰"},
             {"name": "The Guardian", "url": "https://www.theguardian.com/world/rss", "icon": "🗞️"},
+            {"name": "NPR News", "url": "https://feeds.npr.org/1001/rss.xml", "icon": "📻"},
+            {"name": "DW World", "url": "https://rss.dw.com/xml/rss-en-all", "icon": "🇩🇪"},
         ],
         "Technology": [
             {"name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index", "icon": "💻"},
             {"name": "The Verge", "url": "https://www.theverge.com/rss/index.xml", "icon": "⚡"},
             {"name": "Hacker News", "url": "https://hnrss.org/frontpage", "icon": "🟠"},
             {"name": "TechCrunch", "url": "https://techcrunch.com/feed/", "icon": "🚀"},
-            {"name": "Wired", "url": "https://www.wired.com/feed/rss", "icon": "🔌"},
+            {"name": "9to5Mac", "url": "https://9to5mac.com/feed/", "icon": "🍎"},
         ],
         "Sports": [
-            {"name": "BBC Sport", "url": "http://feeds.bbci.co.uk/sport/rss.xml", "icon": "⚽"},
-            {"name": "Sky Sports", "url": "https://www.skysports.com/rss/12040", "icon": "🏆"},
+            {"name": "BBC Sport", "url": "https://feeds.bbci.co.uk/sport/rss.xml", "icon": "⚽"},
+            {"name": "BBC Football", "url": "https://feeds.bbci.co.uk/sport/football/rss.xml", "icon": "⚽"},
             {"name": "ESPN", "url": "https://www.espn.com/espn/rss/news", "icon": "🏈"},
-            {"name": "Goal.com", "url": "https://www.goal.com/feeds/en/news", "icon": "⚽"},
             {"name": "Formula 1", "url": "https://www.formula1.com/content/fom-website/en/latest/all.xml", "icon": "🏎️"},
+            {"name": "UFC / MMA", "url": "https://www.bloodyelbow.com/rss/current", "icon": "🥊"},
         ],
         "Science": [
-            {"name": "NASA", "url": "https://www.nasa.gov/rss/dyn/breaking_news.rss", "icon": "🚀"},
-            {"name": "New Scientist", "url": "https://www.newscientist.com/feed/home", "icon": "🔬"},
+            {"name": "NASA Breaking", "url": "https://www.nasa.gov/rss/dyn/breaking_news.rss", "icon": "🚀"},
             {"name": "Science Daily", "url": "https://www.sciencedaily.com/rss/all.xml", "icon": "🧪"},
-            {"name": "Nature", "url": "https://www.nature.com/nature.rss", "icon": "🌿"},
+            {"name": "Phys.org", "url": "https://phys.org/rss-feed/", "icon": "⚛️"},
+            {"name": "Space.com", "url": "https://www.space.com/feeds/all", "icon": "🌌"},
         ],
         "Entertainment": [
             {"name": "Variety", "url": "https://variety.com/feed/", "icon": "🎬"},
-            {"name": "IGN", "url": "https://feeds.feedburner.com/ign/news", "icon": "🎮"},
-            {"name": "Rolling Stone", "url": "https://www.rollingstone.com/feed/", "icon": "🎵"},
+            {"name": "IGN", "url": "https://feeds.ign.com/ign/all", "icon": "🎮"},
+            {"name": "Eurogamer", "url": "https://www.eurogamer.net/?format=rss", "icon": "🕹️"},
             {"name": "Pitchfork", "url": "https://pitchfork.com/rss/news/", "icon": "🎸"},
         ],
         "Business": [
-            {"name": "Financial Times", "url": "https://www.ft.com/rss/home", "icon": "💹"},
-            {"name": "Bloomberg", "url": "https://feeds.bloomberg.com/markets/news.rss", "icon": "📊"},
-            {"name": "Forbes", "url": "https://www.forbes.com/real-time/feed2/", "icon": "💰"},
+            {"name": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories", "icon": "📊"},
             {"name": "CNBC", "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html", "icon": "📈"},
+            {"name": "Forbes", "url": "https://www.forbes.com/real-time/feed2/", "icon": "💰"},
+            {"name": "Economist", "url": "https://www.economist.com/the-world-this-week/rss.xml", "icon": "💹"},
         ],
         "YouTube": [
             {"name": "Linus Tech Tips", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw", "icon": "▶️"},
@@ -1463,37 +1514,135 @@ def api_rss_feeds():
 
 @app.route("/api/rss/fetch")
 def api_rss_fetch():
-    """Proxy-fetch and parse an RSS/Atom feed URL to avoid CORS."""
-    import xml.etree.ElementTree as ET
+    """Proxy-fetch and parse an RSS/Atom feed URL to avoid CORS.
+    Returns enriched items: title, link, date, excerpt, and thumbnail URL.
+    Supports RSS 2.0, Atom, and YouTube Atom feeds.
+    """
+    import html as _html_mod
+    import re as _re
     url = request.args.get("url", "")
     if not url:
         return jsonify({"error": "Missing url"}), 400
+
+    # Per-feed response cache to avoid hammering external servers
+    cache_key = "rss_fetch_" + url
+    if cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 300:
+        return jsonify(_rss_cache[cache_key]["data"])
+
     try:
         import urllib.request
         headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.5; +https://github.com/twoeagles404/arrhub)"}
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
+
         root = ET.fromstring(raw)
-        items = []
-        # RSS 2.0
-        ns = {"atom": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
-        for item in (root.findall(".//item") or root.findall("atom:entry", ns))[:20]:
-            title_el = item.find("title")
-            link_el  = item.find("link")
-            date_el  = item.find("pubDate") or item.find("updated") or item.find("dc:date")
-            title = title_el.text if title_el is not None else "Untitled"
-            link  = link_el.text  if link_el  is not None else "#"
-            # Atom feeds use link[href]
+        ns = {
+            "atom":    "http://www.w3.org/2005/Atom",
+            "media":   "http://search.yahoo.com/mrss/",
+            "content": "http://purl.org/rss/1.0/modules/content/",
+            "dc":      "http://purl.org/dc/elements/1.1/"
+        }
+
+        def _strip_html(text):
+            """Strip HTML tags and decode entities for excerpt use."""
+            if not text:
+                return ""
+            text = _re.sub(r"<[^>]+>", " ", text)
+            text = _html_mod.unescape(text)
+            text = _re.sub(r"\s+", " ", text).strip()
+            return text[:200]
+
+        def _first_img(text):
+            """Find first <img src=...> in HTML string."""
+            if not text:
+                return None
+            m = _re.search(r'<img[^>]+src=["\']([^"\']+)["\']', text, _re.I)
+            return m.group(1) if m else None
+
+        def _parse_item(item, is_atom=False):
+            """Extract fields from a single RSS item or Atom entry."""
+            # Title
+            title_el = item.find("title") if not is_atom else item.find("atom:title", ns)
+            title = (title_el.text or "").strip() if title_el is not None else "Untitled"
+            title = _strip_html(title) or title   # some feeds wrap title in CDATA with HTML
+
+            # Link
+            link = "#"
+            if not is_atom:
+                link_el = item.find("link")
+                link = (link_el.text or "").strip() if link_el is not None else "#"
             if not link or link == "#":
-                link_el2 = item.find("atom:link", ns)
-                if link_el2 is not None:
-                    link = link_el2.get("href", "#")
-            date = ""
-            if date_el is not None and date_el.text:
-                date = date_el.text[:16]
-            items.append({"title": title.strip(), "link": link.strip() if link else "#", "date": date})
-        return jsonify({"items": items})
+                atom_link = item.find("atom:link", ns)
+                if atom_link is not None:
+                    link = atom_link.get("href", "#")
+            # YouTube Atom: yt:videoId → build link
+            if not link or link == "#":
+                vid_el = item.find("{http://www.youtube.com/xml/schemas/2015}videoId")
+                if vid_el is not None and vid_el.text:
+                    link = "https://www.youtube.com/watch?v=" + vid_el.text.strip()
+
+            # Date
+            date_el = item.find("pubDate") or item.find("dc:date", ns) or item.find("atom:updated", ns) or item.find("atom:published", ns)
+            date = (date_el.text or "")[:16] if date_el is not None else ""
+
+            # Thumbnail — priority order:
+            # 1. <media:thumbnail url="...">
+            # 2. <media:content url="..." medium="image">
+            # 3. <enclosure url="..." type="image/...">
+            # 4. First <img> in <description> or <content:encoded>
+            # 5. YouTube video thumbnail via videoId
+            thumb = None
+            mt = item.find("media:thumbnail", ns)
+            if mt is not None:
+                thumb = mt.get("url")
+            if not thumb:
+                mc = item.find("media:content", ns)
+                if mc is not None and ("image" in (mc.get("medium","") + mc.get("type",""))):
+                    thumb = mc.get("url")
+            if not thumb:
+                enc = item.find("enclosure")
+                if enc is not None and "image" in (enc.get("type","") or ""):
+                    thumb = enc.get("url")
+            if not thumb:
+                for tag in ["content:encoded", "description"]:
+                    raw_el = item.find(tag, ns) or item.find(tag)
+                    if raw_el is not None and raw_el.text:
+                        thumb = _first_img(raw_el.text)
+                        if thumb:
+                            break
+            if not thumb:
+                # YouTube fallback: extract videoId from link
+                yt_match = _re.search(r"[?&]v=([A-Za-z0-9_-]{11})", link)
+                if yt_match:
+                    thumb = f"https://i.ytimg.com/vi/{yt_match.group(1)}/mqdefault.jpg"
+
+            # Excerpt — from <description> or <content:encoded>
+            excerpt = ""
+            for tag in ["description", "content:encoded", "atom:summary", "atom:content"]:
+                raw_el = item.find(tag, ns) or item.find(tag)
+                if raw_el is not None and raw_el.text:
+                    excerpt = _strip_html(raw_el.text)
+                    if excerpt:
+                        break
+
+            return {"title": title, "link": link, "date": date,
+                    "thumb": thumb, "excerpt": excerpt}
+
+        items = []
+        # Try RSS 2.0 items first, then Atom entries
+        raw_items = root.findall(".//item")
+        is_atom = False
+        if not raw_items:
+            raw_items = root.findall("atom:entry", ns)
+            is_atom = True
+
+        for item in raw_items[:20]:
+            items.append(_parse_item(item, is_atom=is_atom))
+
+        result = {"items": items}
+        _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e), "items": []}), 200
 
@@ -1698,6 +1847,132 @@ def api_tailscale():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# =============================================================================
+# SERVICE INTEGRATION — Radarr / Sonarr / Plex / Seerr
+# These proxy endpoints pull data from locally running ARR/Plex/Seerr services.
+# Each reads its URL + API key from the settings table (set in the UI Settings
+# tab).  If not configured they return {"configured": false} so the frontend
+# can prompt the user rather than silently failing.
+# =============================================================================
+
+def _get_setting(key, default=None):
+    """Read a single setting from SQLite; return default if missing."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+def _svc_get(base_url, path, api_key, api_key_header="X-Api-Key", timeout=5):
+    """GET a JSON endpoint on a local service; raises on HTTP/network error."""
+    url = base_url.rstrip('/') + path
+    headers = {api_key_header: api_key} if api_key else {}
+    r = requests.get(url, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+@app.route("/api/services/radarr/calendar")
+def api_radarr_calendar():
+    """Upcoming movies from Radarr (next 14 days)."""
+    url = _get_setting("radarr_url")
+    key = _get_setting("radarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        from datetime import date, timedelta
+        start = date.today().isoformat()
+        end   = (date.today() + timedelta(days=14)).isoformat()
+        data = _svc_get(url, f"/api/v3/calendar?start={start}&end={end}&unmonitored=false", key)
+        movies = [{"title": m.get("title"), "year": m.get("year"),
+                   "date": m.get("physicalRelease") or m.get("digitalRelease") or m.get("inCinemas", "")[:10],
+                   "poster": (next((i["remoteUrl"] for i in m.get("images",[]) if i.get("coverType")=="poster"), None)),
+                   "hasFile": m.get("hasFile", False)} for m in data]
+        return jsonify({"configured": True, "movies": movies[:10]})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "movies": []})
+
+@app.route("/api/services/sonarr/calendar")
+def api_sonarr_calendar():
+    """Upcoming episodes from Sonarr (next 7 days)."""
+    url = _get_setting("sonarr_url")
+    key = _get_setting("sonarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        from datetime import date, timedelta
+        start = date.today().isoformat()
+        end   = (date.today() + timedelta(days=7)).isoformat()
+        data = _svc_get(url, f"/api/v3/calendar?start={start}&end={end}&unmonitored=false&includeSeries=true", key)
+        episodes = [{"series": e.get("series",{}).get("title",""),
+                     "title": e.get("title",""),
+                     "season": e.get("seasonNumber"),
+                     "episode": e.get("episodeNumber"),
+                     "airDate": e.get("airDateUtc","")[:10],
+                     "hasFile": e.get("hasFile", False),
+                     "poster": (next((i["remoteUrl"] for i in e.get("series",{}).get("images",[]) if i.get("coverType")=="poster"), None))} for e in data]
+        return jsonify({"configured": True, "episodes": episodes[:10]})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "episodes": []})
+
+@app.route("/api/services/plex/sessions")
+def api_plex_sessions():
+    """Active Plex streams (Now Playing)."""
+    url   = _get_setting("plex_url")
+    token = _get_setting("plex_token")
+    if not url:
+        return jsonify({"configured": False})
+    if not token:
+        return jsonify({"configured": False})
+    try:
+        # Plex requires token as header — never call _svc_get with None for auth
+        full_url = url.rstrip('/') + "/status/sessions"
+        r = requests.get(full_url, headers={"X-Plex-Token": token or "", "Accept": "application/json"}, timeout=5)
+        r.raise_for_status()
+        payload = r.json()
+        sessions = []
+        for item in payload.get("MediaContainer", {}).get("Metadata", []):
+            pct = 0
+            if item.get("duration") and item.get("viewOffset"):
+                pct = round(item["viewOffset"] / item["duration"] * 100, 1)
+            sessions.append({
+                "title": item.get("grandparentTitle") or item.get("title",""),
+                "subtitle": item.get("title","") if item.get("grandparentTitle") else "",
+                "user": item.get("User",{}).get("title",""),
+                "player": item.get("Player",{}).get("product",""),
+                "progress": pct,
+                "state": item.get("Player",{}).get("state",""),
+                "thumb": item.get("thumb","")
+            })
+        return jsonify({"configured": True, "sessions": sessions})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "sessions": []})
+
+@app.route("/api/services/seerr/requests")
+def api_seerr_requests():
+    """Recent Seerr/Overseerr requests (latest 8)."""
+    url = _get_setting("seerr_url")
+    key = _get_setting("seerr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        data = _svc_get(url, "/api/v1/request?take=8&skip=0&sort=added", key)
+        reqs = []
+        for r in data.get("results", []):
+            media = r.get("media", {})
+            reqs.append({
+                "id": r.get("id"),
+                "type": media.get("mediaType",""),
+                "status": r.get("status"),          # 1=pending 2=approved 3=declined 4=available
+                "requestedBy": r.get("requestedBy",{}).get("displayName",""),
+                "title": media.get("tmdbId",""),     # resolved to title in frontend via cache
+                "poster": media.get("posterPath",""),
+                "createdAt": r.get("createdAt","")[:10]
+            })
+        return jsonify({"configured": True, "requests": reqs})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "requests": []})
+
 @app.route("/api/home")
 def api_home():
     """Home tab data: categorized apps with status and ports."""
@@ -1874,6 +2149,7 @@ _HTML_SPA = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
 <style>
 /* =====================================================================
    ARRHUB — PegaProx-inspired dark dashboard
@@ -1904,11 +2180,127 @@ _HTML_SPA = r"""<!DOCTYPE html>
   --cyan:     #39d353;
   --sb-w:     260px;
   --top-h:    56px;
+  --ctr-card-min: 280px;
   --r:        8px;
   --mono:     'JetBrains Mono',monospace;
   --ui:       'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
   --transition: .15s ease;
 }
+/* ── Themes ─────────────────────────────────────────────────────────── */
+[data-theme="light"]{
+  --bg:#f6f8fa;--bg2:#ffffff;--bg3:#f0f2f5;
+  --surface:#e9ecef;--surface2:#dee2e6;
+  --border:#d0d7de;--border2:#b8bfc7;
+  --text:#1f2328;--text2:#656d76;--text3:#9198a1;
+}
+[data-theme="nord"]{
+  --bg:#2e3440;--bg2:#3b4252;--bg3:#434c5e;
+  --surface:#434c5e;--surface2:#4c566a;
+  --border:#4c566a;--border2:#616e88;
+  --text:#eceff4;--text2:#d8dee9;--text3:#81a1c1;
+  --blue:#88c0d0;--blue2:rgba(136,192,208,.15);
+  --green:#a3be8c;--green2:rgba(163,190,140,.15);
+  --purple:#b48ead;--purple2:rgba(180,142,173,.15);
+}
+[data-theme="catppuccin"]{
+  --bg:#1e1e2e;--bg2:#181825;--bg3:#313244;
+  --surface:#313244;--surface2:#45475a;
+  --border:#45475a;--border2:#585b70;
+  --text:#cdd6f4;--text2:#a6adc8;--text3:#7f849c;
+  --blue:#89b4fa;--blue2:rgba(137,180,250,.15);
+  --green:#a6e3a1;--green2:rgba(166,227,161,.15);
+  --purple:#cba6f7;--purple2:rgba(203,166,247,.15);
+}
+[data-theme="dracula"]{
+  --bg:#282a36;--bg2:#1e1f29;--bg3:#343746;
+  --surface:#343746;--surface2:#44475a;
+  --border:#44475a;--border2:#6272a4;
+  --text:#f8f8f2;--text2:#d0d0e0;--text3:#6272a4;
+  --blue:#8be9fd;--blue2:rgba(139,233,253,.15);
+  --green:#50fa7b;--green2:rgba(80,250,123,.15);
+  --purple:#bd93f9;--purple2:rgba(189,147,249,.15);
+}
+/* ── Accent color overrides ─── */
+[data-accent="purple"]{--blue:#bc8cff;--blue2:rgba(188,140,255,.15);}
+[data-accent="green"]{--blue:#3fb950;--blue2:rgba(63,185,80,.15);}
+[data-accent="orange"]{--blue:#f78166;--blue2:rgba(247,129,102,.15);}
+[data-accent="pink"]{--blue:#f778ba;--blue2:rgba(247,120,186,.15);}
+[data-accent="cyan"]{--blue:#56d9e0;--blue2:rgba(86,217,224,.15);}
+
+/* ── Background image layer ─────────────────────────────────────────── */
+#bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
+#app{position:relative;z-index:1;}
+
+/* ── GridStack Dashboard Widgets ────────────────────────────────────── */
+.grid-stack{width:100%;}
+.grid-stack-item-content{
+  overflow:hidden;
+  height:100%;
+  border-radius:var(--r);
+  position:relative;
+}
+.grid-stack-item-content .panel{
+  margin:0;
+  height:100%;
+  border-radius:var(--r);
+  overflow:hidden;
+}
+/* Drag handle shown when in edit mode */
+.gs-editing .grid-stack-item>.grid-stack-item-content::before{
+  content:'⠿  drag to rearrange · resize from corner';
+  display:block;
+  padding:4px 10px;
+  font-size:10px;
+  color:var(--text3);
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  border-radius:var(--r) var(--r) 0 0;
+  cursor:grab;
+  user-select:none;
+  letter-spacing:.03em;
+}
+.gs-editing .grid-stack-item>.grid-stack-item-content .panel{
+  border-radius:0 0 var(--r) var(--r);
+}
+.gs-editing .grid-stack-item{outline:1px dashed var(--border2);}
+/* Widget remove button (shown in edit mode) */
+.gs-editing .widget-remove-btn{display:flex!important;}
+.widget-remove-btn{
+  display:none;position:absolute;top:4px;right:4px;z-index:10;
+  width:20px;height:20px;border-radius:50%;border:none;
+  background:var(--red2);color:var(--red);cursor:pointer;
+  font-size:12px;line-height:1;align-items:center;justify-content:center;
+  transition:background .15s;
+}
+.widget-remove-btn:hover{background:var(--red)!important;color:#fff!important;}
+/* Service launcher tiles */
+.launcher-tile{
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:10px 14px;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;text-decoration:none;color:var(--text);
+  min-width:80px;transition:background .15s,border-color .15s;cursor:pointer;
+}
+.launcher-tile:hover{background:var(--surface2);border-color:var(--blue);}
+.launcher-tile-icon{font-size:22px;line-height:1;}
+.launcher-tile-name{font-size:11px;font-weight:600;color:var(--text);text-align:center;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.launcher-tile-port{font-size:10px;color:var(--text3);font-family:var(--mono);}
+/* Widget palette cards */
+.widget-palette-card{
+  display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 8px;
+  background:var(--surface);border:2px solid var(--border);border-radius:8px;
+  cursor:pointer;transition:border-color .15s,background .15s;text-align:center;
+}
+.widget-palette-card:hover{border-color:var(--blue);background:var(--surface2);}
+.widget-palette-card.active{border-color:var(--green);background:var(--green2);}
+.widget-palette-card.active:hover{border-color:var(--red);background:var(--red2);}
+.widget-palette-card .wpc-icon{font-size:26px;line-height:1;}
+.widget-palette-card .wpc-name{font-size:11px;font-weight:600;color:var(--text);}
+.widget-palette-card .wpc-status{font-size:10px;color:var(--text3);margin-top:2px;}
+/* Theme button active state */
+.theme-btn.active{background:var(--blue2)!important;color:var(--blue)!important;border-color:var(--blue)!important;}
+/* Accent swatch selected ring */
+.accent-swatch.active{outline:3px solid var(--text);outline-offset:2px;}
+
 *{margin:0;padding:0;box-sizing:border-box;}
 html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-family:var(--ui);font-size:14px;line-height:1.5;overflow:hidden;}
 
@@ -2017,11 +2409,24 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
   border-radius:var(--r);padding:14px 16px;
   display:flex;flex-direction:column;gap:6px;
   transition:border-color var(--transition);
+  container-type:inline-size;overflow:hidden;min-height:0;
 }
 .stat-card:hover{border-color:var(--border2);}
 .stat-card-icon{font-size:18px;margin-bottom:2px;}
 .stat-card-val{font-size:22px;font-weight:700;color:var(--text);font-family:var(--mono);}
 .stat-card-label{font-size:11px;color:var(--text2);}
+/* Scale stat-card content as widget shrinks */
+@container (max-width: 130px){
+  .stat-card-val{font-size:16px;}
+  .stat-card-label{font-size:9px;}
+  .stat-card-icon{font-size:14px;}
+  .stat-card{padding:8px 10px;gap:3px;}
+}
+@container (max-width: 90px){
+  .stat-card-val{font-size:12px;}
+  .stat-card-label{font-size:8px;}
+  .stat-card{padding:5px 7px;gap:2px;}
+}
 
 /* ── Progress bar ── */
 .pbar-wrap{width:100%;height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;}
@@ -2051,7 +2456,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .metric-badge{font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600;}
 
 /* ── Container grid ── */
-.container-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;}
+.container-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--ctr-card-min,280px),1fr));gap:14px;}
 .ctr-card{
   background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
   overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition);
@@ -2328,6 +2733,47 @@ body.sse-disconnected #app{padding-top:38px;}
 #hamburger:hover{background:var(--surface2);color:var(--text);}
 #hamburger svg{width:20px;height:20px;}
 
+/* ── Desktop sidebar collapse toggle ── */
+#sb-collapse-btn{
+  display:flex;background:none;border:none;color:var(--text2);cursor:pointer;
+  padding:4px 6px;border-radius:6px;align-items:center;justify-content:center;flex-shrink:0;
+}
+#sb-collapse-btn:hover{background:var(--surface2);color:var(--text);}
+#sb-collapse-btn svg{width:18px;height:18px;}
+@media(max-width:900px){#sb-collapse-btn{display:none;}}
+
+/* Collapsed sidebar state */
+#app.sb-collapsed #sidebar{width:60px;min-width:60px;}
+#app.sb-collapsed .sb-title,#app.sb-collapsed .sb-version,
+#app.sb-collapsed .sb-section-label,#app.sb-collapsed .sb-badge{display:none!important;}
+#app.sb-collapsed .sb-item{justify-content:center;padding:8px 0;}
+#app.sb-collapsed .sb-item>span:not(.sb-icon){display:none;}
+#app.sb-collapsed .sb-brand{justify-content:center;padding:12px 0;}
+#app.sb-collapsed .sb-logo{margin:0;}
+#app.sb-collapsed #sidebar .sb-section{padding:6px 4px;}
+
+/* Card size slider */
+.ctr-size-slider{accent-color:var(--blue);width:80px;cursor:pointer;vertical-align:middle;}
+
+/* Port map accordion */
+.pm-group{border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:8px;}
+.pm-group-hdr{
+  display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;
+  background:var(--bg2);transition:background var(--transition);user-select:none;
+}
+.pm-group-hdr:hover{background:var(--surface);}
+.pm-group-body{border-top:1px solid var(--border);}
+.pm-group-body table{width:100%;border-collapse:collapse;}
+.pm-group-chevron{margin-left:auto;transition:transform .2s;font-size:10px;color:var(--text3);}
+.pm-group.collapsed .pm-group-chevron{transform:rotate(-90deg);}
+.pm-group.collapsed .pm-group-body{display:none;}
+
+/* Stack manager cards */
+.stack-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:10px;}
+.stack-card-hdr{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.stack-card-name{font-weight:600;font-size:14px;flex:1;}
+.stack-card-actions{display:flex;gap:6px;flex-wrap:wrap;}
+
 /* Mobile bottom nav — hidden on desktop */
 #bottom-nav{
   display:none;
@@ -2376,12 +2822,30 @@ body.sse-disconnected #app{padding-top:38px;}
   .settings-grid{grid-template-columns:1fr;}
   #topbar .tb-stat:nth-child(4){display:none;} /* hide Load stat */
   .topbar-hostname{display:none;}
+  /* Port map: full width on small screens */
+  .pm-group{margin-bottom:6px;}
+  /* Stack manager: single column */
+  #stack-list{grid-template-columns:1fr!important;}
+  /* RSS view tabs: wrap on very small screens */
+  #tab-rss .section-header{flex-wrap:wrap;gap:8px;}
+  /* Containers section-header: wrap */
+  #tab-containers .section-header{flex-direction:column;align-items:flex-start;gap:8px;}
+  /* Disk list: 1 column on tiny screens */
+  #disk-list{grid-template-columns:1fr!important;}
+  /* Network chart canvases: respect container width */
+  #net-tx-canvas,#net-rx-canvas{max-width:100%;}
 }
 
 /* Touch-friendly minimum heights */
 @media(max-width:900px){
   .btn,.filter-pill,.tab-btn{min-height:40px;}
   .bn-item{min-height:40px;}
+  /* Live feeds / IPTV: don't use full-page iframes on mobile */
+  #rss-live-view iframe{height:220px;}
+  /* GridStack: disable drag on mobile (too difficult on touch) */
+  .grid-stack.gs-editing .grid-stack-item > .ui-resizable-handle{touch-action:none;}
+  /* HLS video players: full width */
+  #rss-iptv-view video{height:180px!important;}
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -2391,6 +2855,17 @@ body.sse-disconnected #app{padding-top:38px;}
   0%{background-position:-400px 0;}
   100%{background-position:400px 0;}
 }
+/* ── RSS collapsible columns ── */
+.rss-col.collapsed .rss-items{display:none;}
+.rss-col.collapsed .rss-feed-tabs{margin-bottom:0;}
+.rss-col-hdr{cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;}
+.rss-col-hdr:hover .rss-col-chevron{color:var(--blue);}
+.rss-col-chevron{font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px;transition:color var(--transition);}
+.rss-col-count{background:var(--surface2);border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;}
+/* Expand/collapse all controls */
+#rss-all-controls{display:none;}
+#rss-all-controls.visible{display:flex;}
+
 .skeleton{
   background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
   background-size:800px 100%;
@@ -2511,12 +2986,15 @@ body.sse-disconnected #app{padding-top:38px;}
 
 <!-- ══ SSE DISCONNECTED BANNER ══ -->
 <div id="sse-banner">
-  ⚠ Live metrics disconnected — Reconnecting…
-  <button onclick="retrySSE()">Retry</button>
+  ⚠ <span id="sse-banner-msg">Live metrics disconnected — Reconnecting…</span>
+  <button onclick="retrySSE()">Retry Now</button>
 </div>
 
 <!-- ══ SIDEBAR OVERLAY (mobile) ══ -->
 <div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<!-- Background image layer (below everything, z-index:0) -->
+<div id="bg-layer"></div>
 
 <div id="app">
 
@@ -2528,7 +3006,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.5.0</div>
+      <div class="sb-version">v3.10.0</div>
     </div>
   </div>
 
@@ -2543,13 +3021,9 @@ body.sse-disconnected #app{padding-top:38px;}
       Containers
       <span class="sb-badge" id="sb-ctr-count">0</span>
     </div>
-    <div class="sb-item" onclick="showTab('storage',this)">
+    <div class="sb-item" onclick="showTab('stornet',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-      Storage
-    </div>
-    <div class="sb-item" onclick="showTab('network',this)">
-      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"/></svg>
-      Network
+      Storage &amp; Network
     </div>
     <div class="sb-item" onclick="showTab('ports',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -2633,6 +3107,10 @@ body.sse-disconnected #app{padding-top:38px;}
     <button id="hamburger" onclick="toggleSidebar()" aria-label="Menu">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
+    <!-- Sidebar collapse for desktop -->
+    <button id="sb-collapse-btn" onclick="toggleSidebarDesktop()" aria-label="Collapse sidebar" title="Collapse sidebar">
+      <svg id="sb-collapse-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/></svg>
+    </button>
     <div class="tb-stat">
       <span class="tb-stat-label">Containers</span>
       <span class="tb-stat-val green" id="tb-running">—</span>
@@ -2677,6 +3155,20 @@ body.sse-disconnected #app{padding-top:38px;}
         <div>
           <div class="section-title">System Overview</div>
           <div class="section-sub" id="ov-hostname">Loading...</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button id="ov-add-btn" class="btn" onclick="showWidgetPalette()" style="display:none;font-size:11px;padding:4px 12px;gap:4px">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Add Widget
+          </button>
+          <button id="ov-reset-btn" class="btn" onclick="resetGridLayout()" style="font-size:11px;padding:4px 12px;gap:4px;display:none">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Reset
+          </button>
+          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Edit Layout
+          </button>
         </div>
       </div>
 
@@ -2740,98 +3232,166 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
       </div>
 
-      <!-- Quick stats -->
-      <div class="panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-          System Info
-        </div>
-        <div class="stat-grid" id="sys-info-grid">
-          <div class="stat-card"><div class="stat-card-val" id="si-os">—</div><div class="stat-card-label">OS</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="si-kernel">—</div><div class="stat-card-label">Kernel</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="si-arch">—</div><div class="stat-card-label">Architecture</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="si-python">—</div><div class="stat-card-label">Python</div></div>
-        </div>
-      </div>
+      <!-- ── Overview GridStack Dashboard ─────────────────────────────────
+           Click "Edit Layout" in the header to enter drag-and-drop mode.
+           Positions are saved to localStorage (key: arrhub_grid).        -->
+      <div class="grid-stack" id="ov-grid">
 
-      <!-- Weather Widget -->
-      <div class="panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
-          Weather
-        </div>
-        <div id="weather-widget" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="stat-card" style="grid-column:1/-1">
-            <div style="display:flex;align-items:center;gap:12px">
-              <div id="weather-icon" style="font-size:32px">🌤️</div>
-              <div>
-                <div id="weather-temp" style="font-size:24px;font-weight:600;color:var(--text1)">—</div>
-                <div id="weather-desc" style="font-size:12px;color:var(--text3)">Loading weather...</div>
-                <div id="weather-location" style="font-size:11px;color:var(--text3)"></div>
+        <!-- ① System Info widget  (default: left half, row 0) -->
+        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Remove widget">✕</button>
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                System Info
+              </div>
+              <div class="stat-grid" id="sys-info-grid">
+                <div class="stat-card"><div class="stat-card-val" id="si-os">—</div><div class="stat-card-label">OS</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="si-kernel">—</div><div class="stat-card-label">Kernel</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="si-arch">—</div><div class="stat-card-label">Architecture</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="si-python">—</div><div class="stat-card-label">Python</div></div>
               </div>
             </div>
           </div>
-          <div class="stat-card">
-            <div class="stat-card-val" id="weather-humidity">—</div>
-            <div class="stat-card-label">Humidity</div>
+        </div>
+
+        <!-- ② Weather widget  (default: right half, row 0) -->
+        <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('weather')" title="Remove widget">✕</button>
+            <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:hidden">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
+                Weather
+                <span id="weather-location" style="margin-left:8px;font-weight:400;font-size:11px;color:var(--text3)"></span>
+              </div>
+              <div id="weather-widget" style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:10px;align-items:center">
+                <div style="display:flex;align-items:center;gap:10px;padding:4px 12px 4px 0;border-right:1px solid var(--border)">
+                  <div id="weather-icon" style="font-size:36px;line-height:1">🌤️</div>
+                  <div>
+                    <div id="weather-temp" style="font-size:26px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
+                    <div id="weather-desc" style="font-size:11px;color:var(--text3);margin-top:2px">Loading…</div>
+                  </div>
+                </div>
+                <div class="stat-card"><div class="stat-card-val" id="weather-humidity">—</div><div class="stat-card-label">Humidity</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="weather-wind">—</div><div class="stat-card-label">Wind</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="weather-feels">—</div><div class="stat-card-label">Feels Like</div></div>
+              </div>
+              <div id="weather-forecast" style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;padding-bottom:4px"></div>
+            </div>
           </div>
-          <div class="stat-card">
-            <div class="stat-card-val" id="weather-wind">—</div>
-            <div class="stat-card-label">Wind</div>
+        </div>
+
+        <!-- ③ Service Cards row  (default: full width, row 4) -->
+        <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
+          <div class="grid-stack-item-content" style="overflow:hidden">
+            <button class="widget-remove-btn" onclick="removeWidget('services')" title="Remove widget">✕</button>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box" id="service-cards-row">
+              <div class="panel" style="margin:0" id="radarr-card">
+                <div class="panel-title">🎥 Radarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span></div>
+                <div id="radarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+              <div class="panel" style="margin:0" id="sonarr-card">
+                <div class="panel-title">📺 Sonarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 7 days</span></div>
+                <div id="sonarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+              <div class="panel" style="margin:0" id="plex-card">
+                <div class="panel-title">▶ Plex — Now Playing<span id="plex-stream-count" style="margin-left:auto;background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600"></span></div>
+                <div id="plex-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+              <div class="panel" style="margin:0" id="seerr-card">
+                <div class="panel-title">🎬 Seerr — Requests<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Recent</span></div>
+                <div id="seerr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Docker Info -->
-      <div class="panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-          Docker
+        <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 9) -->
+        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="9" gs-w="12" gs-h="3">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Remove widget">✕</button>
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                Docker &amp; Network
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
+                <!-- Docker stats -->
+                <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Docker Disk</div></div>
+                <!-- Network I/O stats -->
+                <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Net ↑ Sent</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Net ↓ Recv</div></div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-          <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Disk Used</div></div>
-        </div>
-      </div>
 
-      <!-- Recent Logs Excerpt -->
-      <div class="panel">
-        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-          <span>
-            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-            Recent Logs
-          </span>
-          <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('logs',null)">View All</button>
+        <!-- ⑥ Recent Logs  (default: left 4 cols, row 12) -->
+        <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="12" gs-w="4" gs-h="4">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('logs')" title="Remove widget">✕</button>
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+                <span>
+                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  Recent Logs
+                </span>
+                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('logs',null)">View All</button>
+              </div>
+              <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
+            </div>
+          </div>
         </div>
-        <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:120px;overflow:hidden;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
-      </div>
 
-      <!-- Containers Live Panel -->
-      <div class="panel">
-        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-          <span style="display:flex;align-items:center;gap:6px">
-            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-            Containers
-            <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
-          </span>
-          <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">View All</button>
+        <!-- ⑦ Containers Live  (default: right 8 cols, row 12) -->
+        <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="12" gs-w="8" gs-h="4">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('ctrs')" title="Remove widget">✕</button>
+            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+                <span style="display:flex;align-items:center;gap:6px">
+                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                  Containers
+                  <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
+                </span>
+                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">View All</button>
+              </div>
+              <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+                <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
-          <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
-        </div>
-      </div>
 
-      <!-- Network I/O Quick Stats -->
-      <div class="panel">
-        <div class="panel-title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
-          Network I/O
+        <!-- ⑧ Service Launcher  (default: full width, row 16) -->
+        <div class="grid-stack-item" gs-id="launcher" gs-x="0" gs-y="16" gs-w="12" gs-h="3">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('launcher')" title="Remove widget">✕</button>
+            <div class="panel" style="margin:0;height:100%;overflow:auto">
+              <div class="panel-title">
+                🚀 Service Launcher
+                <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Click any tile to open</span>
+              </div>
+              <div id="launcher-tiles" style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 0"></div>
+            </div>
+          </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Total Sent</div></div>
-          <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Total Received</div></div>
+
+      </div><!-- /ov-grid -->
+
+      <!-- Widget Palette Modal -->
+      <div id="widget-palette-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;width:520px;max-width:95vw;max-height:80vh;overflow:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <div style="font-size:14px;font-weight:600;color:var(--text)">Add / Remove Widgets</div>
+            <button class="btn" onclick="document.getElementById('widget-palette-modal').style.display='none'" style="padding:4px 12px">✕ Close</button>
+          </div>
+          <div id="widget-palette-body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px"></div>
         </div>
       </div>
     </div>
@@ -2851,6 +3411,11 @@ body.sse-disconnected #app{padding-top:38px;}
               Table
             </button>
           </div>
+          <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)">
+            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"/></svg>
+            Size
+            <input type="range" class="ctr-size-slider" id="ctr-size-range" min="200" max="500" value="280" oninput="setCtrCardSize(this.value)">
+          </label>
           <button class="btn-primary" onclick="loadContainers()">
             <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Refresh
@@ -2890,20 +3455,35 @@ body.sse-disconnected #app{padding-top:38px;}
     </div>
 
     <!-- ── STORAGE ── -->
-    <div id="tab-storage" class="tab-panel">
-      <div class="section-header"><div class="section-title">Storage</div></div>
-      <div class="panel">
-        <div class="panel-title">Filesystems</div>
-        <div id="disk-list"></div>
+    <div id="tab-stornet" class="tab-panel">
+      <div class="section-header">
+        <div>
+          <div class="section-title">💾 Storage &amp; 📡 Network</div>
+          <div class="section-sub">Disk usage and live bandwidth in one view</div>
+        </div>
+        <button class="btn-primary" onclick="loadStorage();loadNetwork()">↺ Refresh</button>
       </div>
-    </div>
-
-    <!-- ── NETWORK ── -->
-    <div id="tab-network" class="tab-panel">
-      <div class="section-header"><div class="section-title">Network</div></div>
+      <!-- ── Storage ── -->
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Disk Usage</div>
+      <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:18px"></div>
+      <!-- ── Network ── -->
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Network</div>
+      <div class="panel" style="margin-bottom:14px;padding:10px 14px">
+        <div class="panel-title" style="margin-bottom:8px">📈 Live Bandwidth</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↑ TX (Upload)</div>
+            <canvas id="net-tx-chart" height="55"></canvas>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↓ RX (Download)</div>
+            <canvas id="net-rx-chart" height="55"></canvas>
+          </div>
+        </div>
+      </div>
       <div class="panel">
         <div class="panel-title">Interfaces</div>
-        <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Status</th></tr></thead>
+        <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Rate ↑/↓</th><th>Status</th></tr></thead>
         <tbody id="net-table"></tbody></table>
       </div>
     </div>
@@ -2912,25 +3492,14 @@ body.sse-disconnected #app{padding-top:38px;}
     <div id="tab-ports" class="tab-panel">
       <div class="section-header">
         <div class="section-title">Port Assignments</div>
-        <button class="btn-primary" onclick="loadPortMap()">Refresh</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn" onclick="pmExpandAll()">⊞ All</button>
+          <button class="btn" onclick="pmCollapseAll()">⊟ All</button>
+          <button class="btn-primary" onclick="loadPortMap()">↺ Refresh</button>
+        </div>
       </div>
       <div id="port-summary" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap"></div>
-      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
-        <table style="width:100%;border-collapse:collapse">
-          <thead>
-            <tr style="background:rgba(88,166,255,0.08);border-bottom:1px solid var(--border)">
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Host Port</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Container</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Container Port</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Status</th>
-              <th style="padding:10px 14px;text-align:left;font-weight:600;font-size:12px;text-transform:uppercase;color:var(--blue)">Quick Link</th>
-            </tr>
-          </thead>
-          <tbody id="port-table-body">
-            <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Click Refresh to load port assignments</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <div id="port-accordion"><div class="empty"><div class="empty-icon">🔌</div><div class="empty-text">Click Refresh to load port assignments</div></div></div>
     </div>
 
     <!-- ── HARDWARE ── -->
@@ -2990,12 +3559,12 @@ body.sse-disconnected #app{padding-top:38px;}
 
     <!-- ── STACK ── -->
     <div id="tab-stack" class="tab-panel">
-      <div class="section-header"><div class="section-title">Stack Manager</div></div>
-      <div class="panel">
-        <div class="panel-title">Compose Stacks</div>
-        <div id="stacks-list"><div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Loading stacks...</div></div></div>
+      <div class="section-header">
+        <div class="section-title">Stack Manager</div>
+        <button class="btn-primary" onclick="loadStackManager()">↺ Refresh</button>
       </div>
-      <div class="panel">
+      <div id="stacks-list"><div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Loading stacks...</div></div></div>
+      <div class="panel" style="margin-top:16px">
         <div class="panel-title">Deploy History</div>
         <div id="deploy-history"></div>
       </div>
@@ -3033,9 +3602,79 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSettings()">Save Settings</button>
       </div>
+      <!-- Service Integrations — API keys for Overview cards -->
+      <div class="panel">
+        <div class="panel-title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Service Integrations
+        </div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Fill in API details to enable Overview cards for Radarr, Sonarr, Plex, and Seerr.</div>
+        <div class="settings-grid">
+          <div class="field"><label>Radarr URL</label><input type="text" id="svc-radarr-url" placeholder="http://localhost:7878"><div class="field-hint">e.g. http://192.168.1.x:7878</div></div>
+          <div class="field"><label>Radarr API Key</label><input type="password" id="svc-radarr-key" placeholder="•••••••••••"></div>
+          <div class="field"><label>Sonarr URL</label><input type="text" id="svc-sonarr-url" placeholder="http://localhost:8989"></div>
+          <div class="field"><label>Sonarr API Key</label><input type="password" id="svc-sonarr-key" placeholder="•••••••••••"></div>
+          <div class="field"><label>Plex URL</label><input type="text" id="svc-plex-url" placeholder="http://localhost:32400"></div>
+          <div class="field"><label>Plex Token</label><input type="password" id="svc-plex-token" placeholder="•••••••••••"><div class="field-hint">Settings → Troubleshooting → X-Plex-Token</div></div>
+          <div class="field"><label>Seerr/Overseerr URL</label><input type="text" id="svc-seerr-url" placeholder="http://localhost:5055"></div>
+          <div class="field"><label>Seerr API Key</label><input type="password" id="svc-seerr-key" placeholder="•••••••••••"></div>
+        </div>
+        <button class="btn-primary" style="margin-top:16px" onclick="saveSvcSettings()">Save Integrations</button>
+      </div>
+
+      <!-- ── Appearance ── -->
+      <div class="panel">
+        <div class="panel-title">🎨 Appearance</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:14px">Theme, accent color, and background. Saved to localStorage — persists across sessions.</div>
+
+        <!-- Theme buttons -->
+        <div class="field">
+          <label style="margin-bottom:6px;display:block">Theme</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="theme-btn" data-t="dark"       onclick="applyTheme('dark')"       style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🌑 Dark</button>
+            <button class="theme-btn" data-t="light"      onclick="applyTheme('light')"      style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">☀️ Light</button>
+            <button class="theme-btn" data-t="nord"       onclick="applyTheme('nord')"       style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🧊 Nord</button>
+            <button class="theme-btn" data-t="catppuccin" onclick="applyTheme('catppuccin')" style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🐱 Catppuccin</button>
+            <button class="theme-btn" data-t="dracula"    onclick="applyTheme('dracula')"    style="padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px">🧛 Dracula</button>
+          </div>
+        </div>
+
+        <!-- Accent color swatches -->
+        <div class="field" style="margin-top:14px">
+          <label style="margin-bottom:6px;display:block">Accent Color</label>
+          <div style="display:flex;gap:10px;align-items:center">
+            <button class="accent-swatch" data-a="blue"   onclick="applyAccent('blue')"   title="Blue"   style="width:30px;height:30px;border-radius:50%;background:#388bfd;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="purple" onclick="applyAccent('purple')" title="Purple" style="width:30px;height:30px;border-radius:50%;background:#bc8cff;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="green"  onclick="applyAccent('green')"  title="Green"  style="width:30px;height:30px;border-radius:50%;background:#3fb950;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="orange" onclick="applyAccent('orange')" title="Orange" style="width:30px;height:30px;border-radius:50%;background:#f78166;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="pink"   onclick="applyAccent('pink')"   title="Pink"   style="width:30px;height:30px;border-radius:50%;background:#f778ba;border:2px solid transparent;cursor:pointer"></button>
+            <button class="accent-swatch" data-a="cyan"   onclick="applyAccent('cyan')"   title="Cyan"   style="width:30px;height:30px;border-radius:50%;background:#56d9e0;border:2px solid transparent;cursor:pointer"></button>
+          </div>
+        </div>
+
+        <!-- Background image -->
+        <div class="field" style="margin-top:14px">
+          <label>Background Image URL</label>
+          <input type="text" id="bg-url-input" placeholder="https://example.com/wallpaper.jpg or https://unsplash.com/photos/...">
+          <div class="field-hint">Paste any image URL or an Unsplash photo page URL. Leave blank for solid color.</div>
+        </div>
+        <div class="field">
+          <label>Blur: <span id="bg-blur-val">4</span>px</label>
+          <input type="range" id="bg-blur-input" min="0" max="20" value="4" oninput="document.getElementById('bg-blur-val').textContent=this.value" style="width:100%;accent-color:var(--blue)">
+        </div>
+        <div class="field">
+          <label>Overlay Darkness: <span id="bg-overlay-val">70</span>%</label>
+          <input type="range" id="bg-overlay-input" min="0" max="95" value="70" oninput="document.getElementById('bg-overlay-val').textContent=this.value" style="width:100%;accent-color:var(--blue)">
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn-primary" onclick="saveAppearance()">Apply Background</button>
+          <button class="btn" onclick="resetAppearance()">Reset All</button>
+        </div>
+      </div>
+
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.5.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.10.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -3049,6 +3688,11 @@ body.sse-disconnected #app{padding-top:38px;}
         <div style="display:flex;gap:8px;align-items:center">
           <button class="view-btn active" id="rss-view-feeds" onclick="setRSSView('feeds')">📰 Feeds</button>
           <button class="view-btn" id="rss-view-live" onclick="setRSSView('live')">📺 Live News</button>
+          <button class="view-btn" id="rss-view-iptv" onclick="setRSSView('iptv')">🎬 Free TV</button>
+          <div id="rss-all-controls" style="gap:6px;align-items:center">
+            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssExpandAll()">⊞ Expand All</button>
+            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssCollapseAll()">⊟ Collapse All</button>
+          </div>
           <button class="btn-primary" onclick="loadRSSFeeds()">↺ Refresh</button>
         </div>
       </div>
@@ -3061,25 +3705,190 @@ body.sse-disconnected #app{padding-top:38px;}
         <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px"></div>
       </div>
 
-      <!-- Live News iframes view -->
+      <!-- Live News view — confirmed-working embeds + quick-launch cards for the rest -->
+      <!-- YouTube's live_stream?channel= embed only works when the channel explicitly
+           allows embedding. Al Jazeera and France 24 allow it; others often block it.
+           For blocked channels, quick-launch cards open the stream in a new tab. -->
       <div id="rss-live-view" style="display:none">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:12px">
+          📺 Live news streams — confirmed embeds play inline; others open YouTube in a new tab.
+        </div>
+
+        <!-- ── Confirmed embeds ──────────────────────────────────────────── -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin-bottom:20px">
           <div class="panel">
-            <div class="panel-title">🇬🇧 BBC News Live</div>
-            <iframe src="https://www.bbc.com/news" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            <div class="panel-title">🌍 Al Jazeera English</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCNye-wNBqNL5ZzHSJj3l8Bg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <a href="https://www.youtube.com/@aljazeeraenglish/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
           </div>
           <div class="panel">
-            <div class="panel-title">🌍 Al Jazeera Live</div>
-            <iframe src="https://www.aljazeera.com" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            <div class="panel-title">🇫🇷 France 24 English</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCQfwfsi5VrQ8yKZ-UGuIzgA&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <a href="https://www.youtube.com/@FRANCE24English/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
           </div>
           <div class="panel">
-            <div class="panel-title">🏆 Sky Sports</div>
-            <iframe src="https://www.skysports.com" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+            <div class="panel-title">🇩🇪 DW News</div>
+            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCknLrEdhRCp1aegoMqRaCZg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+            <a href="https://www.youtube.com/@dwnews/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
           </div>
-          <div class="panel">
-            <div class="panel-title">📊 Bloomberg Markets</div>
-            <iframe src="https://www.bloomberg.com/markets" style="width:100%;height:500px;border:none;border-radius:6px;background:#000" loading="lazy" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+        </div>
+
+        <!-- ── Quick-launch cards (open YouTube live in new tab) ─────────── -->
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <span>⚡ More Live Streams</span>
+          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens YouTube — some may block embedded playback)</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:20px">
+          <a href="https://www.youtube.com/@BBCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🇬🇧</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">BBC World News</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@SkyNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🌐</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Sky News</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@Bloomberg/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">📊</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Bloomberg</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@ABCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🇺🇸</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">ABC News Live</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@euronews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🇪🇺</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Euronews</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@NHKWorldNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🌏</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">NHK World</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@wionews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🌍</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">WION</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@CBSnews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🎙️</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">CBS News</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+          <a href="https://www.youtube.com/@lofimusic/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:28px">🎵</div>
+            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Lofi Girl</div>
+            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
+          </a>
+        </div>
+      </div>
+
+      <!-- ─────────────────────────────────────────────────────────────────────
+           Free TV view — dlstreams.top channel browser + popular quick-launch
+           cards + custom M3U8 player + free streaming links
+           ───────────────────────────────────────────────────────────────────── -->
+      <div id="rss-iptv-view" style="display:none">
+
+        <!-- ① dlstreams.top embedded channel browser -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--text)">📡 DaddyLive — 1000+ Free Channels</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Browse and click any channel to open its stream in the player below</div>
           </div>
+          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="btn" style="font-size:11px;padding:4px 12px;text-decoration:none">
+            ↗ Open in New Tab
+          </a>
+        </div>
+
+        <!-- Channel browser iframe — embed the 24/7 listing page -->
+        <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px">
+          <iframe id="dlstreams-browser"
+            src="https://dlstreams.top/24-7-channels.php"
+            style="width:100%;height:480px;border:none;background:var(--bg2)"
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
+            referrerpolicy="no-referrer"
+            loading="lazy"
+            title="DaddyLive Channel Browser">
+          </iframe>
+          <!-- Shown only if iframe is blocked by X-Frame-Options -->
+          <noscript><div style="padding:20px;text-align:center;color:var(--text3)">Enable JavaScript or <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" style="color:var(--blue)">open site directly</a></div></noscript>
+        </div>
+
+        <!-- ② Popular channel quick-launch cards (open watch page in new tab) -->
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <span>⚡ Quick Launch</span>
+          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens channel in new tab)</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:20px">
+          <a href="https://dlstreams.top/watch.php?id=51"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇺🇸</div><div style="font-weight:600;color:var(--text);font-size:12px">ABC USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=44"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏈</div><div style="font-weight:600;color:var(--text);font-size:12px">ESPN USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=35"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">⚽</div><div style="font-weight:600;color:var(--text);font-size:12px">Sky Sports</div></a>
+          <a href="https://dlstreams.top/watch.php?id=61"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🌍</div><div style="font-weight:600;color:var(--text);font-size:12px">beIN Sports</div></a>
+          <a href="https://dlstreams.top/watch.php?id=72"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📺</div><div style="font-weight:600;color:var(--text);font-size:12px">CNN USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=57"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📰</div><div style="font-weight:600;color:var(--text);font-size:12px">Fox News</div></a>
+          <a href="https://dlstreams.top/watch.php?id=78"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇬🇧</div><div style="font-weight:600;color:var(--text);font-size:12px">BBC News</div></a>
+          <a href="https://dlstreams.top/watch.php?id=97"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏀</div><div style="font-weight:600;color:var(--text);font-size:12px">NBA TV</div></a>
+          <a href="https://dlstreams.top/watch.php?id=68"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🎬</div><div style="font-weight:600;color:var(--text);font-size:12px">TNT USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=86"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🚀</div><div style="font-weight:600;color:var(--text);font-size:12px">NASA TV</div></a>
+          <a href="https://dlstreams.top/watch.php?id=42"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇩🇪</div><div style="font-weight:600;color:var(--text);font-size:12px">DW News</div></a>
+          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0;border-style:dashed" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">+</div><div style="font-weight:600;color:var(--text3);font-size:12px">More…</div></a>
+        </div>
+
+        <!-- ③ Custom M3U8 URL player -->
+        <details style="margin-bottom:16px">
+          <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text);padding:8px 0;user-select:none">🔗 Custom HLS / M3U8 Stream Player</summary>
+          <div style="padding:10px 0">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Paste any direct M3U8 stream URL — plays in-browser via HLS.js</div>
+            <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+              <input type="text" id="hls-custom-url" placeholder="https://example.com/stream.m3u8"
+                style="flex:1;min-width:260px;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px">
+              <button class="btn-primary" style="white-space:nowrap" onclick="hlsPlay('hls-custom',document.getElementById('hls-custom-url').value.trim())">▶ Play</button>
+            </div>
+            <video id="hls-custom" controls muted playsinline
+              style="width:100%;height:280px;background:#000;border-radius:var(--r);margin-top:8px;object-fit:contain;display:none"></video>
+          </div>
+        </details>
+
+        <!-- ④ Free streaming services — external links -->
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <span>📺 Free Streaming Services</span>
+          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens in new tab)</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
+          <a href="https://pluto.tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">📡</div><div style="font-weight:600;color:var(--text);font-size:12px">Pluto TV</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">250+ channels</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://tubitv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">🎬</div><div style="font-weight:600;color:var(--text);font-size:12px">Tubi</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; shows</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://watch.plex.tv/live-tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">▶️</div><div style="font-weight:600;color:var(--text);font-size:12px">Plex Free TV</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Live TV &amp; VOD</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://www.peacocktv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">🦚</div><div style="font-weight:600;color:var(--text);font-size:12px">Peacock</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">NBC free tier</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE TIER</div>
+          </a>
+          <a href="https://therokuchannel.roku.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">📺</div><div style="font-weight:600;color:var(--text);font-size:12px">Roku Channel</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; live TV</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
+          </a>
+          <a href="https://www.crackle.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">🎥</div><div style="font-weight:600;color:var(--text);font-size:12px">Crackle</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; originals</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
+          </a>
         </div>
       </div>
     </div>
@@ -3210,6 +4019,51 @@ function closeSidebar() {
     if (ov) ov.classList.remove('visible');
 }
 
+// ── Desktop sidebar collapse ─────────────────────────────────────────
+function toggleSidebarDesktop() {
+    const app = document.getElementById('app');
+    const collapsed = app.classList.toggle('sb-collapsed');
+    localStorage.setItem('arrhub_sb_collapsed', collapsed ? '1' : '0');
+    const icon = document.getElementById('sb-collapse-icon');
+    if (icon) {
+        const p = icon.querySelector('path');
+        if (p) p.setAttribute('d', collapsed
+            ? 'M13 5l7 7-7 7M5 5l7 7-7 7'   // expand arrows →→
+            : 'M11 19l-7-7 7-7m8 14l-7-7 7-7'); // collapse arrows ←←
+    }
+    const btn = document.getElementById('sb-collapse-btn');
+    if (btn) btn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+}
+// Restore sidebar collapse state on load
+(function _restoreSbCollapse() {
+    if (localStorage.getItem('arrhub_sb_collapsed') === '1') {
+        const app = document.getElementById('app');
+        if (app) app.classList.add('sb-collapsed');
+        const icon = document.getElementById('sb-collapse-icon');
+        if (icon) {
+            const p = icon.querySelector('path');
+            if (p) p.setAttribute('d', 'M13 5l7 7-7 7M5 5l7 7-7 7');
+        }
+        const btn = document.getElementById('sb-collapse-btn');
+        if (btn) btn.title = 'Expand sidebar';
+    }
+})();
+
+// ── Container card size slider ───────────────────────────────────────
+function setCtrCardSize(val) {
+    document.documentElement.style.setProperty('--ctr-card-min', val + 'px');
+    localStorage.setItem('arrhub_ctr_card_min', val);
+}
+// Restore card size on load
+(function _restoreCtrCardSize() {
+    const saved = localStorage.getItem('arrhub_ctr_card_min');
+    if (saved) {
+        document.documentElement.style.setProperty('--ctr-card-min', saved + 'px');
+        const r = document.getElementById('ctr-size-range');
+        if (r) r.value = saved;
+    }
+})();
+
 // ── Time ─────────────────────────────────────────────────────────────
 function updateTime() {
     const el = document.getElementById('tb-time');
@@ -3229,9 +4083,9 @@ function showTab(name, el) {
     currentTab = name;
 
     // Lazy-load on first show
-    if (name === 'containers') loadContainers();
-    else if (name === 'storage') loadStorage();
-    else if (name === 'network') loadNetwork();
+    if (name === 'overview') loadServiceLauncher();
+    else if (name === 'containers') loadContainers();
+    else if (name === 'stornet') { loadStorage(); loadNetwork(); }
     else if (name === 'ports') loadPortMap();
     else if (name === 'hardware') loadHardware();
     else if (name === 'logs') loadLogs();
@@ -3300,30 +4154,43 @@ function pbarColor(pct) {
 }
 
 // ── SSE live stream ───────────────────────────────────────────────────
+// Uses exponential backoff on reconnect so a post-wizard gunicorn restart
+// (which makes the first few retries fail quickly) doesn't flood the server.
+// Backoff: 3s → 6s → 12s → 24s → 30s (capped), resets to 3s on success.
 let evtSource = null;
 let _sseWasConnected = false;
+let _sseRetryCount = 0;
+const _SSE_BASE_RETRY_MS = 3000;
+const _SSE_MAX_RETRY_MS  = 30000;
+
+function _sseRetryDelay() {
+    // Exponential: base * 2^(n-1), capped at max
+    return Math.min(_SSE_BASE_RETRY_MS * Math.pow(2, Math.max(_sseRetryCount - 1, 0)), _SSE_MAX_RETRY_MS);
+}
+
 function startSSE() {
-    if (evtSource) return;
+    if (evtSource) return;   // already connecting/connected
     evtSource = new EventSource(API + '/api/stream');
     const badge = document.getElementById('live-badge');
+
     evtSource.onopen = () => {
+        _sseRetryCount = 0;   // success — reset backoff counter
         if (badge) badge.style.display = 'inline-flex';
         hideSSEBanner();
-        // Show "restored" toast only if we had previously connected and then lost it
+        // Show "restored" toast only after a previous connection loss
         if (_sseWasConnected) showToast('Live metrics restored', 'success', 3000);
         _sseWasConnected = true;
     };
+
     evtSource.onmessage = (e) => {
         try {
             const d = JSON.parse(e.data);
-            // Topbar
             const cpu = d.cpu_percent; const ram = d.mem_percent;
             setEl('tb-cpu', cpu + '%');
             setEl('tb-ram', ram + '%');
             setEl('tb-load', d.load_1m);
             colorEl('tb-cpu', cpu < 50 ? '' : cpu < 80 ? 'orange' : 'red');
             colorEl('tb-ram', ram < 50 ? '' : ram < 80 ? 'orange' : 'red');
-            // Gauges
             updateGauge(_cpuChart,'cpu-gauge-text', cpu, 100);
             updateGauge(_memChart,'mem-gauge-text', ram, 100);
             setEl('cpu-badge', cpu + '%');
@@ -3339,12 +4206,24 @@ function startSSE() {
             setEl('mem-detail', d.mem_used_gb + ' / ' + d.mem_total_gb + ' GB');
         } catch(err) {}
     };
+
     evtSource.onerror = () => {
         if (badge) badge.style.display = 'none';
-        evtSource.close(); evtSource = null;
-        // Only show the banner if we had ever connected (avoid on initial page load failure)
+        // Null before close so the guard at the top doesn't block the retry
+        const dying = evtSource;
+        evtSource = null;
+        try { dying.close(); } catch(e) {}
+
+        // Show banner only after a first successful connection (not on initial load failure)
         if (_sseWasConnected) showSSEBanner();
-        setTimeout(startSSE, 5000);
+
+        _sseRetryCount++;
+        const delay = _sseRetryDelay();
+        // Update banner text so user can see reconnect is in progress
+        const bannerMsg = document.getElementById('sse-banner-msg');
+        if (bannerMsg) bannerMsg.textContent =
+            `Lost connection — reconnecting in ${Math.round(delay/1000)}s (attempt ${_sseRetryCount})…`;
+        setTimeout(startSSE, delay);
     };
 }
 
@@ -3457,7 +4336,7 @@ const ICONS = {
     grafana:'📊', prometheus:'📈', jellyfin:'🎬', plex:'🎬', emby:'🎬',
     radarr:'🎥', sonarr:'📺', lidarr:'🎵', bazarr:'💬', prowlarr:'🔍',
     qbittorrent:'⬇️', transmission:'⬇️', nextcloud:'☁️', portainer:'🐳',
-    watchtower:'👁️', dozzle:'📋', uptime:'✅', homer:'🏠', homarr:'🏠',
+    watchtower:'👁️', dozzle:'📋', uptime:'✅', launcharr:'🚀', dasherr:'🏠',
     immich:'📷', vaultwarden:'🔐', pihole:'🛡️', adguard:'🛡️',
     wireguard:'🔒', tailscale:'🔒', gitea:'🐙', postgres:'🐘',
     redis:'🔴', mariadb:'🐬', netdata:'📡', glances:'👀',
@@ -3486,56 +4365,39 @@ function statusClass(status) {
 // ══════════════════════════════════════════════════════════════════════
 function setCtrView(mode) {
     ctrViewMode = mode;
-    document.getElementById('ctr-grid').style.display = mode === 'grid' ? '' : 'none';
-    document.getElementById('ctr-table-wrap').style.display = mode === 'table' ? '' : 'none';
+    // Use explicit display values — '' would inherit the CSS display:none default
+    document.getElementById('ctr-grid').style.display = mode === 'grid' ? 'grid' : 'none';
+    document.getElementById('ctr-table-wrap').style.display = mode === 'table' ? 'block' : 'none';
     document.getElementById('btn-grid-view').classList.toggle('active', mode === 'grid');
     document.getElementById('btn-table-view').classList.toggle('active', mode === 'table');
     if (mode === 'table') renderContainerTable();
 }
 
-function renderContainers() {
-    const grid = document.getElementById('ctr-grid');
-    let ctrs = allContainers;
-    if (ctrFilter !== 'all') ctrs = ctrs.filter(c => c.status === ctrFilter);
-    if (!ctrs.length) {
-        grid.innerHTML = '<div class="empty"><div class="empty-icon">📦</div><div class="empty-text">No containers match filter</div></div>';
-        if (ctrViewMode === 'table') renderContainerTable();
-        return;
-    }
-    // Sort: running first
-    ctrs = [...ctrs].sort((a,b)=>{
-        if(a.status==='running' && b.status!=='running') return -1;
-        if(a.status!=='running' && b.status==='running') return 1;
-        return a.name.localeCompare(b.name);
-    });
-    // Destroy old Chart.js instances to avoid canvas reuse errors
-    Object.keys(_ctrCharts).forEach(n => {
-        try { _ctrCharts[n].cpu.destroy(); _ctrCharts[n].mem.destroy(); } catch(e) {}
-        delete _ctrCharts[n];
-    });
-    grid.innerHTML = ctrs.map(c => {
-        const sc = statusClass(c.status);
-        const icon = ctrIcon(c.name);
-        const ports = c.ports && c.ports.length ? c.ports.join(', ') : '—';
-        const uptime = c.uptime || '—';
-        const isRunning = c.status === 'running';
-        // 6. Memory progress bar (initially hidden; updated in loadCtrStats)
-        return `
-<div class="ctr-card" id="card-${c.name}">
+// Build the static HTML shell for one container card (charts injected separately).
+// Splitting static HTML from dynamic state lets us update cards in-place without
+// destroying Chart.js canvas instances.
+function _ctrCardHTML(c) {
+    const sc = statusClass(c.status);
+    const icon = ctrIcon(c.name);
+    const ports = c.ports && c.ports.length ? c.ports.join(', ') : '—';
+    const uptime = c.uptime || '—';
+    const isRunning = c.status === 'running';
+    return `
+<div class="ctr-card" id="card-${c.name}" data-status="${c.status}">
   <div class="ctr-header">
     <div class="ctr-icon">${icon}</div>
     <div class="ctr-info">
       <div class="ctr-name">${c.name}</div>
       <div class="ctr-image">${c.image}</div>
       <div>
-        <span class="ctr-status ${sc}">
+        <span class="ctr-status ${sc}" id="ctr-status-badge-${c.name}">
           <span class="ctr-status-dot"></span>${c.status}
         </span>
       </div>
     </div>
   </div>
   <div class="ctr-body">
-    <div class="ctr-row"><span>Uptime</span><span>${uptime}</span></div>
+    <div class="ctr-row"><span>Uptime</span><span id="ctr-uptime-${c.name}">${uptime}</span></div>
     <div class="ctr-row"><span>ID</span><span>${c.id}</span></div>
     <div class="ctr-row"><span>Ports</span><span class="ctr-ports">${ports}</span></div>
   </div>
@@ -3559,22 +4421,132 @@ function renderContainers() {
       <div style="font-size:10px;color:var(--text3);margin-top:4px">MEM</div>
     </div>
   </div>
-  <div class="ctr-footer">
+  <div class="ctr-footer" id="ctr-footer-${c.name}">
     ${isRunning
       ? `<button class="btn red" onclick="ctrAction('${c.name}','stop')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" stroke-width="2"/></svg>Stop</button>`
       : `<button class="btn green" onclick="ctrAction('${c.name}','start')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>Start</button>`}
     <button class="btn orange" onclick="ctrAction('${c.name}','restart')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Restart</button>
     <button class="btn blue" onclick="openLogs('${c.name}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Logs</button>
-    <!-- 7. Update & Recreate button (running containers only) -->
     ${isRunning ? `<button class="btn purple" onclick="updateContainer('${c.name}')">⬆ Update</button>` : ''}
     <button class="btn red" onclick="ctrAction('${c.name}','remove')" style="margin-left:auto"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
   </div>
 </div>`;
-    }).join('');
+}
 
-    // Load stats for running containers — force=true bypasses throttle on first render
-    ctrs.filter(c=>c.status==='running').forEach(c => loadCtrStats(c.name, true));
-    // If table is visible, sync it
+// Update only the mutable parts of an existing card (status badge, uptime, footer
+// buttons) without touching the chart canvases.  This prevents the
+// destroy→rebuild cycle that caused flickering donuts.
+function _ctrCardUpdate(c) {
+    const badge = document.getElementById('ctr-status-badge-' + c.name);
+    if (badge) {
+        badge.className = 'ctr-status ' + statusClass(c.status);
+        badge.innerHTML = `<span class="ctr-status-dot"></span>${c.status}`;
+    }
+    const uptimeEl = document.getElementById('ctr-uptime-' + c.name);
+    if (uptimeEl) uptimeEl.textContent = c.uptime || '—';
+
+    // Swap footer buttons when running state changes
+    const card = document.getElementById('card-' + c.name);
+    if (card) {
+        const prevStatus = card.dataset.status;
+        if (prevStatus !== c.status) {
+            card.dataset.status = c.status;
+            const footer = document.getElementById('ctr-footer-' + c.name);
+            if (footer) {
+                // Replace only the start/stop button (first child)
+                const isRunning = c.status === 'running';
+                const newBtn = isRunning
+                    ? `<button class="btn red" onclick="ctrAction('${c.name}','stop')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" stroke-width="2"/></svg>Stop</button>`
+                    : `<button class="btn green" onclick="ctrAction('${c.name}','start')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>Start</button>`;
+                footer.innerHTML = newBtn +
+                    `<button class="btn orange" onclick="ctrAction('${c.name}','restart')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Restart</button>
+                    <button class="btn blue" onclick="openLogs('${c.name}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Logs</button>
+                    ${isRunning ? `<button class="btn purple" onclick="updateContainer('${c.name}')">⬆ Update</button>` : ''}
+                    <button class="btn red" onclick="ctrAction('${c.name}','remove')" style="margin-left:auto"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>`;
+            }
+            // Destroy chart only when container goes from running→stopped (stats no longer valid)
+            if (!isRunning && _ctrCharts[c.name]) {
+                try { _ctrCharts[c.name].cpu.destroy(); _ctrCharts[c.name].mem.destroy(); } catch(e) {}
+                delete _ctrCharts[c.name];
+                const cpuEl = document.getElementById('stat-cpu-' + c.name);
+                const memEl = document.getElementById('stat-mem-' + c.name);
+                if (cpuEl) cpuEl.textContent = '—';
+                if (memEl) memEl.textContent = '—';
+            }
+        }
+    }
+}
+
+function renderContainers() {
+    const grid = document.getElementById('ctr-grid');
+    // Always clear skeleton/placeholder elements first (prevents ghost cards)
+    [...grid.children].forEach(el => { if (!el.classList.contains('ctr-card')) el.remove(); });
+
+    let ctrs = allContainers;
+    if (ctrFilter !== 'all') ctrs = ctrs.filter(c => c.status === ctrFilter);
+
+    if (!ctrs.length) {
+        // Destroy all charts before clearing
+        Object.keys(_ctrCharts).forEach(n => {
+            try { _ctrCharts[n].cpu.destroy(); _ctrCharts[n].mem.destroy(); } catch(e) {}
+            delete _ctrCharts[n];
+        });
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">📦</div><div class="empty-text">No containers match filter</div></div>';
+        if (ctrViewMode === 'table') renderContainerTable();
+        return;
+    }
+
+    // Sort: running first, then alphabetical
+    ctrs = [...ctrs].sort((a,b)=>{
+        if(a.status==='running' && b.status!=='running') return -1;
+        if(a.status!=='running' && b.status==='running') return 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    const newNames = new Set(ctrs.map(c => c.name));
+    const existingCards = new Set(
+        [...grid.querySelectorAll('.ctr-card')].map(el => el.id.replace('card-', ''))
+    );
+
+    // Remove cards for containers that no longer exist / are filtered out
+    existingCards.forEach(name => {
+        if (!newNames.has(name)) {
+            const el = document.getElementById('card-' + name);
+            if (el) el.remove();
+            if (_ctrCharts[name]) {
+                try { _ctrCharts[name].cpu.destroy(); _ctrCharts[name].mem.destroy(); } catch(e) {}
+                delete _ctrCharts[name];
+            }
+        }
+    });
+
+    // Remove any placeholder/skeleton/empty-state elements (but keep real .ctr-card nodes
+    // so existing cards can be updated in-place without destroying their Chart.js canvases)
+    [...grid.children].forEach(el => { if (!el.classList.contains('ctr-card')) el.remove(); });
+
+    // Add new cards; update existing ones in-place (no chart destruction)
+    ctrs.forEach((c, idx) => {
+        if (!existingCards.has(c.name)) {
+            // New container — inject card HTML then initialise charts in next tick
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = _ctrCardHTML(c).trim();
+            const card = wrapper.firstChild;
+            // Insert at correct sorted position
+            const allCards = [...grid.querySelectorAll('.ctr-card')];
+            const nextCard = allCards[idx];
+            if (nextCard) grid.insertBefore(card, nextCard);
+            else grid.appendChild(card);
+            // Charts must be created after the canvas is in the DOM
+            if (c.status === 'running') {
+                requestAnimationFrame(() => loadCtrStats(c.name, true));
+            }
+        } else {
+            // Existing container — update mutable fields only, leave charts alone
+            _ctrCardUpdate(c);
+            if (c.status === 'running') loadCtrStats(c.name, false);
+        }
+    });
+
     if (ctrViewMode === 'table') renderContainerTable();
 }
 
@@ -3785,98 +4757,238 @@ document.getElementById('log-modal').addEventListener('click', function(e) {
 });
 
 // ── Storage ───────────────────────────────────────────────────────────
+// Storage pie chart registry
+const _diskCharts = {};
+
 async function loadStorage() {
     try {
         const r = await fetch(API + '/api/storage');
         const d = await r.json();
         const el = document.getElementById('disk-list');
-        if (!d.filesystems) { el.innerHTML = '<div class="empty-text">No data</div>'; return; }
-        el.innerHTML = d.filesystems.map(fs => {
-            const pct = fs.percent || 0;
-            const color = pct < 70 ? 'green' : pct < 90 ? 'orange' : 'red';
-            return `<div class="disk-item">
-              <div class="disk-header">
-                <span class="disk-path">${fs.mountpoint || fs.device}</span>
-                <span class="disk-usage">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)} (${pct}%)</span>
-              </div>
-              <div class="pbar-wrap"><div class="pbar ${color}" style="width:${pct}%"></div></div>
-            </div>`;
-        }).join('');
+        if (!d.filesystems || !d.filesystems.length) {
+            el.innerHTML = '<div class="empty"><div class="empty-icon">💾</div><div class="empty-text">No filesystem data</div></div>';
+            return;
+        }
+        d.filesystems.forEach(fs => {
+            const pct = Math.round(fs.percent || 0);
+            const mount = fs.mountpoint || fs.device;
+            const safeId = 'disk-' + mount.replace(/[^a-zA-Z0-9]/g, '_');
+            const clr = pct < 70 ? '#3fb950' : pct < 90 ? '#e3b341' : '#f85149';
+            const clrFree = 'rgba(255,255,255,0.06)';
+
+            // Create card if it doesn't exist
+            if (!document.getElementById(safeId)) {
+                const card = document.createElement('div');
+                card.id = safeId;
+                card.className = 'panel';
+                card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;';
+                card.innerHTML = `
+                  <canvas id="c-${safeId}" width="130" height="130"></canvas>
+                  <div style="font-size:12px;font-weight:600;color:var(--text);text-align:center;word-break:break-all">${mount}</div>
+                  <div style="font-size:11px;color:var(--text3)">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}</div>
+                  <div style="font-size:20px;font-weight:700;color:${clr}" id="pct-${safeId}">${pct}%</div>`;
+                el.appendChild(card);
+            } else {
+                // Update percentage label color
+                const pctEl = document.getElementById('pct-' + safeId);
+                if (pctEl) { pctEl.textContent = pct + '%'; pctEl.style.color = clr; }
+            }
+
+            // Create or update chart
+            const canvas = document.getElementById('c-' + safeId);
+            if (canvas) {
+                if (_diskCharts[safeId]) {
+                    _diskCharts[safeId].data.datasets[0].data = [pct, 100 - pct];
+                    _diskCharts[safeId].data.datasets[0].backgroundColor = [clr, clrFree];
+                    _diskCharts[safeId].update('none');
+                } else {
+                    _diskCharts[safeId] = new Chart(canvas.getContext('2d'), {
+                        type: 'doughnut',
+                        data: { datasets: [{ data: [pct, 100 - pct], backgroundColor: [clr, clrFree], borderWidth: 0, hoverOffset: 0 }] },
+                        options: {
+                            cutout: '72%', responsive: false, animation: { duration: 600 },
+                            plugins: { legend: { display: false }, tooltip: { enabled: false } }
+                        }
+                    });
+                }
+            }
+        });
     } catch(e) {}
 }
 
-// ── Network ───────────────────────────────────────────────────────────
+// ── Network (with bandwidth line charts) ─────────────────────────────
+const _netHistory = {tx: [], rx: [], labels: [], maxPoints: 60};
+const _netPrev = {tx: 0, rx: 0, time: 0};
+let _netTxChart = null, _netRxChart = null;
+
+function _netChartInit(canvasId, label, color) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return null;
+    return new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label, data: [], borderColor: color,
+                backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
+                borderWidth: 1.5, fill: true, tension: 0.4,
+                pointRadius: 0, pointHoverRadius: 3
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
+            scales: {
+                x: { display: false },
+                y: {
+                    display: true, beginAtZero: true, min: 0,
+                    ticks: { color: 'rgba(139,148,158,.7)', font: { size: 10 }, maxTicksLimit: 4,
+                             callback: v => fmtBytes(v) + '/s' },
+                    grid: { color: 'rgba(48,54,61,.6)' }
+                }
+            },
+            plugins: { legend: { display: false }, tooltip: {
+                callbacks: { label: ctx => fmtBytes(ctx.raw) + '/s' }
+            }}
+        }
+    });
+}
+
 async function loadNetwork() {
     try {
         const r = await fetch(API + '/api/network');
         const d = await r.json();
         const tbody = document.getElementById('net-table');
         const ifaces = d.interfaces || [];
-        tbody.innerHTML = ifaces.map(i => `
-          <tr>
-            <td><b>${i.name}</b></td>
-            <td style="font-family:var(--mono);font-size:12px">${(i.addresses||[]).join(', ')||'—'}</td>
-            <td>${fmtBytes(i.bytes_sent)}</td>
-            <td>${fmtBytes(i.bytes_recv)}</td>
-            <td><span class="ctr-status ${i.is_up?'running':'exited'}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${i.is_up?'Up':'Down'}</span></td>
-          </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text3)">No interfaces</td></tr>';
+
+        // Aggregate total TX/RX across all physical interfaces
+        let totalTx = 0, totalRx = 0;
+        ifaces.forEach(i => { totalTx += i.bytes_sent || 0; totalRx += i.bytes_recv || 0; });
+
+        const now = Date.now();
+        let txRate = 0, rxRate = 0;
+        if (_netPrev.time && (now - _netPrev.time) < 30000) {
+            const dt = (now - _netPrev.time) / 1000;
+            txRate = Math.max(0, (totalTx - _netPrev.tx) / dt);
+            rxRate = Math.max(0, (totalRx - _netPrev.rx) / dt);
+        }
+        _netPrev.tx = totalTx; _netPrev.rx = totalRx; _netPrev.time = now;
+
+        // Rolling history
+        const label = new Date().toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
+        _netHistory.tx.push(txRate);
+        _netHistory.rx.push(rxRate);
+        _netHistory.labels.push(label);
+        if (_netHistory.tx.length > _netHistory.maxPoints) {
+            _netHistory.tx.shift(); _netHistory.rx.shift(); _netHistory.labels.shift();
+        }
+
+        // Init charts on first call
+        if (!_netTxChart) _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)');
+        if (!_netRxChart) _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)');
+
+        if (_netTxChart) {
+            _netTxChart.data.labels = [..._netHistory.labels];
+            _netTxChart.data.datasets[0].data = [..._netHistory.tx];
+            _netTxChart.update('none');
+        }
+        if (_netRxChart) {
+            _netRxChart.data.labels = [..._netHistory.labels];
+            _netRxChart.data.datasets[0].data = [..._netHistory.rx];
+            _netRxChart.update('none');
+        }
+
+        tbody.innerHTML = ifaces.map(i => {
+            const sc = i.is_up ? 'running' : 'exited';
+            return `<tr>
+              <td><b>${i.name}</b></td>
+              <td style="font-family:var(--mono);font-size:12px">${(i.addresses||[]).join(', ')||'—'}</td>
+              <td>${fmtBytes(i.bytes_sent)}</td>
+              <td>${fmtBytes(i.bytes_recv)}</td>
+              <td style="font-family:var(--mono);font-size:11px;color:var(--text2)">—/—</td>
+              <td><span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${i.is_up?'Up':'Down'}</span></td>
+            </tr>`;
+        }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text3)">No interfaces</td></tr>';
     } catch(e) {}
 }
 
-// ── Port Map ──────────────────────────────────────────────────────────
+// ── Port Map (accordion by container) ────────────────────────────────
 async function loadPortMap() {
-    const tbody = document.getElementById('port-table-body');
+    const accordion = document.getElementById('port-accordion');
     const summary = document.getElementById('port-summary');
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Loading port assignments...</td></tr>';
+    accordion.innerHTML = '<div class="empty"><div class="empty-icon">⏳</div><div class="empty-text">Loading port assignments...</div></div>';
     try {
         const r = await fetch(API + '/api/ports/map');
         const d = await r.json();
         const ports = d.ports || [];
 
         // Summary cards
-        const running = ports.filter(p => p.status === 'running' && p.host_port);
-        const stopped = ports.filter(p => p.status !== 'running' && p.host_port);
+        const activePorts = ports.filter(p => p.status === 'running' && p.host_port);
+        const stoppedPorts = ports.filter(p => p.status !== 'running' && p.host_port);
         const unbound = ports.filter(p => !p.host_port);
         summary.innerHTML = `
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--green)">${running.length}</div>
-                <div class="stat-card-label">Active Ports</div>
-            </div>
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--orange)">${stopped.length}</div>
-                <div class="stat-card-label">Stopped</div>
-            </div>
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--text3)">${unbound.length}</div>
-                <div class="stat-card-label">Unbound</div>
-            </div>
-            <div class="stat-card" style="flex:1;min-width:120px">
-                <div class="stat-card-val" style="color:var(--blue)">${d.total_bindings || 0}</div>
-                <div class="stat-card-label">Total Bindings</div>
-            </div>`;
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--green)">${activePorts.length}</div><div class="stat-card-label">Active Ports</div></div>
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--orange)">${stoppedPorts.length}</div><div class="stat-card-label">Stopped</div></div>
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--text3)">${unbound.length}</div><div class="stat-card-label">Unbound</div></div>
+            <div class="stat-card" style="flex:1;min-width:120px"><div class="stat-card-val" style="color:var(--blue)">${d.total_bindings || 0}</div><div class="stat-card-label">Total Bindings</div></div>`;
 
         if (!ports.length) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">No port assignments found</td></tr>';
+            accordion.innerHTML = '<div class="empty"><div class="empty-icon">🔌</div><div class="empty-text">No port assignments found</div></div>';
             return;
         }
 
-        tbody.innerHTML = ports.map(p => {
-            const sc = p.status === 'running' ? 'running' : 'exited';
-            const icon = ctrIcon(p.container);
-            const hostPort = p.host_port || '—';
-            const isWeb = p.host_port && !String(p.container_port).includes('/udp');
-            const link = isWeb ? `<a href="#" onclick="openExternalLink('http://localhost:${p.host_port}');return false" style="color:var(--blue);text-decoration:none;font-size:12px">Open :${p.host_port} ↗</a>` : '<span style="color:var(--text3);font-size:11px">non-HTTP</span>';
-            return `<tr style="border-bottom:1px solid var(--border)">
-                <td style="padding:10px 14px;font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green)">${hostPort}</td>
-                <td style="padding:10px 14px"><span style="margin-right:6px">${icon}</span>${p.container}</td>
-                <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--text2)">${p.container_port}</td>
-                <td style="padding:10px 14px"><span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px"><span class="ctr-status-dot"></span>${p.status}</span></td>
-                <td style="padding:10px 14px">${link}</td>
-            </tr>`;
+        // Group by container
+        const grouped = {};
+        ports.forEach(p => {
+            if (!grouped[p.container]) grouped[p.container] = {status: p.status, ports: []};
+            grouped[p.container].ports.push(p);
+        });
+
+        accordion.innerHTML = Object.entries(grouped).map(([name, g]) => {
+            const sc = g.status === 'running' ? 'running' : 'exited';
+            const icon = ctrIcon(name);
+            const portCount = g.ports.length;
+            // Collapse groups with many ports or stopped containers by default
+            const startCollapsed = portCount > 3 || g.status !== 'running' ? 'collapsed' : '';
+            const rows = g.ports.map(p => {
+                const hostPort = p.host_port || '—';
+                const isWeb = p.host_port && !String(p.container_port).includes('/udp');
+                const link = isWeb
+                    ? `<a href="#" onclick="openExternalLink('http://localhost:${p.host_port}');return false" style="color:var(--blue);text-decoration:none;font-size:12px">:${p.host_port} ↗</a>`
+                    : '<span style="color:var(--text3);font-size:11px">—</span>';
+                return `<tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 14px;font-family:var(--mono);font-size:13px;font-weight:700;color:var(--green)">${hostPort}</td>
+                    <td style="padding:8px 14px;font-family:var(--mono);font-size:12px;color:var(--text2)">${p.container_port}</td>
+                    <td style="padding:8px 14px">${link}</td>
+                </tr>`;
+            }).join('');
+            return `<div class="pm-group ${startCollapsed}" id="pmg-${name}">
+              <div class="pm-group-hdr" onclick="pmToggle('${name}')">
+                <span style="margin-right:4px">${icon}</span>
+                <b style="font-size:13px">${name}</b>
+                <span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;font-size:11px;margin-left:6px"><span class="ctr-status-dot"></span>${g.status}</span>
+                <span style="font-size:11px;color:var(--text3);margin-left:8px">${portCount} port${portCount!==1?'s':''}</span>
+                <span class="pm-group-chevron">▼</span>
+              </div>
+              <div class="pm-group-body">
+                <table style="width:100%;border-collapse:collapse">
+                  <thead><tr style="background:var(--surface)"><th style="padding:6px 14px;text-align:left;font-size:11px;color:var(--blue)">Host Port</th><th style="padding:6px 14px;text-align:left;font-size:11px;color:var(--blue)">Container Port</th><th style="padding:6px 14px;text-align:left;font-size:11px;color:var(--blue)">Open</th></tr></thead>
+                  <tbody>${rows}</tbody>
+                </table>
+              </div>
+            </div>`;
         }).join('');
     } catch(e) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--red)">Failed to load port map</td></tr>';
+        accordion.innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load port map</div></div>';
     }
+}
+function pmToggle(name) {
+    document.getElementById('pmg-' + name)?.classList.toggle('collapsed');
+}
+function pmExpandAll() {
+    document.querySelectorAll('.pm-group').forEach(g => g.classList.remove('collapsed'));
+}
+function pmCollapseAll() {
+    document.querySelectorAll('.pm-group').forEach(g => g.classList.add('collapsed'));
 }
 
 // ── Hardware ─────────────────────────────────────────────────────────
@@ -4057,19 +5169,66 @@ async function loadStackManager() {
         const d = await r.json();
         const el = document.getElementById('stacks-list');
         const stacks = d.stacks || [];
-        if (!stacks.length) { el.innerHTML = '<div class="empty-text" style="padding:12px;color:var(--text3)">No compose stacks found in /docker/</div>'; return; }
-        el.innerHTML = '<table><thead><tr><th>Stack</th><th>Path</th><th>Services</th><th>Actions</th></tr></thead><tbody>' +
-          stacks.map(s=>`<tr>
-            <td><b>${s.name}</b></td>
-            <td style="font-family:var(--mono);font-size:11px">${s.path}</td>
-            <td>${s.services||'—'}</td>
-            <td style="display:flex;gap:6px;padding:4px 0">
-              <button class="btn green" style="padding:3px 8px;font-size:11px" onclick="stackAction('${s.name}','up')">Up</button>
-              <button class="btn red" style="padding:3px 8px;font-size:11px" onclick="stackAction('${s.name}','down')">Down</button>
-            </td>
-          </tr>`).join('') +
-          '</tbody></table>';
-    } catch(e) {}
+        if (!stacks.length) {
+            el.innerHTML = '<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">No compose stacks found in /docker/<br><span style="font-size:11px;color:var(--text3)">Deploy apps to create stacks</span></div></div>';
+            return;
+        }
+        el.innerHTML = stacks.map(s => {
+            const isRunning = s.status === 'running' || (s.running_containers && s.running_containers > 0);
+            const sc = isRunning ? 'running' : 'exited';
+            const svcInfo = s.services ? `${s.services} services` : '—';
+            const runInfo = s.running_containers !== undefined ? `${s.running_containers} running` : '';
+            return `<div class="stack-card" id="stack-${s.name}">
+              <div class="stack-card-hdr">
+                <span style="font-size:18px">📋</span>
+                <div style="flex:1">
+                  <div class="stack-card-name">${s.name}</div>
+                  <div style="font-size:11px;color:var(--text3);font-family:var(--mono)">${s.path}</div>
+                </div>
+                <span class="ctr-status ${sc}" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;font-size:11px">
+                  <span class="ctr-status-dot"></span>${isRunning ? 'Running' : 'Stopped'}
+                </span>
+              </div>
+              <div style="font-size:12px;color:var(--text2);margin-bottom:10px">${svcInfo}${runInfo ? ' · ' + runInfo : ''}</div>
+              <div class="stack-card-actions">
+                <button class="btn green" style="padding:4px 10px;font-size:12px" onclick="stackAction('${s.name}','up')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Up
+                </button>
+                <button class="btn red" style="padding:4px 10px;font-size:12px" onclick="stackAction('${s.name}','down')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg> Down
+                </button>
+                <button class="btn orange" style="padding:4px 10px;font-size:12px" onclick="stackRestart('${s.name}')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Restart
+                </button>
+                <button class="btn purple" style="padding:4px 10px;font-size:12px" onclick="stackPull('${s.name}')">
+                  <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg> Pull
+                </button>
+              </div>
+            </div>`;
+        }).join('');
+    } catch(e) { document.getElementById('stacks-list').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load stacks</div></div>'; }
+}
+
+async function stackRestart(name) {
+    showToast('Restarting stack ' + name + '…', 'info', 3000);
+    try {
+        await fetch(API + `/api/stack/${name}/down`, {method:'POST'});
+        await new Promise(r => setTimeout(r, 1500));
+        const r = await fetch(API + `/api/stack/${name}/up`, {method:'POST'});
+        const d = await r.json();
+        if (d.error) showToast('Restart error: ' + d.error, 'error');
+        else { showToast('Stack ' + name + ' restarted', 'success'); setTimeout(loadStackManager, 1000); }
+    } catch(e) { showToast('Request failed', 'error'); }
+}
+
+async function stackPull(name) {
+    showToast('Pulling latest images for ' + name + '…', 'info', 8000);
+    try {
+        const r = await fetch(API + `/api/stack/${name}/pull`, {method:'POST'});
+        const d = await r.json();
+        if (d.error) showToast('Pull error: ' + d.error, 'error');
+        else showToast('✓ ' + name + ' images pulled — run Up to apply', 'success', 6000);
+    } catch(e) { showToast('Pull request failed', 'error'); }
 }
 
 async function loadDeployHistory() {
@@ -4139,6 +5298,15 @@ async function loadSettings() {
         setInput('cfg-tz', s.tz);
         setInput('cfg-puid', s.puid);
         setInput('cfg-pgid', s.pgid);
+        // Service integration fields
+        setInput('svc-radarr-url',  s.radarr_url);
+        setInput('svc-radarr-key',  s.radarr_api_key);
+        setInput('svc-sonarr-url',  s.sonarr_url);
+        setInput('svc-sonarr-key',  s.sonarr_api_key);
+        setInput('svc-plex-url',    s.plex_url);
+        setInput('svc-plex-token',  s.plex_token);
+        setInput('svc-seerr-url',   s.seerr_url);
+        setInput('svc-seerr-key',   s.seerr_api_key);
     } catch(e) {}
 }
 
@@ -4169,16 +5337,34 @@ async function loadWeather() {
         const d = await r.json();
         if (d.error) return;
         if (!d.daily || d.daily.length === 0) return;
-        const w = d.daily[0];
-        const city = d.location || '';
+        const w = d.daily[0];   // today
+
+        // Current conditions (from open-meteo /current)
         const temp = w.temp_max !== undefined ? Math.round(w.temp_max) : '—';
         setEl('weather-temp', temp + '°C');
         setEl('weather-desc', w.desc || 'Clear');
-        setEl('weather-location', city);
-        setEl('weather-humidity', '—');
-        setEl('weather-wind', '—');
+        setEl('weather-location', d.location || '');
+        setEl('weather-humidity', d.humidity != null ? d.humidity + '%' : '—');
+        setEl('weather-wind', d.wind_mph != null ? d.wind_mph + ' mph' : '—');
+        setEl('weather-feels', d.feels_like != null ? Math.round(d.feels_like) + '°C' : '—');
         const iconEl = document.getElementById('weather-icon');
-        if (iconEl && w.icon) iconEl.textContent = WEATHER_ICONS[String(w.icon)] || '🌤️';
+        if (iconEl && w.icon) iconEl.textContent = w.icon;
+
+        // 5-day forecast strip
+        const forecastEl = document.getElementById('weather-forecast');
+        if (forecastEl && d.daily) {
+            forecastEl.innerHTML = d.daily.map((day, i) => {
+                const label = i === 0 ? 'Today' : new Date(day.date + 'T12:00').toLocaleDateString(undefined, {weekday:'short'});
+                const hi = day.temp_max != null ? Math.round(day.temp_max) + '°' : '—';
+                const lo = day.temp_min != null ? Math.round(day.temp_min) + '°' : '—';
+                return `<div style="flex:1;min-width:56px;text-align:center;background:var(--surface);border-radius:var(--r);padding:6px 4px;">
+                  <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${label}</div>
+                  <div style="font-size:20px;line-height:1.2">${day.icon || '🌤️'}</div>
+                  <div style="font-size:11px;font-weight:600;color:var(--text)">${hi}</div>
+                  <div style="font-size:10px;color:var(--text3)">${lo}</div>
+                </div>`;
+            }).join('');
+        }
     } catch(e) {}
 }
 
@@ -4202,13 +5388,17 @@ function setRSSView(v) {
     rssView = v;
     document.getElementById('rss-feeds-view').style.display = v === 'feeds' ? '' : 'none';
     document.getElementById('rss-live-view').style.display  = v === 'live'  ? '' : 'none';
-    document.querySelectorAll('#rss-view-feeds,#rss-view-live').forEach(b => b.classList.remove('active'));
+    document.getElementById('rss-iptv-view').style.display  = v === 'iptv'  ? '' : 'none';
+    document.querySelectorAll('#rss-view-feeds,#rss-view-live,#rss-view-iptv').forEach(b => b.classList.remove('active'));
     document.getElementById('rss-view-' + v).classList.add('active');
+    // Hide the expand/collapse controls on non-feed views
+    const ctl = document.getElementById('rss-all-controls');
+    if (ctl) ctl.style.display = v === 'feeds' ? '' : 'none';
 }
 
 async function loadRSSFeeds() {
     const content = document.getElementById('rss-content');
-    if (content) content.innerHTML = '<div style="color:var(--text3);padding:20px">Loading feeds\u2026</div>';
+    if (content) content.innerHTML = '<div style="color:var(--text3);padding:20px">Loading feeds…</div>';
     try {
         const r = await fetch(API + '/api/rss/feeds');
         const d = await r.json();
@@ -4222,8 +5412,6 @@ async function loadRSSFeeds() {
                 `<div class="filter-pill${c===rssCatFilter?' active':''}" onclick="rssSetCat('${c}')">${c}</div>`
             ).join('');
         }
-
-        // Render feed columns
         renderRSSFeeds(cats);
     } catch(e) {
         if (content) content.innerHTML = '<div style="color:var(--red);padding:20px">Failed to load feeds</div>';
@@ -4235,7 +5423,6 @@ function rssSetCat(cat) {
     document.querySelectorAll('#rss-cat-pills .filter-pill').forEach(p => {
         p.classList.toggle('active', p.textContent === cat);
     });
-    // Re-render with current data (re-fetch to keep fresh)
     loadRSSFeeds();
 }
 
@@ -4243,34 +5430,82 @@ async function renderRSSFeeds(cats) {
     const content = document.getElementById('rss-content');
     if (!content) return;
 
-    const toLoad = rssCatFilter === 'All'
+    const isAll = rssCatFilter === 'All';
+    const toLoad = isAll
         ? Object.entries(cats)
         : Object.entries(cats).filter(([k]) => k === rssCatFilter);
 
-    // Render placeholder columns first
-    content.innerHTML = toLoad.map(([cat, feeds]) => `
-        <div class="panel rss-col" id="rss-col-${cat.replace(/\s/g,'_')}">
-          <div class="panel-title" style="font-size:13px;font-weight:700">
-            ${feeds[0]&&feeds[0].icon ? feeds[0].icon : '\u{1F4F0}'} ${cat}
-          </div>
-          <div class="rss-feed-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
-            ${feeds.map((f,i) => `<button class="filter-pill${i===0?' active':''}" style="font-size:10px;padding:2px 8px" onclick="loadFeedItems('${cat.replace(/\s/g,'_')}','${encodeURIComponent(f.url)}','${encodeURIComponent(f.name)}',this)">${f.icon} ${f.name}</button>`).join('')}
-          </div>
-          <div class="rss-items" id="rss-items-${cat.replace(/\s/g,'_')}">
-            <div style="color:var(--text3);font-size:12px;padding:8px">Loading\u2026</div>
-          </div>
-        </div>`).join('');
+    // Show/hide Expand All / Collapse All controls
+    const allCtrl = document.getElementById('rss-all-controls');
+    if (allCtrl) allCtrl.classList.toggle('visible', isAll);
 
-    // Load first feed for each category
-    for (const [cat, feeds] of toLoad) {
-        if (feeds.length > 0) {
-            loadFeedItems(cat.replace(/\s/g,'_'), encodeURIComponent(feeds[0].url), encodeURIComponent(feeds[0].name), null);
-        }
+    // Each category: collapsible in "All" view, always open in single-cat view
+    content.innerHTML = toLoad.map(([cat, feeds]) => {
+        const catId = cat.replace(/\s/g,'_');
+        return `
+        <div class="panel rss-col${isAll ? ' collapsed' : ''}" id="rss-col-${catId}">
+          <div class="panel-title rss-col-hdr" onclick="toggleRssCol('${catId}')">
+            <span style="font-size:13px;font-weight:700">${feeds[0]&&feeds[0].icon ? feeds[0].icon : '📰'} ${cat}</span>
+            <span class="rss-col-chevron" id="rss-chev-${catId}">
+              <span class="rss-col-count" id="rss-count-${catId}">${feeds.length} source${feeds.length!==1?'s':''}</span>
+              ${isAll ? '▶' : '▼'}
+            </span>
+          </div>
+          <div class="rss-feed-tabs" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px;margin-top:6px">
+            ${feeds.map((f,i) => `<button class="filter-pill${i===0?' active':''}" style="font-size:10px;padding:2px 8px"
+                onclick="rssTabClick('${catId}','${encodeURIComponent(f.url)}','${encodeURIComponent(f.name)}',this)">${f.icon} ${f.name}</button>`).join('')}
+          </div>
+          <div class="rss-items" id="rss-items-${catId}">
+            <div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>
+            <div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>
+            <div class="skeleton" style="height:80px;border-radius:var(--r)"></div>
+          </div>
+        </div>`;
+    }).join('');
+
+    // Load first feed for each category in parallel
+    await Promise.all(toLoad.map(([cat, feeds]) => {
+        if (feeds.length > 0)
+            return loadFeedItems(cat.replace(/\s/g,'_'), encodeURIComponent(feeds[0].url), encodeURIComponent(feeds[0].name), null);
+    }));
+}
+
+// Toggle a single category column open/closed
+function toggleRssCol(catId) {
+    const col  = document.getElementById('rss-col-' + catId);
+    const chev = document.getElementById('rss-chev-' + catId);
+    if (!col) return;
+    const nowCollapsed = col.classList.toggle('collapsed');
+    if (chev) {
+        const countEl = document.getElementById('rss-count-' + catId);
+        const countTxt = countEl ? countEl.outerHTML : '';
+        chev.innerHTML = countTxt + (nowCollapsed ? ' ▶' : ' ▼');
     }
 }
 
+// Source-tab click: auto-expands the column then loads items
+function rssTabClick(catId, encodedUrl, encodedName, btnEl) {
+    const col = document.getElementById('rss-col-' + catId);
+    if (col && col.classList.contains('collapsed')) toggleRssCol(catId);
+    loadFeedItems(catId, encodedUrl, encodedName, btnEl);
+}
+
+// Expand / collapse all columns at once
+function rssExpandAll() {
+    document.querySelectorAll('#rss-content .rss-col').forEach(col => {
+        const catId = col.id.replace('rss-col-', '');
+        if (col.classList.contains('collapsed')) toggleRssCol(catId);
+    });
+}
+function rssCollapseAll() {
+    document.querySelectorAll('#rss-content .rss-col').forEach(col => {
+        const catId = col.id.replace('rss-col-', '');
+        if (!col.classList.contains('collapsed')) toggleRssCol(catId);
+    });
+}
+
 async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
-    // Update active tab
+    // Highlight the selected source tab
     const col = document.getElementById('rss-col-' + catId);
     if (col && btnEl) {
         col.querySelectorAll('.rss-feed-tabs .filter-pill').forEach(b => b.classList.remove('active'));
@@ -4279,7 +5514,8 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
 
     const itemsEl = document.getElementById('rss-items-' + catId);
     if (!itemsEl) return;
-    itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">Loading\u2026</div>';
+    // Skeleton while fetching
+    itemsEl.innerHTML = '<div class="skeleton" style="height:80px;border-radius:var(--r);margin-bottom:6px"></div>'.repeat(3);
 
     try {
         const url = decodeURIComponent(encodedUrl);
@@ -4288,19 +5524,43 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
         const items = d.items || [];
 
         if (!items.length) {
-            itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No items found</div>';
+            itemsEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No items found</div>';
+            _rssUpdateCount(catId, 0);
             return;
         }
 
-        itemsEl.innerHTML = items.slice(0,12).map(item => `
-            <a href="${item.link}" target="_blank" rel="noopener" style="display:block;text-decoration:none;padding:8px 4px;border-bottom:1px solid var(--border);">
-              <div style="font-size:12px;font-weight:500;color:var(--text);line-height:1.4;margin-bottom:3px">${item.title}</div>
-              <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
-            </a>`).join('') +
-            `<div style="padding:6px 4px;font-size:10px;color:var(--text3)">${decodeURIComponent(encodedName)}</div>`;
+        // Rich card layout: thumbnail left, title+excerpt+date right
+        itemsEl.innerHTML = items.slice(0, 12).map(item => `
+            <a href="${item.link}" target="_blank" rel="noopener"
+               style="display:flex;gap:10px;text-decoration:none;padding:8px 4px;border-bottom:1px solid var(--border);transition:background .12s ease;"
+               onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+              ${item.thumb
+                ? `<img src="${item.thumb}" loading="lazy" style="width:72px;height:52px;object-fit:cover;border-radius:5px;flex-shrink:0;background:var(--surface2)"
+                        onerror="this.style.display='none'">`
+                : `<div style="width:72px;height:52px;flex-shrink:0;background:var(--surface2);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text3)">📰</div>`}
+              <div style="flex:1;min-width:0;overflow:hidden">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:3px;
+                     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.title}</div>
+                ${item.excerpt
+                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.3;margin-bottom:3px;
+                            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.excerpt}</div>`
+                    : ''}
+                <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
+              </div>
+            </a>`).join('');
+
+        // Update chevron badge with article count
+        _rssUpdateCount(catId, items.length);
     } catch(e) {
         itemsEl.innerHTML = '<div style="color:var(--red);font-size:11px;padding:8px">Failed to load feed</div>';
     }
+}
+
+// Update the item-count badge in the column chevron
+function _rssUpdateCount(catId, n) {
+    const countEl = document.getElementById('rss-count-' + catId);
+    if (!countEl) return;
+    countEl.textContent = n > 0 ? `${n} article${n!==1?'s':''}` : 'no articles';
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -4386,6 +5646,164 @@ async function loadOverviewExtras() {
     } catch(e) {}
     // Dashboard containers panel
     loadDashboardContainers();
+    // Service integration cards
+    loadRadarrCard();
+    loadSonarrCard();
+    loadPlexCard();
+    loadSeerrCard();
+}
+
+// ── Service Card Loaders ───────────────────────────────────────────────
+// Each checks if the service is configured; if not, shows a "configure" prompt.
+
+function _svcUnconfigured(bodyId, svcName, settingsTab) {
+    const el = document.getElementById(bodyId);
+    if (el) el.innerHTML = `<div style="text-align:center;padding:12px 8px;color:var(--text3);font-size:12px">
+      <div style="font-size:20px;margin-bottom:4px">⚙️</div>
+      ${svcName} not configured — <a href="#" style="color:var(--blue)" onclick="showTab('settings',null);return false">add API key in Settings</a>
+    </div>`;
+}
+
+function _svcError(bodyId, msg) {
+    const el = document.getElementById(bodyId);
+    if (el) el.innerHTML = `<div style="color:var(--text3);font-size:11px;padding:8px;text-align:center">⚠ ${msg}</div>`;
+}
+
+async function loadRadarrCard() {
+    try {
+        const r = await fetch(API + '/api/services/radarr/calendar');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('radarr-card-body', 'Radarr');
+        if (d.error)  return _svcError('radarr-card-body', d.error);
+        const el = document.getElementById('radarr-card-body');
+        if (!el) return;
+        if (!d.movies || !d.movies.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming releases in the next 14 days</div>';
+            return;
+        }
+        el.innerHTML = d.movies.map(m => `
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+            ${m.poster ? `<img src="${m.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title} <span style="color:var(--text3);font-weight:400">(${m.year||''})</span></div>
+              <div style="font-size:10px;color:var(--text3)">${m.date || 'TBA'}</div>
+            </div>
+            ${m.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
+          </div>`).join('');
+    } catch(e) { _svcError('radarr-card-body', 'Could not reach Radarr'); }
+}
+
+async function loadSonarrCard() {
+    try {
+        const r = await fetch(API + '/api/services/sonarr/calendar');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('sonarr-card-body', 'Sonarr');
+        if (d.error) return _svcError('sonarr-card-body', d.error);
+        const el = document.getElementById('sonarr-card-body');
+        if (!el) return;
+        if (!d.episodes || !d.episodes.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming episodes this week</div>';
+            return;
+        }
+        el.innerHTML = d.episodes.map(ep => `
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+            ${ep.poster ? `<img src="${ep.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ep.series}</div>
+              <div style="font-size:10px;color:var(--text2)">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} · ${ep.title}</div>
+              <div style="font-size:10px;color:var(--text3)">${ep.airDate || 'TBA'}</div>
+            </div>
+            ${ep.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
+          </div>`).join('');
+    } catch(e) { _svcError('sonarr-card-body', 'Could not reach Sonarr'); }
+}
+
+async function loadPlexCard() {
+    try {
+        const r = await fetch(API + '/api/services/plex/sessions');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('plex-card-body', 'Plex');
+        if (d.error) return _svcError('plex-card-body', d.error);
+        const el = document.getElementById('plex-card-body');
+        if (!el) return;
+        const count = document.getElementById('plex-stream-count');
+        if (count) count.textContent = (d.sessions||[]).length + ' stream' + ((d.sessions||[]).length===1?'':'s');
+        if (!d.sessions || !d.sessions.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">Nothing playing right now</div>';
+            return;
+        }
+        el.innerHTML = d.sessions.map(s => {
+            const pct = s.progress || 0;
+            const barColor = pct > 80 ? 'var(--green)' : 'var(--blue)';
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                <span style="font-size:14px">▶</span>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.title}</div>
+                  ${s.subtitle ? `<div style="font-size:10px;color:var(--text2)">${s.subtitle}</div>` : ''}
+                  <div style="font-size:10px;color:var(--text3)">${s.user || 'Unknown user'} · ${s.player || ''}</div>
+                </div>
+                <span style="font-size:11px;font-weight:600;color:var(--blue);flex-shrink:0">${pct}%</span>
+              </div>
+              <div style="background:var(--surface2);border-radius:2px;height:3px">
+                <div style="width:${pct}%;height:3px;background:${barColor};border-radius:2px;transition:width .5s ease"></div>
+              </div>
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError('plex-card-body', 'Could not reach Plex'); }
+}
+
+async function loadSeerrCard() {
+    const STATUS_LABELS = {1:'Pending',2:'Approved',3:'Declined',4:'Available'};
+    const STATUS_COLORS = {1:'var(--yellow)',2:'var(--green)',3:'var(--red)',4:'var(--blue)'};
+    try {
+        const r = await fetch(API + '/api/services/seerr/requests');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured('seerr-card-body', 'Seerr');
+        if (d.error) return _svcError('seerr-card-body', d.error);
+        const el = document.getElementById('seerr-card-body');
+        if (!el) return;
+        if (!d.requests || !d.requests.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No recent requests</div>';
+            return;
+        }
+        el.innerHTML = d.requests.map(req => {
+            const lbl   = STATUS_LABELS[req.status] || 'Unknown';
+            const color = STATUS_COLORS[req.status] || 'var(--text3)';
+            const typeIcon = req.type === 'movie' ? '🎬' : req.type === 'tv' ? '📺' : '❓';
+            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+              <span style="font-size:16px;flex-shrink:0">${typeIcon}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;color:var(--text2)">TMDB #${req.title || req.id}</div>
+                <div style="font-size:10px;color:var(--text3)">by ${req.requestedBy || '?'} · ${req.createdAt}</div>
+              </div>
+              <span style="font-size:10px;font-weight:600;color:${color};flex-shrink:0">${lbl}</span>
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError('seerr-card-body', 'Could not reach Seerr'); }
+}
+
+// ── Service settings save/load ─────────────────────────────────────────
+async function saveSvcSettings() {
+    const fields = {
+        radarr_url: 'svc-radarr-url', radarr_api_key: 'svc-radarr-key',
+        sonarr_url: 'svc-sonarr-url', sonarr_api_key: 'svc-sonarr-key',
+        plex_url:   'svc-plex-url',   plex_token:     'svc-plex-token',
+        seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key'
+    };
+    const payload = {};
+    for (const [key, id] of Object.entries(fields)) {
+        const el = document.getElementById(id);
+        if (el) payload[key] = el.value.trim();
+    }
+    try {
+        const r = await fetch(API + '/api/settings', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const d = await r.json();
+        showToast(d.error ? 'Error: ' + d.error : 'Service settings saved', d.error ? 'error' : 'success');
+    } catch(e) { showToast('Save failed', 'error'); }
 }
 
 async function loadDashboardContainers() {
@@ -4517,7 +5935,380 @@ loadOverviewExtras();   // also calls loadDashboardContainers()
 startSSE();
 // Initial alerts render (will be updated once containers load)
 setTimeout(refreshAlerts, 2000);
+
+// ── Theme & Appearance ────────────────────────────────────────────────────
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t || 'dark');
+  localStorage.setItem('arrhub_theme', t);
+  document.querySelectorAll('.theme-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.t === t));
+}
+function applyAccent(a) {
+  if (a === 'blue') {
+    document.documentElement.removeAttribute('data-accent');
+  } else {
+    document.documentElement.setAttribute('data-accent', a);
+  }
+  localStorage.setItem('arrhub_accent', a);
+  document.querySelectorAll('.accent-swatch').forEach(b =>
+    b.classList.toggle('active', b.dataset.a === a));
+}
+// Resolve Unsplash page URLs to direct image URLs
+function _resolveUnsplash(url) {
+    // Unsplash photo page format: https://unsplash.com/photos/description-slug-PHOTOID
+    // The actual photo ID is the LAST dash-separated token (e.g. MjH55Ef3w_0)
+    const m = url.match(/unsplash\.com\/photos\/([\w-]+)/);
+    if (m) {
+        const slug = m[1].split('?')[0];
+        const parts = slug.split('-');
+        const photoId = parts[parts.length - 1]; // last segment is the short photo ID
+        // source.unsplash.com understands short IDs and serves the CDN image
+        return `https://source.unsplash.com/${photoId}/1920x1080`;
+    }
+    // https://unsplash.com/s/photos/... (search page) — can't resolve directly
+    if (url.includes('unsplash.com/s/')) return '';
+    return url;
+}
+
+function saveAppearance() {
+  let url = document.getElementById('bg-url-input')?.value.trim() || '';
+  if (url) {
+    const resolved = _resolveUnsplash(url);
+    if (!resolved) { showToast('Cannot use Unsplash search pages — paste a photo page URL', 'error', 4000); return; }
+    url = resolved;
+    const ui = document.getElementById('bg-url-input');
+    if (ui) ui.value = url; // update input to show resolved URL
+  }
+  const blur    = parseInt(document.getElementById('bg-blur-input')?.value || 4);
+  const overlay = parseInt(document.getElementById('bg-overlay-input')?.value || 70);
+  _applyBg(url, blur, overlay);
+  localStorage.setItem('arrhub_bg', JSON.stringify({url, blur, overlay}));
+  showToast('Background applied', 'success', 2000);
+}
+function resetAppearance() {
+  applyTheme('dark');
+  applyAccent('blue');
+  _applyBg('', 4, 70);
+  localStorage.removeItem('arrhub_bg');
+  localStorage.removeItem('arrhub_theme');
+  localStorage.removeItem('arrhub_accent');
+  showToast('Appearance reset to defaults', 'info', 2000);
+}
+function _applyBg(url, blur, overlay) {
+  const el = document.getElementById('bg-layer');
+  if (!el) return;
+  if (url) {
+    el.style.cssText = `display:block;position:fixed;inset:0;z-index:0;`
+      + `background:url(${url}) center/cover no-repeat;`
+      + `filter:blur(${blur}px) brightness(${(100 - overlay) / 100});`
+      + `transform:scale(1.05);`; // slightly enlarge to hide blur edges
+  } else {
+    el.style.display = 'none';
+  }
+  // Also sync sliders if visible
+  const bi = document.getElementById('bg-blur-input');
+  const oi = document.getElementById('bg-overlay-input');
+  if (bi) { bi.value = blur; document.getElementById('bg-blur-val').textContent = blur; }
+  if (oi) { oi.value = overlay; document.getElementById('bg-overlay-val').textContent = overlay; }
+  const ui = document.getElementById('bg-url-input');
+  if (ui) ui.value = url;
+}
+// Restore saved appearance on load
+(function _restoreAppearance() {
+  const t  = localStorage.getItem('arrhub_theme') || 'dark';
+  const a  = localStorage.getItem('arrhub_accent') || 'blue';
+  applyTheme(t);
+  applyAccent(a);
+  const bgRaw = localStorage.getItem('arrhub_bg');
+  if (bgRaw) {
+    try { const bg = JSON.parse(bgRaw); _applyBg(bg.url||'', bg.blur||4, bg.overlay||70); } catch(e) {}
+  }
+})();
+
+// ── GridStack Drag-and-Drop Dashboard ─────────────────────────────────────
+// Requires gridstack@10 loaded below. Activated only when "Edit Layout" clicked.
+// ── HLS.js player helper ─────────────────────────────────────────────────────
+const _hlsInstances = {};  // track HLS instances keyed by videoId to avoid duplicates
+
+function hlsPlay(videoId, url) {
+    if (!url) { showToast('No stream URL provided', 'error'); return; }
+    const video = document.getElementById(videoId);
+    if (!video) return;
+    video.style.display = 'block'; // show the video element (may be hidden by default)
+
+    // Destroy any existing HLS instance for this element
+    if (_hlsInstances[videoId]) {
+        try { _hlsInstances[videoId].destroy(); } catch(e) {}
+        delete _hlsInstances[videoId];
+    }
+
+    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        _hlsInstances[videoId] = hls;
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            video.play().catch(() => {}); // autoplay may be blocked — that's fine
+        });
+        hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.fatal) {
+                showToast('Stream error — CORS or stream unavailable. Try another stream.', 'error', 5000);
+            }
+        });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari/iOS have native HLS support
+        video.src = url;
+        video.play().catch(() => {});
+    } else {
+        showToast('HLS not supported in this browser', 'error');
+    }
+}
+
+let _gs  = null;
+let _gsEditing = false;
+
+function _gsInit() {
+  if (_gs || typeof GridStack === 'undefined') return false;
+  const el = document.getElementById('ov-grid');
+  if (!el) return false;
+  const isMobile = window.innerWidth < 900;
+  _gs = GridStack.init({
+    cellHeight: 60,           // smaller cells → finer positional control
+    column: isMobile ? 1 : 12,
+    margin: 8,
+    staticGrid: true,
+    animate: true,
+    float: false,
+    disableDrag: isMobile,
+    disableResize: isMobile,
+    resizable: { handles: 'e,se,s,sw,w' },  // resize from all sides
+    draggable: { handle: '.panel-title' },   // drag by title bar only
+  }, el);
+  // When a widget is resized, tell Chart.js canvases inside to resize too
+  _gs.on('resizestop', (event, element) => {
+    element.querySelectorAll('canvas').forEach(canvas => {
+      const chart = (typeof Chart !== 'undefined' && Chart.getChart) ? Chart.getChart(canvas) : null;
+      if (chart) { chart.resize(); }
+    });
+    element.querySelectorAll('.panel,.stat-grid').forEach(el => { el.style.opacity = '0.99'; requestAnimationFrame(() => { el.style.opacity = ''; }); });
+  });
+  // Restore saved layout
+  const saved = localStorage.getItem('arrhub_grid');
+  if (saved) {
+    try {
+      const items = JSON.parse(saved);
+      // Only apply saved positions if item IDs match current widgets
+      _gs.load(items, false);
+    } catch(e) { localStorage.removeItem('arrhub_grid'); }
+  }
+  // Show Reset button if a saved layout exists
+  const resetBtn = document.getElementById('ov-reset-btn');
+  if (resetBtn && localStorage.getItem('arrhub_grid')) resetBtn.style.display = '';
+  return true;
+}
+
+// ── Widget palette definitions ────────────────────────────────────────────────
+const WIDGET_DEFS = {
+  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:4, dx:0,  dy:0  },
+  weather:  { label: 'Weather',          icon: '🌤️', dw:6,  dh:4, dx:6,  dy:0  },
+  services: { label: 'Service Cards',    icon: '🃏',  dw:12, dh:5, dx:0,  dy:4  },
+  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:3, dx:0,  dy:9  },
+  logs:     { label: 'Recent Logs',      icon: '📋',  dw:4,  dh:4, dx:0,  dy:12 },
+  ctrs:     { label: 'Containers',       icon: '📦',  dw:8,  dh:4, dx:4,  dy:12 },
+  launcher: { label: 'Service Launcher', icon: '🚀',  dw:12, dh:3, dx:0,  dy:16 },
+};
+
+let _hiddenWidgets = new Set();
+
+// Save full widget config (hidden list + grid positions) to server
+async function _saveWidgetConfig() {
+  try {
+    const config = {
+      hidden: [..._hiddenWidgets],
+      grid: _gs ? _gs.save(false) : null
+    };
+    await fetch('/api/widget_config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+  } catch(e) {}
+}
+
+// Load widget config from server and apply hidden list
+async function _loadWidgetConfig() {
+  try {
+    const r = await fetch('/api/widget_config');
+    const data = await r.json();
+    if (Array.isArray(data.hidden) && data.hidden.length) {
+      _hiddenWidgets = new Set(data.hidden);
+      _hiddenWidgets.forEach(id => {
+        const el = document.querySelector(\`.grid-stack-item[gs-id="\${id}"]\`);
+        if (el) el.style.display = 'none';
+      });
+    }
+    // Grid positions from server take priority over localStorage
+    if (data.grid && Array.isArray(data.grid)) {
+      localStorage.setItem('arrhub_grid', JSON.stringify(data.grid));
+    }
+  } catch(e) {}
+}
+
+// Remove a widget during edit mode
+function removeWidget(gsId) {
+  if (!_gsEditing || !_gs) return;
+  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
+  if (!el) return;
+  _hiddenWidgets.add(gsId);
+  _gs.removeWidget(el, false);       // remove from grid but keep DOM node
+  el.style.display = 'none';
+  document.getElementById('ov-grid').appendChild(el);  // keep in DOM so it can be restored
+  const addBtn = document.getElementById('ov-add-btn');
+  if (addBtn) addBtn.style.display = '';
+  showToast(\`"\${WIDGET_DEFS[gsId]?.label || gsId}" hidden — use Add Widget to restore\`, 'info', 3000);
+}
+
+// Restore a hidden widget
+function restoreWidget(gsId) {
+  const def = WIDGET_DEFS[gsId];
+  if (!def || !_gs) return;
+  _hiddenWidgets.delete(gsId);
+  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
+  if (el) {
+    el.style.display = '';
+    _gs.makeWidget(el);
+  }
+  if (_hiddenWidgets.size === 0) {
+    const addBtn = document.getElementById('ov-add-btn');
+    if (addBtn) addBtn.style.display = 'none';
+  }
+  document.getElementById('widget-palette-modal').style.display = 'none';
+  showToast(\`"\${def.label}" restored\`, 'success', 2000);
+}
+
+// Show widget palette modal
+function showWidgetPalette() {
+  const body = document.getElementById('widget-palette-body');
+  if (!body) return;
+  body.innerHTML = '';
+  Object.entries(WIDGET_DEFS).forEach(([id, def]) => {
+    const isHidden = _hiddenWidgets.has(id);
+    const div = document.createElement('div');
+    div.className = 'widget-palette-card' + (isHidden ? '' : ' active');
+    div.title = isHidden ? 'Click to restore' : 'Click to hide';
+    div.innerHTML = \`<div class="wpc-icon">\${def.icon}</div><div class="wpc-name">\${def.label}</div><div class="wpc-status">\${isHidden ? '➕ Hidden' : '✅ Visible'}</div>\`;
+    div.onclick = () => {
+      if (isHidden) restoreWidget(id);
+      else removeWidget(id);
+      showWidgetPalette();  // refresh palette
+    };
+    body.appendChild(div);
+  });
+  document.getElementById('widget-palette-modal').style.display = 'flex';
+}
+
+// ── Service Launcher ─────────────────────────────────────────────────────────
+const _svcIcons = {
+  radarr:'🎥', sonarr:'📺', lidarr:'🎵', bazarr:'💬', prowlarr:'🔍',
+  jellyfin:'🎬', plex:'▶️', emby:'📽️', qbittorrent:'⬇️', transmission:'⬇️',
+  seerr:'🎬', tautulli:'📊', portainer:'🐳', dozzle:'📋', grafana:'📈',
+  uptime_kuma:'🟢', tdarr:'📦', fileflows:'🔄', handbrake:'🔧',
+  nextcloud:'☁️', immich:'🖼️', navidrome:'🎼', watchtower:'🔄',
+  vaultwarden:'🔐', n8n:'⚡', node_red:'🔴', komga:'📚', kavita:'📖',
+  arrhub_webui:'🏠', pihole:'🕳️', adguardhome:'🛡️',
+};
+function _launcherIcon(name) {
+  const k = name.toLowerCase().replace(/[^a-z0-9_]/g,'_');
+  for (const [key, icon] of Object.entries(_svcIcons)) {
+    if (k.includes(key)) return icon;
+  }
+  return '📦';
+}
+
+async function loadServiceLauncher() {
+  const el = document.getElementById('launcher-tiles');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/containers');
+    const data = await r.json();
+    const running = data.filter(c => c.state === 'running');
+    if (!running.length) {
+      el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No running containers found.</div>';
+      return;
+    }
+    el.innerHTML = running.map(c => {
+      const name = (c.name || '').replace(/^\\//, '');
+      const ports = c.ports || [];
+      // Pick first host port that looks like an HTTP port
+      const portEntry = ports.find(p => /^\\d+:\\d+/.test(p));
+      const hostPort = portEntry ? portEntry.split(':')[0] : null;
+      const url = hostPort ? \`http://\${window.location.hostname}:\${hostPort}\` : null;
+      const icon = _launcherIcon(name);
+      const tileHtml = \`<div class="launcher-tile-icon">\${icon}</div>
+        <div class="launcher-tile-name">\${name}</div>
+        \${hostPort ? \`<div class="launcher-tile-port">:\${hostPort}</div>\` : ''}\`;
+      return url
+        ? \`<a href="\${url}" target="_blank" rel="noopener" class="launcher-tile">\${tileHtml}</a>\`
+        : \`<div class="launcher-tile" style="opacity:.5;cursor:default">\${tileHtml}</div>\`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px">Failed to load containers.</div>';
+  }
+}
+
+function toggleGridEdit() {
+  _gsInit();
+  if (!_gs) { showToast('GridStack not loaded yet', 'error'); return; }
+  _gsEditing = !_gsEditing;
+  const btn      = document.getElementById('ov-edit-btn');
+  const resetBtn = document.getElementById('ov-reset-btn');
+  const addBtn   = document.getElementById('ov-add-btn');
+  const grid     = document.getElementById('ov-grid');
+  if (_gsEditing) {
+    _gs.setStatic(false);
+    _gs.on('change', () => {
+      localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false)));
+      if (resetBtn) resetBtn.style.display = '';
+    });
+    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg> Save Layout';
+    btn.style.background = 'var(--blue2)';
+    btn.style.color      = 'var(--blue)';
+    grid.classList.add('gs-editing');
+    if (addBtn) addBtn.style.display = '';
+    showToast('Drag by title bar · resize from edges · ✕ to hide widgets · click Save when done', 'info', 5000);
+  } else {
+    _gs.setStatic(true);
+    const gridData = _gs.save(false);
+    localStorage.setItem('arrhub_grid', JSON.stringify(gridData));
+    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> Edit Layout';
+    btn.style.background = '';
+    btn.style.color      = '';
+    grid.classList.remove('gs-editing');
+    if (addBtn) addBtn.style.display = 'none';
+    _saveWidgetConfig();  // persist to server
+    showToast('Layout saved', 'success', 2000);
+  }
+}
+
+function resetGridLayout() {
+  if (!confirm('Reset overview layout to defaults? (all widget positions + hidden state reset)')) return;
+  localStorage.removeItem('arrhub_grid');
+  _hiddenWidgets.clear();
+  _saveWidgetConfig();
+  const resetBtn = document.getElementById('ov-reset-btn');
+  if (resetBtn) resetBtn.style.display = 'none';
+  location.reload();
+}
+
+// Init GridStack in static mode on load to apply any saved positions
+window.addEventListener('load', async () => {
+  await _loadWidgetConfig();   // apply hidden widgets from server before init
+  setTimeout(_gsInit, 600);
+  loadServiceLauncher();       // populate launcher widget
+});
 </script>
+<script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 </body>
 </html>
 

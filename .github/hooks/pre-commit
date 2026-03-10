@@ -1,0 +1,54 @@
+#!/bin/bash
+# =============================================================================
+# ArrHub pre-commit hook — enforce GITHUB_BRANCH in install.sh AND arrhub.sh
+# =============================================================================
+# Prevents committing either file with the wrong GITHUB_BRANCH, which would
+# cause installs or self-updates to pull files from the wrong branch.
+#
+# Rules:
+#   main branch  → GITHUB_BRANCH="main"   in both files
+#   dev branch   → GITHUB_BRANCH="dev"    in both files
+#   any other    → GITHUB_BRANCH must NOT be "main"
+# =============================================================================
+
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+FAIL=0
+
+check_staged_file() {
+    local file="$1"
+
+    # Only check if this file is staged
+    git diff --cached --name-only | grep -q "^${file}$" || return 0
+
+    # Read GITHUB_BRANCH from the staged version (skip the env-var override line)
+    local staged_branch
+    staged_branch="$(git show ":${file}" 2>/dev/null \
+        | grep '^GITHUB_BRANCH=' \
+        | grep -v 'ARRHUB_BRANCH' \
+        | head -1 \
+        | cut -d'"' -f2)"
+
+    if [[ -z "${staged_branch}" ]]; then
+        echo "⚠  pre-commit: could not read GITHUB_BRANCH from staged ${file} (skipping check)" >&2
+        return 0  # non-fatal
+    fi
+
+    if [[ "${CURRENT_BRANCH}" == "main" && "${staged_branch}" != "main" ]]; then
+        echo "" >&2
+        echo "✗  pre-commit: ${file} has GITHUB_BRANCH=\"${staged_branch}\" but you are on 'main'" >&2
+        echo "   Fix: set GITHUB_BRANCH=\"main\" in ${file} before committing to main" >&2
+        echo "" >&2
+        FAIL=1
+    elif [[ "${CURRENT_BRANCH}" != "main" && "${staged_branch}" == "main" ]]; then
+        echo "" >&2
+        echo "✗  pre-commit: ${file} has GITHUB_BRANCH=\"main\" but current branch is '${CURRENT_BRANCH}'" >&2
+        echo "   Fix: set GITHUB_BRANCH=\"${CURRENT_BRANCH}\" in ${file}" >&2
+        echo "" >&2
+        FAIL=1
+    fi
+}
+
+check_staged_file "install.sh"
+check_staged_file "arrhub.sh"
+
+exit ${FAIL}

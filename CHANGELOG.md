@@ -6,6 +6,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.12.0] — 2026-03-10
+
+### Fixed
+- **Plex auth 401 error** — removed erroneous `_svc_get(url, "/status/sessions", None)` call
+  that fired before the authenticated request, immediately raising a 401. Added explicit
+  `if not token: return configured=False` guard. Plex card now loads correctly once token is set.
+
+### Added
+- **Service Launcher widget** (new overview panel) — displays all running Docker containers as
+  clickable tiles with app icon, name, and first exposed port URL. Auto-refreshes when switching
+  to the Overview tab.
+- **Widget hide/show palette** — in Edit Layout mode each widget gets a ✕ button to remove it
+  from the grid. An "Add Widget" button opens a palette modal showing all widgets with toggle
+  toggle (click to hide or restore). State persists server-side via `/api/widget_config`.
+- **Tdarr custom service** (`add_service_tdarr`) — proper compose YAML with internal transcoding
+  node enabled, media dir mounted at `/media`, config/server/logs directories created, port
+  conflict resolution. Auto-starts transcoding once a library is configured in the WebUI.
+- **FileFlows custom service** (`add_service_fileflows`) — compose with `/media` mount, `/temp`
+  working dir, port conflict resolution. Both Tdarr and FileFlows marked as `APP_CUSTOM_SVC`.
+
 ## [3.11.0] — 2026-03-10
 
 ### Fixed

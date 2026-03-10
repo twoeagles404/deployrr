@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.8.0 · Full deployment, update management, and real-time monitoring
+Version: 3.9.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.8.0"
+            "version": "3.9.0"
         }
     })
 
@@ -2943,7 +2943,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.8.0</div>
+      <div class="sb-version">v3.9.0</div>
     </div>
   </div>
 
@@ -3236,35 +3236,23 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ④ Docker info  (default: left 6 cols, row 9) -->
-        <div class="grid-stack-item" gs-id="docker" gs-x="0" gs-y="9" gs-w="6" gs-h="3">
+        <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 9) -->
+        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="9" gs-w="12" gs-h="3">
           <div class="grid-stack-item-content">
             <div class="panel" style="margin:0;height:100%;overflow:auto">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                Docker
+                Docker &amp; Network
               </div>
-              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+              <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
+                <!-- Docker stats -->
                 <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
                 <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
                 <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Disk Used</div></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ⑤ Network I/O  (default: right 6 cols, row 9) -->
-        <div class="grid-stack-item" gs-id="network" gs-x="6" gs-y="9" gs-w="6" gs-h="3">
-          <div class="grid-stack-item-content">
-            <div class="panel" style="margin:0;height:100%;overflow:auto">
-              <div class="panel-title">
-                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
-                Network I/O
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Total Sent</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Total Received</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Docker Disk</div></div>
+                <!-- Network I/O stats -->
+                <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Net ↑ Sent</div></div>
+                <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Net ↓ Recv</div></div>
               </div>
             </div>
           </div>
@@ -3581,7 +3569,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.8.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.9.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -3672,102 +3660,106 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
 
       <!-- ─────────────────────────────────────────────────────────────────────
-           Free TV / IPTV view — HLS.js live streams + free streaming services
+           Free TV view — dlstreams.top channel browser + popular quick-launch
+           cards + custom M3U8 player + free streaming links
            ───────────────────────────────────────────────────────────────────── -->
       <div id="rss-iptv-view" style="display:none">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:14px">
-          🎬 Free TV — HLS live streams play directly in-browser (click ▶ Play to start). Free streaming links open in a new tab.
+
+        <!-- ① dlstreams.top embedded channel browser -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--text)">📡 DaddyLive — 1000+ Free Channels</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Browse and click any channel to open its stream in the player below</div>
+          </div>
+          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="btn" style="font-size:11px;padding:4px 12px;text-decoration:none">
+            ↗ Open in New Tab
+          </a>
         </div>
 
-        <!-- HLS live streams -->
+        <!-- Channel browser iframe — embed the 24/7 listing page -->
+        <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px">
+          <iframe id="dlstreams-browser"
+            src="https://dlstreams.top/24-7-channels.php"
+            style="width:100%;height:480px;border:none;background:var(--bg2)"
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
+            referrerpolicy="no-referrer"
+            loading="lazy"
+            title="DaddyLive Channel Browser">
+          </iframe>
+          <!-- Shown only if iframe is blocked by X-Frame-Options -->
+          <noscript><div style="padding:20px;text-align:center;color:var(--text3)">Enable JavaScript or <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" style="color:var(--blue)">open site directly</a></div></noscript>
+        </div>
+
+        <!-- ② Popular channel quick-launch cards (open watch page in new tab) -->
         <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
-          <span>📡 HLS Live Streams</span>
-          <span style="font-size:10px;font-weight:400;color:var(--text3)">(plays in browser via HLS.js)</span>
+          <span>⚡ Quick Launch</span>
+          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens channel in new tab)</span>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:20px">
-
-          <!-- NASA TV -->
-          <div class="panel" style="margin:0">
-            <div class="panel-title">🚀 NASA TV</div>
-            <video id="hls-nasa" controls muted playsinline style="width:100%;height:200px;background:#000;border-radius:6px;object-fit:contain"></video>
-            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px" onclick="hlsPlay('hls-nasa','https://ntv1.akamaized.net/hls/live/2014075/NASA-NTV1-HLS/master.m3u8')">
-              ▶ Play NASA TV
-            </button>
-          </div>
-
-          <!-- France 24 English -->
-          <div class="panel" style="margin:0">
-            <div class="panel-title">🇫🇷 France 24 English</div>
-            <video id="hls-f24" controls muted playsinline style="width:100%;height:200px;background:#000;border-radius:6px;object-fit:contain"></video>
-            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px" onclick="hlsPlay('hls-f24','https://stream.france24.com/hls/live/2037800/F24_EN_LO_HLS/master.m3u8')">
-              ▶ Play France 24
-            </button>
-          </div>
-
-          <!-- Al Jazeera English -->
-          <div class="panel" style="margin:0">
-            <div class="panel-title">🌍 Al Jazeera English</div>
-            <video id="hls-aljazeera" controls muted playsinline style="width:100%;height:200px;background:#000;border-radius:6px;object-fit:contain"></video>
-            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px" onclick="hlsPlay('hls-aljazeera','https://live-hls-web-aje.getaj.net/AJE/index.m3u8')">
-              ▶ Play Al Jazeera
-            </button>
-          </div>
-
-          <!-- Custom M3U8 URL -->
-          <div class="panel" style="margin:0">
-            <div class="panel-title">🔗 Custom HLS Stream</div>
-            <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Paste any M3U8 / HLS stream URL</div>
-            <input type="text" id="hls-custom-url" placeholder="https://example.com/stream.m3u8"
-              style="width:100%;padding:8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-bottom:6px">
-            <video id="hls-custom" controls muted playsinline style="width:100%;height:160px;background:#000;border-radius:6px;object-fit:contain"></video>
-            <button class="btn-primary" style="width:100%;justify-content:center;margin-top:8px;font-size:12px"
-              onclick="hlsPlay('hls-custom',document.getElementById('hls-custom-url').value.trim())">
-              ▶ Play Custom Stream
-            </button>
-          </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:20px">
+          <a href="https://dlstreams.top/watch.php?id=51"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇺🇸</div><div style="font-weight:600;color:var(--text);font-size:12px">ABC USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=44"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏈</div><div style="font-weight:600;color:var(--text);font-size:12px">ESPN USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=35"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">⚽</div><div style="font-weight:600;color:var(--text);font-size:12px">Sky Sports</div></a>
+          <a href="https://dlstreams.top/watch.php?id=61"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🌍</div><div style="font-weight:600;color:var(--text);font-size:12px">beIN Sports</div></a>
+          <a href="https://dlstreams.top/watch.php?id=72"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📺</div><div style="font-weight:600;color:var(--text);font-size:12px">CNN USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=57"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📰</div><div style="font-weight:600;color:var(--text);font-size:12px">Fox News</div></a>
+          <a href="https://dlstreams.top/watch.php?id=78"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇬🇧</div><div style="font-weight:600;color:var(--text);font-size:12px">BBC News</div></a>
+          <a href="https://dlstreams.top/watch.php?id=97"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏀</div><div style="font-weight:600;color:var(--text);font-size:12px">NBA TV</div></a>
+          <a href="https://dlstreams.top/watch.php?id=68"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🎬</div><div style="font-weight:600;color:var(--text);font-size:12px">TNT USA</div></a>
+          <a href="https://dlstreams.top/watch.php?id=86"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🚀</div><div style="font-weight:600;color:var(--text);font-size:12px">NASA TV</div></a>
+          <a href="https://dlstreams.top/watch.php?id=42"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇩🇪</div><div style="font-weight:600;color:var(--text);font-size:12px">DW News</div></a>
+          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0;border-style:dashed" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">+</div><div style="font-weight:600;color:var(--text3);font-size:12px">More…</div></a>
         </div>
 
-        <!-- Free streaming services — external links -->
+        <!-- ③ Custom M3U8 URL player -->
+        <details style="margin-bottom:16px">
+          <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text);padding:8px 0;user-select:none">🔗 Custom HLS / M3U8 Stream Player</summary>
+          <div style="padding:10px 0">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Paste any direct M3U8 stream URL — plays in-browser via HLS.js</div>
+            <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+              <input type="text" id="hls-custom-url" placeholder="https://example.com/stream.m3u8"
+                style="flex:1;min-width:260px;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px">
+              <button class="btn-primary" style="white-space:nowrap" onclick="hlsPlay('hls-custom',document.getElementById('hls-custom-url').value.trim())">▶ Play</button>
+            </div>
+            <video id="hls-custom" controls muted playsinline
+              style="width:100%;height:280px;background:#000;border-radius:var(--r);margin-top:8px;object-fit:contain;display:none"></video>
+          </div>
+        </details>
+
+        <!-- ④ Free streaming services — external links -->
         <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
           <span>📺 Free Streaming Services</span>
           <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens in new tab)</span>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">
-          <a href="https://pluto.tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">📡</div>
-            <div style="font-weight:600;color:var(--text);font-size:13px">Pluto TV</div>
-            <div style="font-size:10px;color:var(--text3);text-align:center">250+ live channels</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
+          <a href="https://pluto.tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">📡</div><div style="font-weight:600;color:var(--text);font-size:12px">Pluto TV</div>
+            <div style="font-size:10px;color:var(--text3);text-align:center">250+ channels</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
           </a>
-          <a href="https://tubitv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🎬</div>
-            <div style="font-weight:600;color:var(--text);font-size:13px">Tubi</div>
+          <a href="https://tubitv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">🎬</div><div style="font-weight:600;color:var(--text);font-size:12px">Tubi</div>
             <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; shows</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
           </a>
-          <a href="https://watch.plex.tv/live-tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">▶️</div>
-            <div style="font-weight:600;color:var(--text);font-size:13px">Plex Free TV</div>
+          <a href="https://watch.plex.tv/live-tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">▶️</div><div style="font-weight:600;color:var(--text);font-size:12px">Plex Free TV</div>
             <div style="font-size:10px;color:var(--text3);text-align:center">Live TV &amp; VOD</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
           </a>
-          <a href="https://www.peacocktv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🦚</div>
-            <div style="font-weight:600;color:var(--text);font-size:13px">Peacock</div>
+          <a href="https://www.peacocktv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">🦚</div><div style="font-weight:600;color:var(--text);font-size:12px">Peacock</div>
             <div style="font-size:10px;color:var(--text3);text-align:center">NBC free tier</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE TIER</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE TIER</div>
           </a>
-          <a href="https://therokuchannel.roku.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">📺</div>
-            <div style="font-weight:600;color:var(--text);font-size:13px">Roku Channel</div>
+          <a href="https://therokuchannel.roku.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">📺</div><div style="font-weight:600;color:var(--text);font-size:12px">Roku Channel</div>
             <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; live TV</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
           </a>
-          <a href="https://www.crackle.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px;cursor:pointer;margin:0;transition:border-color var(--transition)" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🎥</div>
-            <div style="font-weight:600;color:var(--text);font-size:13px">Crackle</div>
+          <a href="https://www.crackle.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">🎥</div><div style="font-weight:600;color:var(--text);font-size:12px">Crackle</div>
             <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; originals</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:2px 8px;border-radius:10px;font-weight:600">FREE</div>
+            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
           </a>
         </div>
       </div>
@@ -4397,8 +4389,9 @@ function renderContainers() {
         }
     });
 
-    // If the grid had a non-card placeholder (empty state), clear it
-    if (grid.querySelector('.empty')) grid.innerHTML = '';
+    // Remove any placeholder/skeleton/empty-state elements (but keep real .ctr-card nodes
+    // so existing cards can be updated in-place without destroying their Chart.js canvases)
+    [...grid.children].forEach(el => { if (!el.classList.contains('ctr-card')) el.remove(); });
 
     // Add new cards; update existing ones in-place (no chart destruction)
     ctrs.forEach((c, idx) => {
@@ -5910,6 +5903,7 @@ function hlsPlay(videoId, url) {
     if (!url) { showToast('No stream URL provided', 'error'); return; }
     const video = document.getElementById(videoId);
     if (!video) return;
+    video.style.display = 'block'; // show the video element (may be hidden by default)
 
     // Destroy any existing HLS instance for this element
     if (_hlsInstances[videoId]) {

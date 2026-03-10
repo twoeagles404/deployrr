@@ -6,6 +6,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.9.0] — 2026-03-09
+
+### Added
+- **dlstreams.top Free TV integration** — replaced broken HLS-direct streams (CORS failures) with
+  embedded iframe of `dlstreams.top/24-7-channels.php` (1 000+ channels) plus 12 quick-launch
+  channel cards (ABC, ESPN, Sky Sports, beIN, CNN, Fox News, BBC, NBA TV, TNT, NASA, DW, More).
+  Custom M3U8 input kept inside a collapsible `<details>` block for advanced users.
+
+### Fixed
+- **Container skeleton cards persisting** — `renderContainers()` now removes all non-`.ctr-card`
+  children (skeleton placeholders) before injecting real data, instead of only clearing on
+  `.empty` state; fixes ghost cards visible alongside live container cards.
+- **`arrhub_webui` duplicate install from media wizard** — `build_my_stack()` wizard no longer
+  force-appends `arrhub_webui` to `final_selection`; `install.sh` already handles WebUI install
+  before the wizard runs, so this caused a redundant deploy attempt on every media stack.
+
+### Changed
+- **Dashboard: Docker & Network merged panel** — two separate 6-column GridStack widgets (Docker
+  stats and Network I/O) collapsed into a single 12-column "Docker & Network" panel with a
+  6-up stat grid (Images, Volumes, Networks, Docker Disk, Net ↑ Sent, Net ↓ Recv).
+
+---
+
 ## [3.8.0] — 2026-03-09
 
 ### Added

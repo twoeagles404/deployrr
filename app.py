@@ -6508,7 +6508,7 @@ async function _loadWidgetConfig() {
     if (Array.isArray(data.hidden) && data.hidden.length) {
       _hiddenWidgets = new Set(data.hidden);
       _hiddenWidgets.forEach(id => {
-        const el = document.querySelector(\`.grid-stack-item[gs-id="\${id}"]\`);
+        const el = document.querySelector(`.grid-stack-item[gs-id="${id}"]`);
         if (el) el.style.display = 'none';
       });
     }
@@ -6522,7 +6522,7 @@ async function _loadWidgetConfig() {
 // Remove a widget during edit mode
 function removeWidget(gsId) {
   if (!_gsEditing || !_gs) return;
-  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
+  const el = document.querySelector(`.grid-stack-item[gs-id="${gsId}"]`);
   if (!el) return;
   _hiddenWidgets.add(gsId);
   _gs.removeWidget(el, false);       // remove from grid but keep DOM node
@@ -6530,7 +6530,7 @@ function removeWidget(gsId) {
   document.getElementById('ov-grid').appendChild(el);  // keep in DOM so it can be restored
   const addBtn = document.getElementById('ov-add-btn');
   if (addBtn) addBtn.style.display = '';
-  showToast(\`"\${WIDGET_DEFS[gsId]?.label || gsId}" hidden — use Add Widget to restore\`, 'info', 3000);
+  showToast(`"${WIDGET_DEFS[gsId]?.label || gsId}" hidden — use Add Widget to restore`, 'info', 3000);
 }
 
 // Restore a hidden widget
@@ -6538,7 +6538,7 @@ function restoreWidget(gsId) {
   const def = WIDGET_DEFS[gsId];
   if (!def || !_gs) return;
   _hiddenWidgets.delete(gsId);
-  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
+  const el = document.querySelector(`.grid-stack-item[gs-id="${gsId}"]`);
   if (el) {
     el.style.display = '';
     _gs.makeWidget(el);
@@ -6548,7 +6548,7 @@ function restoreWidget(gsId) {
     if (addBtn) addBtn.style.display = 'none';
   }
   document.getElementById('widget-palette-modal').style.display = 'none';
-  showToast(\`"\${def.label}" restored\`, 'success', 2000);
+  showToast(`"${def.label}" restored`, 'success', 2000);
 }
 
 // Show widget palette modal
@@ -6561,7 +6561,7 @@ function showWidgetPalette() {
     const div = document.createElement('div');
     div.className = 'widget-palette-card' + (isHidden ? '' : ' active');
     div.title = isHidden ? 'Click to restore' : 'Click to hide';
-    div.innerHTML = \`<div class="wpc-icon">\${def.icon}</div><div class="wpc-name">\${def.label}</div><div class="wpc-status">\${isHidden ? '➕ Hidden' : '✅ Visible'}</div>\`;
+    div.innerHTML = `<div class="wpc-icon">${def.icon}</div><div class="wpc-name">${def.label}</div><div class="wpc-status">${isHidden ? '➕ Hidden' : '✅ Visible'}</div>`;
     div.onclick = () => {
       if (isHidden) restoreWidget(id);
       else removeWidget(id);
@@ -6602,19 +6602,19 @@ async function loadServiceLauncher() {
       return;
     }
     el.innerHTML = running.map(c => {
-      const name = (c.name || '').replace(/^\\//, '');
+      const name = (c.name || '').replace(/^\//, '');
       const ports = c.ports || [];
       // Pick first host port that looks like an HTTP port
       const portEntry = ports.find(p => /^\\d+:\\d+/.test(p));
       const hostPort = portEntry ? portEntry.split(':')[0] : null;
-      const url = hostPort ? \`http://\${window.location.hostname}:\${hostPort}\` : null;
+      const url = hostPort ? `http://${window.location.hostname}:${hostPort}` : null;
       const icon = _launcherIcon(name);
-      const tileHtml = \`<div class="launcher-tile-icon">\${icon}</div>
-        <div class="launcher-tile-name">\${name}</div>
-        \${hostPort ? \`<div class="launcher-tile-port">:\${hostPort}</div>\` : ''}\`;
+      const tileHtml = `<div class="launcher-tile-icon">${icon}</div>
+        <div class="launcher-tile-name">${name}</div>
+        ${hostPort ? `<div class="launcher-tile-port">:${hostPort}</div>` : ''}`;
       return url
-        ? \`<a href="\${url}" target="_blank" rel="noopener" class="launcher-tile">\${tileHtml}</a>\`
-        : \`<div class="launcher-tile" style="opacity:.5;cursor:default">\${tileHtml}</div>\`;
+        ? `<a href="${url}" target="_blank" rel="noopener" class="launcher-tile">${tileHtml}</a>`
+        : `<div class="launcher-tile" style="opacity:.5;cursor:default">${tileHtml}</div>`;
     }).join('');
   } catch(e) {
     el.innerHTML = '<div style="color:var(--text3);font-size:12px">Failed to load containers.</div>';

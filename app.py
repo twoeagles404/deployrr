@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.14.0 · Full deployment, update management, and real-time monitoring
+Version: 3.15.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -488,7 +488,8 @@ def api_hardware():
     try:
         cpu_info = {
             "count": psutil.cpu_count(),
-            "freq": psutil.cpu_freq()._asdict() if psutil.cpu_freq() else {}
+            "freq": psutil.cpu_freq()._asdict() if psutil.cpu_freq() else {},
+            "percent": psutil.cpu_percent(interval=0.2)
         }
 
         memory = psutil.virtual_memory()
@@ -934,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.14.0",
+            "version": "3.15.0",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1298,7 +1299,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.14.0"})
+    return jsonify({"update_available": False, "version": "3.15.0"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1601,9 +1602,9 @@ def api_rss_fetch():
         import urllib.request
         is_reddit = "reddit.com" in url
         if is_reddit:
-            headers = {"User-Agent": "linux:arrhub:v3.14.0 (by /u/arrhub_bot)"}
+            headers = {"User-Agent": "linux:arrhub:v3.15.0 (by /u/arrhub_bot)"}
         else:
-            headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.14; +https://github.com/twoeagles404/arrhub)"}
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; +https://github.com/twoeagles404/arrhub)"}
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
@@ -1717,6 +1718,67 @@ def api_rss_fetch():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e), "items": []}), 200
+
+@app.route("/api/iptv/channels")
+def api_iptv_channels():
+    """Proxy DaddyLive channel list from dlstreams.top API."""
+    try:
+        import requests as _req
+        r = _req.get(
+            "https://dlstreams.top/api.php",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15)"},
+            timeout=10
+        )
+        data = r.json()
+        # Normalise to [{id, name, group, logo}]
+        channels = []
+        for ch in (data if isinstance(data, list) else []):
+            channels.append({
+                "id":    ch.get("id") or ch.get("stream_id") or ch.get("channel_id", ""),
+                "name":  ch.get("name") or ch.get("channel_name", "Unknown"),
+                "group": ch.get("group") or ch.get("group-title") or ch.get("category", "General"),
+                "logo":  ch.get("tvg-logo") or ch.get("logo") or "",
+            })
+        return jsonify({"channels": channels, "count": len(channels)})
+    except Exception as e:
+        # Fallback: return the hardcoded popular channels so the UI still works
+        return jsonify({"channels": _IPTV_FALLBACK_CHANNELS, "count": len(_IPTV_FALLBACK_CHANNELS), "fallback": True})
+
+@app.route("/api/iptv/schedule")
+def api_iptv_schedule():
+    """Proxy live-sports schedule from streamed.su."""
+    endpoint = request.args.get("type", "live")  # live | all
+    url = f"https://streamed.su/api/matches/{endpoint}"
+    try:
+        import requests as _req
+        r = _req.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15)"}, timeout=10)
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error": str(e), "matches": []}), 200
+
+# Fallback channels shown when the DaddyLive API is unreachable
+_IPTV_FALLBACK_CHANNELS = [
+    {"id":"51",  "name":"ABC USA",          "group":"News",          "logo":""},
+    {"id":"44",  "name":"ESPN USA",          "group":"Sports",        "logo":""},
+    {"id":"45",  "name":"ESPN2 USA",         "group":"Sports",        "logo":""},
+    {"id":"35",  "name":"Sky Sports Main",   "group":"Sports",        "logo":""},
+    {"id":"36",  "name":"Sky Sports News",   "group":"Sports",        "logo":""},
+    {"id":"61",  "name":"beIN Sports 1",     "group":"Sports",        "logo":""},
+    {"id":"62",  "name":"beIN Sports 2",     "group":"Sports",        "logo":""},
+    {"id":"97",  "name":"NBA TV",            "group":"Sports",        "logo":""},
+    {"id":"72",  "name":"CNN USA",           "group":"News",          "logo":""},
+    {"id":"57",  "name":"Fox News",          "group":"News",          "logo":""},
+    {"id":"78",  "name":"BBC News",          "group":"News",          "logo":""},
+    {"id":"42",  "name":"DW News",           "group":"News",          "logo":""},
+    {"id":"68",  "name":"TNT USA",           "group":"Entertainment", "logo":""},
+    {"id":"86",  "name":"NASA TV",           "group":"Entertainment", "logo":""},
+    {"id":"53",  "name":"Comedy Central",    "group":"Entertainment", "logo":""},
+    {"id":"101", "name":"Discovery Channel", "group":"Entertainment", "logo":""},
+    {"id":"105", "name":"National Geographic","group":"Entertainment","logo":""},
+    {"id":"109", "name":"History Channel",   "group":"Entertainment", "logo":""},
+    {"id":"113", "name":"Animal Planet",     "group":"Entertainment", "logo":""},
+    {"id":"120", "name":"Cartoon Network",   "group":"Entertainment", "logo":""},
+]
 
 @app.route("/api/rss")
 def api_rss():
@@ -3229,7 +3291,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.14.0</div>
+      <div class="sb-version">v3.15.0</div>
     </div>
   </div>
 
@@ -3303,6 +3365,10 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-item" onclick="showTab('rss',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7m-6 0a1 1 0 11-2 0 1 1 0 012 0z"/></svg>
       RSS Feeds
+    </div>
+    <div class="sb-item" onclick="showTab('iptv',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.868v6.264a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+      IPTV Player
     </div>
   </div>
 
@@ -3409,9 +3475,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
                   <div style="position:relative;width:100px;height:100px">
                     <canvas id="cpu-gauge-canvas" width="100" height="100"></canvas>
-                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;padding-bottom:18px">
-                      <span id="cpu-gauge-text" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
-                    </div>
+                    <span id="cpu-gauge-text" style="position:absolute;left:50%;top:43%;transform:translate(-50%,-50%);font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);pointer-events:none">0%</span>
                   </div>
                   <span class="gauge-sub" id="cpu-cores">— cores</span>
                 </div>
@@ -3426,9 +3490,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
                   <div style="position:relative;width:100px;height:100px">
                     <canvas id="mem-gauge-canvas" width="100" height="100"></canvas>
-                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;padding-bottom:18px">
-                      <span id="mem-gauge-text" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
-                    </div>
+                    <span id="mem-gauge-text" style="position:absolute;left:50%;top:43%;transform:translate(-50%,-50%);font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);pointer-events:none">0%</span>
                   </div>
                   <span class="gauge-sub" id="mem-detail">— / — GB</span>
                 </div>
@@ -3729,17 +3791,36 @@ body.sse-disconnected #app{padding-top:38px;}
         <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Rate ↑/↓</th><th>Status</th></tr></thead>
         <tbody id="net-table"></tbody></table>
       </div>
-      <!-- ── Hardware (merged) ── -->
+      <!-- ── Hardware (merged) — pie charts ── -->
       <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin:18px 0 8px">Hardware</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div class="panel">
-          <div class="panel-title">CPU</div>
-          <div class="stat-grid" id="hw-cpu"></div>
+
+        <!-- CPU pie chart -->
+        <div class="panel" style="display:flex;flex-direction:column;align-items:center;padding:16px 12px;gap:10px">
+          <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;align-self:flex-start">CPU</div>
+          <div style="position:relative;width:120px;height:120px">
+            <canvas id="hw-cpu-chart" width="120" height="120"></canvas>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;pointer-events:none">
+              <span id="hw-cpu-pct" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text)">—%</span>
+              <span style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Usage</span>
+            </div>
+          </div>
+          <div id="hw-cpu-detail" style="font-size:11px;color:var(--text2);text-align:center">— cores · — MHz</div>
         </div>
-        <div class="panel">
-          <div class="panel-title">Memory</div>
-          <div id="hw-mem"></div>
+
+        <!-- Memory pie chart -->
+        <div class="panel" style="display:flex;flex-direction:column;align-items:center;padding:16px 12px;gap:10px">
+          <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;align-self:flex-start">Memory</div>
+          <div style="position:relative;width:120px;height:120px">
+            <canvas id="hw-mem-chart" width="120" height="120"></canvas>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;pointer-events:none">
+              <span id="hw-mem-pct" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text)">—%</span>
+              <span style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Used</span>
+            </div>
+          </div>
+          <div id="hw-mem-detail" style="font-size:11px;color:var(--text2);text-align:center">— / — GB</div>
         </div>
+
       </div>
     </div>
 
@@ -3917,13 +3998,120 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.14.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
     </div>
 
     <!-- ── RSS FEEDS ── -->
+    <!-- ═══════════════════════════════════════════════════════════
+         IPTV PLAYER TAB
+    ═══════════════════════════════════════════════════════════ -->
+    <div id="tab-iptv" class="tab-panel">
+      <div class="section-header">
+        <div>
+          <div class="section-title">📺 IPTV Player</div>
+          <div class="section-sub">Live channels · Sports · Multiview · Schedule</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="view-btn active" id="iptv-view-channels" onclick="iptvSetView('channels')">📡 Channels</button>
+          <button class="view-btn" id="iptv-view-schedule" onclick="iptvSetView('schedule')">📅 Schedule</button>
+          <button class="view-btn" id="iptv-view-multiview" onclick="iptvSetView('multiview')">⊞ Multiview</button>
+          <button class="btn-primary" onclick="iptvReload()">↺ Refresh</button>
+        </div>
+      </div>
+
+      <!-- ── CHANNELS VIEW ── -->
+      <div id="iptv-channels-view">
+        <div style="display:grid;grid-template-columns:260px 1fr;gap:14px;min-height:520px">
+
+          <!-- Left: channel browser -->
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="search-wrap" style="margin:0">
+              <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              <input type="text" id="iptv-search" placeholder="Search channels…" oninput="iptvFilterChannels()">
+            </div>
+            <div id="iptv-cat-pills" style="display:flex;gap:4px;flex-wrap:wrap"></div>
+            <div id="iptv-channel-list"
+                 style="flex:1;overflow-y:auto;max-height:460px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:4px">
+              <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading channels…</div>
+            </div>
+          </div>
+
+          <!-- Right: player -->
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <!-- Now-playing bar -->
+            <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:8px 14px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="font-size:18px">📺</span>
+                <div>
+                  <div id="iptv-now-playing" style="font-size:13px;font-weight:600;color:var(--text)">Select a channel</div>
+                  <div id="iptv-now-source" style="font-size:10px;color:var(--text3)">DaddyLive · 1000+ channels</div>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px">
+                <button class="btn" style="font-size:11px;padding:3px 10px" onclick="iptvAddToMultiview()" title="Add to multiview">⊞ Multiview</button>
+                <button class="btn" style="font-size:11px;padding:3px 10px" id="iptv-popout-btn" onclick="iptvPopout()" title="Open in new tab">↗ Pop-out</button>
+              </div>
+            </div>
+            <!-- Player iframe -->
+            <div style="position:relative;background:#000;border-radius:var(--r);overflow:hidden;flex:1;min-height:400px">
+              <div id="iptv-player-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text3)">
+                <div style="font-size:48px">📡</div>
+                <div style="font-size:14px">Click a channel to start watching</div>
+                <div style="font-size:11px;color:var(--text3)">1000+ free live channels via DaddyLive</div>
+              </div>
+              <iframe id="iptv-player-frame"
+                src="about:blank"
+                style="width:100%;height:100%;min-height:400px;border:none;display:none"
+                allow="autoplay;fullscreen;encrypted-media"
+                allowfullscreen
+                sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
+              ></iframe>
+            </div>
+            <!-- Custom HLS URL -->
+            <details>
+              <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text3);padding:4px 0;user-select:none">🔗 Custom HLS / M3U8 Stream</summary>
+              <div style="padding:8px 0;display:flex;gap:8px;flex-wrap:wrap">
+                <input type="text" id="iptv-hls-url" placeholder="https://example.com/stream.m3u8"
+                  style="flex:1;min-width:240px;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px">
+                <button class="btn-primary" onclick="iptvPlayHLS()">▶ Play HLS</button>
+              </div>
+              <video id="iptv-hls-player" controls muted playsinline
+                style="width:100%;max-height:280px;background:#000;border-radius:var(--r);margin-top:6px;display:none"></video>
+            </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SCHEDULE VIEW ── -->
+      <div id="iptv-schedule-view" style="display:none">
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+          <button class="filter-pill active" id="iptv-sched-live" onclick="iptvLoadSchedule('live',this)">🔴 Live Now</button>
+          <button class="filter-pill" id="iptv-sched-all" onclick="iptvLoadSchedule('all',this)">📅 All Events</button>
+          <span id="iptv-sched-status" style="font-size:11px;color:var(--text3);margin-left:auto"></span>
+        </div>
+        <div id="iptv-schedule-list" style="display:flex;flex-direction:column;gap:6px">
+          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Click "Live Now" or "All Events" to load schedule</div>
+        </div>
+      </div>
+
+      <!-- ── MULTIVIEW ── -->
+      <div id="iptv-multiview-view" style="display:none">
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:600;color:var(--text)">Layout:</span>
+          <button class="filter-pill active" onclick="iptvMVLayout(1,1,this)">1×1</button>
+          <button class="filter-pill" onclick="iptvMVLayout(2,1,this)">2×1</button>
+          <button class="filter-pill" onclick="iptvMVLayout(2,2,this)">2×2</button>
+          <button class="filter-pill" onclick="iptvMVLayout(3,2,this)">3×2</button>
+          <button class="btn" style="margin-left:auto;font-size:11px;padding:3px 10px" onclick="iptvMVClearAll()">✕ Clear All</button>
+        </div>
+        <div id="iptv-mv-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+      </div>
+    </div>
+
+    <!-- ── RSS / FEEDS ─────────────────────────────── -->
     <div id="tab-rss" class="tab-panel">
       <!-- RSS header with category tabs + view toggle -->
       <div class="section-header">
@@ -4373,6 +4561,7 @@ function showTab(name, el) {
     else if (name === 'updates') checkUpdates();
     else if (name === 'settings') loadSettings();
     else if (name === 'rss') loadRSSFeeds();
+    else if (name === 'iptv') iptvInit();
 }
 
 function openExternalLink(url) {
@@ -5270,22 +5459,54 @@ function pmCollapseAll() {
 }
 
 // ── Hardware ─────────────────────────────────────────────────────────
+let _hwCpuChart = null, _hwMemChart = null;
+
 async function loadHardware() {
     try {
         const r = await fetch(API + '/api/hardware');
         const d = await r.json();
-        const cpuEl = document.getElementById('hw-cpu');
+
+        // ── CPU pie chart ──
         if (d.cpu) {
-            cpuEl.innerHTML = `
-              <div class="stat-card"><div class="stat-card-val">${d.cpu.count||'—'}</div><div class="stat-card-label">Logical Cores</div></div>
-              <div class="stat-card"><div class="stat-card-val">${d.cpu.freq?.current ? Math.round(d.cpu.freq.current)+'MHz':'—'}</div><div class="stat-card-label">Frequency</div></div>`;
+            const pct   = d.cpu.percent ?? 0;
+            const color = pct < 50 ? '#3fb950' : pct < 80 ? '#e3b341' : '#f85149';
+            const cpuCtx = document.getElementById('hw-cpu-chart');
+            if (cpuCtx) {
+                if (_hwCpuChart) { _hwCpuChart.destroy(); _hwCpuChart = null; }
+                _hwCpuChart = new Chart(cpuCtx, {
+                    type: 'doughnut',
+                    data: { datasets: [{ data: [pct, 100-pct],
+                        backgroundColor: [color, 'rgba(48,54,61,0.6)'], borderWidth: 0, hoverOffset: 0 }] },
+                    options: { responsive: false, cutout: '70%',
+                        animation: { duration: 600 },
+                        plugins: { legend: { display: false }, tooltip: { enabled: false } } }
+                });
+            }
+            document.getElementById('hw-cpu-pct').textContent  = Math.round(pct) + '%';
+            document.getElementById('hw-cpu-detail').textContent =
+                `${d.cpu.count||'—'} cores · ${d.cpu.freq?.current ? Math.round(d.cpu.freq.current)+'MHz' : '—'}`;
         }
-        const memEl = document.getElementById('hw-mem');
+
+        // ── Memory pie chart ──
         if (d.memory) {
-            const m = d.memory;
-            memEl.innerHTML = `<div class="ctr-row"><span>Total</span><span>${fmtBytes(m.total)}</span></div>
-              <div class="ctr-row"><span>Available</span><span>${fmtBytes(m.available)}</span></div>
-              <div class="ctr-row"><span>Used</span><span>${fmtBytes(m.used)}</span></div>`;
+            const m    = d.memory;
+            const pct  = m.percent ?? 0;
+            const color = pct < 50 ? '#3fb950' : pct < 80 ? '#e3b341' : '#f85149';
+            const memCtx = document.getElementById('hw-mem-chart');
+            if (memCtx) {
+                if (_hwMemChart) { _hwMemChart.destroy(); _hwMemChart = null; }
+                _hwMemChart = new Chart(memCtx, {
+                    type: 'doughnut',
+                    data: { datasets: [{ data: [pct, 100-pct],
+                        backgroundColor: [color, 'rgba(48,54,61,0.6)'], borderWidth: 0, hoverOffset: 0 }] },
+                    options: { responsive: false, cutout: '70%',
+                        animation: { duration: 600 },
+                        plugins: { legend: { display: false }, tooltip: { enabled: false } } }
+                });
+            }
+            document.getElementById('hw-mem-pct').textContent    = Math.round(pct) + '%';
+            document.getElementById('hw-mem-detail').textContent  =
+                `${fmtBytes(m.used)} / ${fmtBytes(m.total)}`;
         }
     } catch(e) {}
 }
@@ -5807,6 +6028,33 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
             return;
         }
 
+        // Reddit gets bigger cards; everything else gets compact row layout
+        const isReddit = catId === 'Reddit' || url.includes('reddit.com');
+        if (isReddit) {
+            // Big Reddit-style cards with resizable layout
+            const cardSize = parseInt(itemsEl.closest('.rss-col')?.dataset.cardSize || '1');
+            itemsEl.innerHTML = `
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                <span style="font-size:11px;color:var(--text3)">Card size:</span>
+                <input type="range" min="0" max="2" value="${cardSize}" style="width:80px;accent-color:var(--blue)"
+                  oninput="rssSetCardSize('${catId}',+this.value)">
+              </div>
+              <div id="reddit-cards-${catId}" style="display:grid;gap:12px;${['grid-template-columns:1fr','grid-template-columns:repeat(2,1fr)','grid-template-columns:repeat(3,1fr)'][cardSize]}">
+              ${items.slice(0,20).map(item => `
+                <a href="${item.link}" target="_blank" rel="noopener"
+                   style="display:flex;flex-direction:column;gap:8px;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;transition:border-color .15s"
+                   onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+                  ${item.thumb
+                    ? `<img src="${item.thumb}" loading="lazy" style="width:100%;height:140px;object-fit:cover;background:var(--surface2)" onerror="this.style.display='none'">`
+                    : `<div style="width:100%;height:80px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:32px">🤖</div>`}
+                  <div style="padding:10px 12px 12px;flex:1;display:flex;flex-direction:column;gap:4px">
+                    <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${item.title}</div>
+                    ${item.excerpt ? `<div style="font-size:11px;color:var(--text2);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px">${item.excerpt}</div>` : ''}
+                    <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:6px">${item.date || ''}</div>
+                  </div>
+                </a>`).join('')}
+              </div>`;
+        } else {
         // Rich card layout: thumbnail left, title+excerpt+date right
         itemsEl.innerHTML = items.slice(0, 12).map(item => `
             <a href="${item.link}" target="_blank" rel="noopener"
@@ -5826,6 +6074,7 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
                 <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
               </div>
             </a>`).join('');
+        }
 
         // Update chevron badge with article count
         _rssUpdateCount(catId, items.length);
@@ -5839,6 +6088,16 @@ function _rssUpdateCount(catId, n) {
     const countEl = document.getElementById('rss-count-' + catId);
     if (!countEl) return;
     countEl.textContent = n > 0 ? `${n} article${n!==1?'s':''}` : 'no articles';
+}
+
+// Reddit card-size slider (0=1col, 1=2col, 2=3col)
+function rssSetCardSize(catId, size) {
+    const col = document.getElementById('rss-col-' + catId);
+    if (col) col.dataset.cardSize = size;
+    const grid = document.getElementById('reddit-cards-' + catId);
+    if (!grid) return;
+    const cols = ['1fr','repeat(2,1fr)','repeat(3,1fr)'][size] || '1fr';
+    grid.style.gridTemplateColumns = cols;
 }
 
 // ── Add Feed Modal ─────────────────────────────────────────────
@@ -5891,7 +6150,286 @@ async function submitAddFeed() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// 10. ALERTS BAR
+// 10. IPTV PLAYER
+// ══════════════════════════════════════════════════════════════════════
+let _iptvChannels    = [];
+let _iptvFiltered    = [];
+let _iptvCatFilter   = 'All';
+let _iptvCurrentId   = null;
+let _iptvCurrentName = '';
+let _iptvView        = 'channels';
+let _iptvMVCells     = [];   // multiview channel IDs per cell
+let _iptvMVCols      = 2, _iptvMVRows = 2;
+let _iptvInited      = false;
+
+function iptvSetView(v) {
+    _iptvView = v;
+    document.getElementById('iptv-channels-view').style.display  = v==='channels'  ? '' : 'none';
+    document.getElementById('iptv-schedule-view').style.display  = v==='schedule'  ? '' : 'none';
+    document.getElementById('iptv-multiview-view').style.display = v==='multiview' ? '' : 'none';
+    ['channels','schedule','multiview'].forEach(n => {
+        const b = document.getElementById('iptv-view-'+n);
+        if (b) b.classList.toggle('active', n===v);
+    });
+    if (v==='schedule') iptvLoadSchedule('live', document.getElementById('iptv-sched-live'));
+    if (v==='multiview') iptvRenderMV();
+}
+
+async function iptvInit() {
+    if (_iptvInited && _iptvChannels.length) return;
+    _iptvInited = true;
+    await iptvFetchChannels();
+}
+
+async function iptvFetchChannels() {
+    const listEl = document.getElementById('iptv-channel-list');
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading channels…</div>';
+    try {
+        const r = await fetch(API + '/api/iptv/channels');
+        const d = await r.json();
+        _iptvChannels = d.channels || [];
+        if (d.fallback) {
+            // Add a small note
+            const note = document.createElement('div');
+            note.style = 'font-size:10px;color:var(--text3);padding:4px 8px;text-align:center';
+            note.textContent = '⚠️ Showing cached list — live API unreachable';
+            listEl?.prepend(note);
+        }
+        iptvBuildCatPills();
+        iptvFilterChannels();
+    } catch(e) {
+        if (listEl) listEl.innerHTML = '<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">Failed to load channels</div>';
+    }
+}
+
+function iptvBuildCatPills() {
+    const cats = ['All', ...new Set(_iptvChannels.map(c => c.group||'General').filter(Boolean))].sort((a,b)=>{
+        if(a==='All') return -1; if(b==='All') return 1; return a.localeCompare(b);
+    });
+    const el = document.getElementById('iptv-cat-pills');
+    if (!el) return;
+    el.innerHTML = cats.map(c => `<div class="filter-pill${c===_iptvCatFilter?' active':''}" onclick="iptvSetCat('${c}')">${c}</div>`).join('');
+}
+
+function iptvSetCat(cat) {
+    _iptvCatFilter = cat;
+    document.querySelectorAll('#iptv-cat-pills .filter-pill').forEach(p =>
+        p.classList.toggle('active', p.textContent===cat));
+    iptvFilterChannels();
+}
+
+function iptvFilterChannels() {
+    const q    = (document.getElementById('iptv-search')?.value||'').toLowerCase();
+    const cat  = _iptvCatFilter;
+    _iptvFiltered = _iptvChannels.filter(c => {
+        const matchCat  = cat==='All' || c.group===cat;
+        const matchName = !q || c.name.toLowerCase().includes(q);
+        return matchCat && matchName;
+    });
+    iptvRenderList();
+}
+
+function iptvRenderList() {
+    const el = document.getElementById('iptv-channel-list');
+    if (!el) return;
+    if (!_iptvFiltered.length) {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:16px;text-align:center">No channels found</div>';
+        return;
+    }
+    el.innerHTML = _iptvFiltered.map(ch => `
+        <div onclick="iptvPlayChannel('${ch.id}','${ch.name.replace(/'/g,"\\'")}',this)"
+             style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:5px;cursor:pointer;transition:background .1s;${_iptvCurrentId===ch.id?'background:var(--blue2);color:var(--blue);':'color:var(--text2);'}"
+             onmouseover="if('${ch.id}'!=='${_iptvCurrentId}')this.style.background='var(--surface)'"
+             onmouseout="if('${ch.id}'!=='${_iptvCurrentId}')this.style.background=''">
+          <span style="font-size:14px;width:22px;text-align:center;flex-shrink:0">${ch.logo ? `<img src="${ch.logo}" style="width:18px;height:18px;object-fit:contain" onerror="this.replaceWith('📺')">` : '📺'}</span>
+          <span style="font-size:12px;font-weight:${_iptvCurrentId===ch.id?600:400};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ch.name}</span>
+          ${ch.group?`<span style="font-size:9px;color:var(--text3);margin-left:auto;flex-shrink:0;white-space:nowrap">${ch.group}</span>`:''}
+        </div>`).join('');
+}
+
+function iptvPlayChannel(id, name, rowEl) {
+    _iptvCurrentId   = id;
+    _iptvCurrentName = name;
+    // Highlight selected row
+    document.querySelectorAll('#iptv-channel-list > div').forEach(el => {
+        el.style.background = '';
+        el.style.color      = 'var(--text2)';
+    });
+    if (rowEl) { rowEl.style.background='var(--blue2)'; rowEl.style.color='var(--blue)'; }
+
+    const frame = document.getElementById('iptv-player-frame');
+    const placeholder = document.getElementById('iptv-player-placeholder');
+    const nowPlaying  = document.getElementById('iptv-now-playing');
+    const nowSource   = document.getElementById('iptv-now-source');
+
+    if (frame) {
+        frame.src = `https://dlstreams.top/watch.php?id=${id}`;
+        frame.style.display = '';
+    }
+    if (placeholder) placeholder.style.display = 'none';
+    if (nowPlaying)  nowPlaying.textContent = name;
+    if (nowSource)   nowSource.textContent  = `DaddyLive · Channel ${id}`;
+
+    // Update popout button URL
+    const popoutBtn = document.getElementById('iptv-popout-btn');
+    if (popoutBtn) popoutBtn.dataset.url = `https://dlstreams.top/watch.php?id=${id}`;
+}
+
+function iptvPopout() {
+    const url = document.getElementById('iptv-popout-btn')?.dataset.url;
+    if (url) window.open(url, '_blank');
+}
+
+function iptvPlayHLS() {
+    const url = document.getElementById('iptv-hls-url')?.value.trim();
+    if (!url) return;
+    const vid = document.getElementById('iptv-hls-player');
+    if (!vid) return;
+    vid.style.display = '';
+    if (window.Hls && Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(url);
+        hls.attachMedia(vid);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => vid.play().catch(()=>{}));
+    } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
+        vid.src = url;
+        vid.play().catch(()=>{});
+    } else {
+        showToast('HLS not supported in this browser', 'error');
+    }
+}
+
+// ── Schedule ─────────────────────────────────────────────────────────
+async function iptvLoadSchedule(type, btnEl) {
+    const listEl  = document.getElementById('iptv-schedule-list');
+    const statusEl= document.getElementById('iptv-sched-status');
+    document.querySelectorAll('#iptv-schedule-view .filter-pill').forEach(b=>b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading events…</div>';
+    if (statusEl) statusEl.textContent = '';
+    try {
+        const r = await fetch(API + `/api/iptv/schedule?type=${type}`);
+        const matches = await r.json();
+        const list = Array.isArray(matches) ? matches : (matches.matches || []);
+        if (!list.length) {
+            if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No events found</div>';
+            return;
+        }
+        if (statusEl) statusEl.textContent = `${list.length} event${list.length!==1?'s':''}`;
+        listEl.innerHTML = list.slice(0,60).map(m => {
+            const ts    = m.time || m.date || 0;
+            const dt    = ts ? new Date(ts*1000).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'TBD';
+            const isLive= (Date.now()/1000 - ts) < 7200 && ts < Date.now()/1000 + 300;
+            const srcs  = (m.sources||[]).map(s=>`<span style="font-size:9px;background:var(--surface2);padding:1px 5px;border-radius:3px">${s.source||s.id||'stream'}</span>`).join(' ');
+            return `
+            <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);transition:border-color .15s;cursor:default"
+                 onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title||m.name||'Event'}</div>
+                <div style="font-size:11px;color:var(--text3);margin-top:2px">${dt} ${srcs}</div>
+              </div>
+              ${isLive ? '<span style="font-size:10px;background:var(--red2,rgba(248,81,73,0.15));color:var(--red);padding:2px 6px;border-radius:4px;white-space:nowrap">● LIVE</span>' : ''}
+              ${(m.sources||[]).length ? `<button class="btn" style="font-size:11px;padding:3px 10px;flex-shrink:0" onclick="window.open('https://streamed.su/watch/${m.id}','_blank')">▶ Watch</button>` : ''}
+            </div>`;
+        }).join('');
+    } catch(e) {
+        if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">Schedule unavailable — ${e.message}</div>`;
+    }
+}
+
+// ── Multiview ─────────────────────────────────────────────────────────
+function iptvMVLayout(cols, rows, btnEl) {
+    _iptvMVCols = cols; _iptvMVRows = rows;
+    document.querySelectorAll('#iptv-multiview-view .filter-pill').forEach(b=>b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    iptvRenderMV();
+}
+
+function iptvRenderMV() {
+    const grid = document.getElementById('iptv-mv-grid');
+    if (!grid) return;
+    const total = _iptvMVCols * _iptvMVRows;
+    grid.style.gridTemplateColumns = `repeat(${_iptvMVCols},1fr)`;
+    // Ensure _iptvMVCells has enough slots
+    while (_iptvMVCells.length < total) _iptvMVCells.push(null);
+    grid.innerHTML = Array.from({length: total}, (_, i) => {
+        const ch = _iptvMVCells[i] ? _iptvChannels.find(c=>c.id===_iptvMVCells[i]) : null;
+        return `
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
+          ${ch
+            ? `<iframe src="https://dlstreams.top/watch.php?id=${ch.id}" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
+            : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
+                 <div style="font-size:28px">📺</div>
+                 <div style="font-size:11px">Click to assign channel</div>
+               </div>`}
+          <div style="position:absolute;top:4px;right:4px;display:flex;gap:4px">
+            ${ch?`<button style="background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:4px;font-size:10px;padding:2px 6px;cursor:pointer" onclick="iptvMVPickChannel(${i})">⇄</button>`:''}
+            ${ch?`<button style="background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:4px;font-size:10px;padding:2px 6px;cursor:pointer" onclick="iptvMVClearCell(${i})">✕</button>`:''}
+          </div>
+          ${ch?`<div style="position:absolute;bottom:4px;left:6px;font-size:10px;background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:3px">${ch.name}</div>`:''}
+        </div>`;
+    }).join('');
+}
+
+function iptvMVPickChannel(cellIdx) {
+    // Show a small inline picker using the current filtered list
+    const pick = _iptvChannels.slice(0, 50).map(c =>
+        `<div onclick="iptvMVAssign(${cellIdx},'${c.id}')" style="padding:5px 8px;cursor:pointer;font-size:11px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">${c.name}</div>`
+    ).join('');
+    const modal = document.getElementById('iptv-mv-picker') || (() => {
+        const d = document.createElement('div');
+        d.id = 'iptv-mv-picker';
+        d.style = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);z-index:2000;width:260px;max-height:360px;overflow-y:auto;padding:8px;box-shadow:0 8px 32px rgba(0,0,0,.5)';
+        document.body.appendChild(d);
+        return d;
+    })();
+    modal.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:12px;font-weight:600">Pick Channel</span><button onclick="document.getElementById('iptv-mv-picker').style.display='none'" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:14px">✕</button></div><input placeholder="Search…" oninput="iptvMVSearch(this.value,${cellIdx})" style="width:100%;padding:5px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:11px;margin-bottom:6px;box-sizing:border-box"><div id="iptv-mv-pick-list">${pick}</div>`;
+    modal.style.display = '';
+    modal.dataset.cell  = cellIdx;
+}
+
+function iptvMVSearch(q, cellIdx) {
+    const f = q.toLowerCase();
+    const list = _iptvChannels.filter(c=>!f||c.name.toLowerCase().includes(f)).slice(0,50);
+    const el = document.getElementById('iptv-mv-pick-list');
+    if (el) el.innerHTML = list.map(c => `<div onclick="iptvMVAssign(${cellIdx},'${c.id}')" style="padding:5px 8px;cursor:pointer;font-size:11px;border-radius:3px" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">${c.name}</div>`).join('');
+}
+
+function iptvMVAssign(cellIdx, chId) {
+    _iptvMVCells[cellIdx] = chId;
+    const picker = document.getElementById('iptv-mv-picker');
+    if (picker) picker.style.display = 'none';
+    iptvRenderMV();
+}
+
+function iptvMVClearCell(cellIdx) {
+    _iptvMVCells[cellIdx] = null;
+    iptvRenderMV();
+}
+
+function iptvMVClearAll() {
+    _iptvMVCells = [];
+    iptvRenderMV();
+}
+
+function iptvAddToMultiview() {
+    if (!_iptvCurrentId) { showToast('No channel selected','error'); return; }
+    // Find first empty cell
+    const emptyIdx = _iptvMVCells.findIndex(c=>!c);
+    if (emptyIdx === -1) {
+        showToast('Multiview grid is full — clear a slot first','error'); return;
+    }
+    _iptvMVCells[emptyIdx] = _iptvCurrentId;
+    showToast(`${_iptvCurrentName} added to multiview`, 'success');
+}
+
+function iptvReload() {
+    _iptvChannels = []; _iptvFiltered = []; _iptvInited = false;
+    iptvInit();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 11. ALERTS BAR
 // ══════════════════════════════════════════════════════════════════════
 let _alertsCollapsed = false;
 

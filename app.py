@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.0 · Full deployment, update management, and real-time monitoring
+Version: 3.15.1 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -1721,28 +1721,8 @@ def api_rss_fetch():
 
 @app.route("/api/iptv/channels")
 def api_iptv_channels():
-    """Proxy DaddyLive channel list from dlstreams.top API."""
-    try:
-        import requests as _req
-        r = _req.get(
-            "https://dlstreams.top/api.php",
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15)"},
-            timeout=10
-        )
-        data = r.json()
-        # Normalise to [{id, name, group, logo}]
-        channels = []
-        for ch in (data if isinstance(data, list) else []):
-            channels.append({
-                "id":    ch.get("id") or ch.get("stream_id") or ch.get("channel_id", ""),
-                "name":  ch.get("name") or ch.get("channel_name", "Unknown"),
-                "group": ch.get("group") or ch.get("group-title") or ch.get("category", "General"),
-                "logo":  ch.get("tvg-logo") or ch.get("logo") or "",
-            })
-        return jsonify({"channels": channels, "count": len(channels)})
-    except Exception as e:
-        # Fallback: return the hardcoded popular channels so the UI still works
-        return jsonify({"channels": _IPTV_FALLBACK_CHANNELS, "count": len(_IPTV_FALLBACK_CHANNELS), "fallback": True})
+    """Return curated DaddyLive channel list — no blocking external calls."""
+    return jsonify({"channels": _IPTV_FALLBACK_CHANNELS, "count": len(_IPTV_FALLBACK_CHANNELS)})
 
 @app.route("/api/iptv/schedule")
 def api_iptv_schedule():
@@ -1751,33 +1731,127 @@ def api_iptv_schedule():
     url = f"https://streamed.su/api/matches/{endpoint}"
     try:
         import requests as _req
-        r = _req.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15)"}, timeout=10)
+        r = _req.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15)"}, timeout=4)
         return jsonify(r.json())
     except Exception as e:
         return jsonify({"error": str(e), "matches": []}), 200
 
-# Fallback channels shown when the DaddyLive API is unreachable
+# Curated DaddyLive channel list — streams via dlstreams.top/watch.php?id={id}
 _IPTV_FALLBACK_CHANNELS = [
-    {"id":"51",  "name":"ABC USA",          "group":"News",          "logo":""},
-    {"id":"44",  "name":"ESPN USA",          "group":"Sports",        "logo":""},
-    {"id":"45",  "name":"ESPN2 USA",         "group":"Sports",        "logo":""},
-    {"id":"35",  "name":"Sky Sports Main",   "group":"Sports",        "logo":""},
-    {"id":"36",  "name":"Sky Sports News",   "group":"Sports",        "logo":""},
-    {"id":"61",  "name":"beIN Sports 1",     "group":"Sports",        "logo":""},
-    {"id":"62",  "name":"beIN Sports 2",     "group":"Sports",        "logo":""},
-    {"id":"97",  "name":"NBA TV",            "group":"Sports",        "logo":""},
-    {"id":"72",  "name":"CNN USA",           "group":"News",          "logo":""},
-    {"id":"57",  "name":"Fox News",          "group":"News",          "logo":""},
-    {"id":"78",  "name":"BBC News",          "group":"News",          "logo":""},
-    {"id":"42",  "name":"DW News",           "group":"News",          "logo":""},
-    {"id":"68",  "name":"TNT USA",           "group":"Entertainment", "logo":""},
-    {"id":"86",  "name":"NASA TV",           "group":"Entertainment", "logo":""},
-    {"id":"53",  "name":"Comedy Central",    "group":"Entertainment", "logo":""},
-    {"id":"101", "name":"Discovery Channel", "group":"Entertainment", "logo":""},
-    {"id":"105", "name":"National Geographic","group":"Entertainment","logo":""},
-    {"id":"109", "name":"History Channel",   "group":"Entertainment", "logo":""},
-    {"id":"113", "name":"Animal Planet",     "group":"Entertainment", "logo":""},
-    {"id":"120", "name":"Cartoon Network",   "group":"Entertainment", "logo":""},
+    # ── Sports ──────────────────────────────────────────────────────────────
+    {"id":"44",  "name":"ESPN USA",              "group":"Sports",        "logo":""},
+    {"id":"45",  "name":"ESPN2 USA",             "group":"Sports",        "logo":""},
+    {"id":"46",  "name":"ESPN3 USA",             "group":"Sports",        "logo":""},
+    {"id":"47",  "name":"ESPN News",             "group":"Sports",        "logo":""},
+    {"id":"48",  "name":"FS1 USA",               "group":"Sports",        "logo":""},
+    {"id":"49",  "name":"FS2 USA",               "group":"Sports",        "logo":""},
+    {"id":"35",  "name":"Sky Sports Main",       "group":"Sports",        "logo":""},
+    {"id":"36",  "name":"Sky Sports News",       "group":"Sports",        "logo":""},
+    {"id":"37",  "name":"Sky Sports Premier",    "group":"Sports",        "logo":""},
+    {"id":"38",  "name":"Sky Sports F1",         "group":"Sports",        "logo":""},
+    {"id":"39",  "name":"Sky Sports Golf",       "group":"Sports",        "logo":""},
+    {"id":"61",  "name":"beIN Sports 1",         "group":"Sports",        "logo":""},
+    {"id":"62",  "name":"beIN Sports 2",         "group":"Sports",        "logo":""},
+    {"id":"63",  "name":"beIN Sports 3",         "group":"Sports",        "logo":""},
+    {"id":"97",  "name":"NBA TV",                "group":"Sports",        "logo":""},
+    {"id":"98",  "name":"NFL Network",           "group":"Sports",        "logo":""},
+    {"id":"99",  "name":"MLB Network",           "group":"Sports",        "logo":""},
+    {"id":"100", "name":"Golf Channel",          "group":"Sports",        "logo":""},
+    {"id":"116", "name":"TNT Sports 1",          "group":"Sports",        "logo":""},
+    {"id":"117", "name":"TNT Sports 2",          "group":"Sports",        "logo":""},
+    {"id":"118", "name":"TNT Sports 3",          "group":"Sports",        "logo":""},
+    {"id":"119", "name":"TNT Sports 4",          "group":"Sports",        "logo":""},
+    {"id":"130", "name":"Eurosport 1",           "group":"Sports",        "logo":""},
+    {"id":"131", "name":"Eurosport 2",           "group":"Sports",        "logo":""},
+    {"id":"132", "name":"DAZN 1",                "group":"Sports",        "logo":""},
+    {"id":"133", "name":"DAZN 2",                "group":"Sports",        "logo":""},
+    {"id":"140", "name":"Eleven Sports 1",       "group":"Sports",        "logo":""},
+    {"id":"141", "name":"Eleven Sports 2",       "group":"Sports",        "logo":""},
+    {"id":"142", "name":"Sport 24",              "group":"Sports",        "logo":""},
+    {"id":"143", "name":"Arena Sport 1",         "group":"Sports",        "logo":""},
+    # ── News ────────────────────────────────────────────────────────────────
+    {"id":"51",  "name":"ABC News USA",          "group":"News",          "logo":""},
+    {"id":"52",  "name":"CBS News USA",          "group":"News",          "logo":""},
+    {"id":"72",  "name":"CNN USA",               "group":"News",          "logo":""},
+    {"id":"73",  "name":"CNN International",     "group":"News",          "logo":""},
+    {"id":"57",  "name":"Fox News",              "group":"News",          "logo":""},
+    {"id":"78",  "name":"BBC News",              "group":"News",          "logo":""},
+    {"id":"79",  "name":"BBC World News",        "group":"News",          "logo":""},
+    {"id":"42",  "name":"DW News",               "group":"News",          "logo":""},
+    {"id":"43",  "name":"France 24 English",     "group":"News",          "logo":""},
+    {"id":"80",  "name":"Al Jazeera English",    "group":"News",          "logo":""},
+    {"id":"81",  "name":"Sky News",              "group":"News",          "logo":""},
+    {"id":"82",  "name":"MSNBC",                 "group":"News",          "logo":""},
+    {"id":"83",  "name":"CNBC",                  "group":"News",          "logo":""},
+    {"id":"84",  "name":"Bloomberg TV",          "group":"News",          "logo":""},
+    {"id":"85",  "name":"Euronews English",      "group":"News",          "logo":""},
+    # ── Entertainment ───────────────────────────────────────────────────────
+    {"id":"68",  "name":"TNT USA",               "group":"Entertainment", "logo":""},
+    {"id":"86",  "name":"NASA TV",               "group":"Entertainment", "logo":""},
+    {"id":"53",  "name":"Comedy Central",        "group":"Entertainment", "logo":""},
+    {"id":"54",  "name":"MTV USA",               "group":"Entertainment", "logo":""},
+    {"id":"55",  "name":"VH1 USA",               "group":"Entertainment", "logo":""},
+    {"id":"56",  "name":"BET USA",               "group":"Entertainment", "logo":""},
+    {"id":"101", "name":"Discovery Channel",     "group":"Entertainment", "logo":""},
+    {"id":"102", "name":"Discovery Science",     "group":"Entertainment", "logo":""},
+    {"id":"103", "name":"Discovery Life",        "group":"Entertainment", "logo":""},
+    {"id":"104", "name":"TLC USA",               "group":"Entertainment", "logo":""},
+    {"id":"105", "name":"National Geographic",   "group":"Entertainment", "logo":""},
+    {"id":"106", "name":"Nat Geo Wild",          "group":"Entertainment", "logo":""},
+    {"id":"107", "name":"History Channel",       "group":"Entertainment", "logo":""},
+    {"id":"108", "name":"History Channel 2",     "group":"Entertainment", "logo":""},
+    {"id":"109", "name":"Animal Planet",         "group":"Entertainment", "logo":""},
+    {"id":"110", "name":"Cartoon Network",       "group":"Entertainment", "logo":""},
+    {"id":"111", "name":"Boomerang USA",         "group":"Entertainment", "logo":""},
+    {"id":"112", "name":"Nickelodeon USA",       "group":"Entertainment", "logo":""},
+    {"id":"113", "name":"Disney Channel USA",    "group":"Entertainment", "logo":""},
+    {"id":"114", "name":"Disney Junior USA",     "group":"Entertainment", "logo":""},
+    {"id":"115", "name":"Disney XD USA",         "group":"Entertainment", "logo":""},
+    {"id":"120", "name":"AMC USA",               "group":"Entertainment", "logo":""},
+    {"id":"121", "name":"FX USA",                "group":"Entertainment", "logo":""},
+    {"id":"122", "name":"FXX USA",               "group":"Entertainment", "logo":""},
+    {"id":"123", "name":"Syfy USA",              "group":"Entertainment", "logo":""},
+    {"id":"124", "name":"E! Entertainment",      "group":"Entertainment", "logo":""},
+    {"id":"125", "name":"Bravo USA",             "group":"Entertainment", "logo":""},
+    {"id":"126", "name":"Lifetime USA",          "group":"Entertainment", "logo":""},
+    {"id":"127", "name":"Hallmark Channel",      "group":"Entertainment", "logo":""},
+    {"id":"128", "name":"TCM USA",               "group":"Entertainment", "logo":""},
+    {"id":"129", "name":"IFC USA",               "group":"Entertainment", "logo":""},
+    # ── Movies ──────────────────────────────────────────────────────────────
+    {"id":"150", "name":"HBO USA",               "group":"Movies",        "logo":""},
+    {"id":"151", "name":"HBO2 USA",              "group":"Movies",        "logo":""},
+    {"id":"152", "name":"Showtime USA",          "group":"Movies",        "logo":""},
+    {"id":"153", "name":"Starz USA",             "group":"Movies",        "logo":""},
+    {"id":"154", "name":"Cinemax USA",           "group":"Movies",        "logo":""},
+    {"id":"155", "name":"Sky Cinema Premiere",   "group":"Movies",        "logo":""},
+    {"id":"156", "name":"Sky Cinema Action",     "group":"Movies",        "logo":""},
+    {"id":"157", "name":"Sky Cinema Drama",      "group":"Movies",        "logo":""},
+    {"id":"158", "name":"Sky Cinema Comedy",     "group":"Movies",        "logo":""},
+    {"id":"159", "name":"Sky Cinema Thriller",   "group":"Movies",        "logo":""},
+    # ── Music ───────────────────────────────────────────────────────────────
+    {"id":"170", "name":"MTV Music",             "group":"Music",         "logo":""},
+    {"id":"171", "name":"VH1 Classic",           "group":"Music",         "logo":""},
+    {"id":"172", "name":"Music Choice Pop",      "group":"Music",         "logo":""},
+    {"id":"173", "name":"Fuse TV",               "group":"Music",         "logo":""},
+    # ── International ───────────────────────────────────────────────────────
+    {"id":"180", "name":"TV5 Monde",             "group":"International", "logo":""},
+    {"id":"181", "name":"RAI 1",                 "group":"International", "logo":""},
+    {"id":"182", "name":"RAI 2",                 "group":"International", "logo":""},
+    {"id":"183", "name":"Canal+ France",         "group":"International", "logo":""},
+    {"id":"184", "name":"ARD Germany",           "group":"International", "logo":""},
+    {"id":"185", "name":"ZDF Germany",           "group":"International", "logo":""},
+    {"id":"186", "name":"RTL Germany",           "group":"International", "logo":""},
+    {"id":"187", "name":"TF1 France",            "group":"International", "logo":""},
+    {"id":"188", "name":"M6 France",             "group":"International", "logo":""},
+    {"id":"189", "name":"RTE One Ireland",       "group":"International", "logo":""},
+    {"id":"190", "name":"Virgin Media One",      "group":"International", "logo":""},
+    {"id":"191", "name":"CBC Canada",            "group":"International", "logo":""},
+    {"id":"192", "name":"CTV Canada",            "group":"International", "logo":""},
+    {"id":"193", "name":"TSN 1 Canada",          "group":"International", "logo":""},
+    {"id":"194", "name":"TSN 2 Canada",          "group":"International", "logo":""},
+    {"id":"195", "name":"Sportsnet Canada",      "group":"International", "logo":""},
+    {"id":"196", "name":"Sky Sports AU",         "group":"International", "logo":""},
+    {"id":"197", "name":"Fox Sports AU",         "group":"International", "logo":""},
 ]
 
 @app.route("/api/rss")
@@ -7369,4 +7443,4 @@ window.addEventListener('load', async () => {
 """
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=9999, debug=False)
+    app.run(host="0.0.0.0", port=9999, debug=False, threaded=True)

@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.1 · Full deployment, update management, and real-time monitoring
+Version: 3.15.2 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -3207,6 +3207,63 @@ body.sse-disconnected #app{padding-top:38px;}
   #rss-iptv-view video{height:180px!important;}
 }
 
+/* ── Comprehensive Mobile Layout ── */
+@media(max-width:768px){
+  /* IPTV: stack channel list above player */
+  #iptv-channels-view > div{
+    grid-template-columns:1fr!important;
+    height:auto!important;
+    min-height:unset!important;
+  }
+  #iptv-channel-list{max-height:200px!important;}
+  #iptv-player-frame,
+  #iptv-channels-view > div > div:last-child > div[style*="position:relative"]{
+    min-height:240px!important;
+  }
+  /* Overview gauges: keep 2 columns on tablet */
+  .metric-grid{grid-template-columns:repeat(2,1fr)!important;}
+  /* Topbar: hide less critical stats */
+  #topbar .tb-stat:nth-child(n+3){display:none;}
+  /* Section headers: wrap */
+  .section-header{flex-wrap:wrap;gap:8px;}
+  /* Modals: full width */
+  .modal-content{width:96vw!important;max-width:96vw!important;}
+  /* GridStack: single column */
+  .grid-stack{min-height:unset!important;}
+}
+
+@media(max-width:480px){
+  /* Overview gauges: single column on phones */
+  .metric-grid{grid-template-columns:1fr!important;}
+  /* Gauges: shrink canvas to fit phone */
+  #cpu-gauge-canvas,#mem-gauge-canvas{width:130px!important;height:130px!important;}
+  /* IPTV sub-nav: wrap */
+  #tab-iptv .section-header > div:last-child{flex-wrap:wrap;gap:6px;}
+  /* Reduce padding throughout */
+  .panel{padding:10px!important;}
+  .metric-card{padding:10px 8px!important;}
+  /* Section title font */
+  .section-title{font-size:14px!important;}
+  /* Bottom nav labels: smaller */
+  .bn-item span{font-size:9px!important;}
+  /* RSS cards: single column */
+  #tab-rss .cat-grid{grid-template-columns:1fr!important;}
+  /* Tables: horizontal scroll */
+  .table-wrap,#ctr-table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  /* Port map table */
+  .pm-group table{min-width:420px;}
+  /* Topbar load stat hidden */
+  #topbar .tb-stat:nth-child(n+2){display:none;}
+  /* Deployment grid: single column */
+  #launcher-grid{grid-template-columns:repeat(3,1fr)!important;}
+}
+
+/* Ensure tap targets are large enough on all mobile sizes */
+@media(max-width:900px){
+  .sb-item,.channel-item{min-height:44px;display:flex;align-items:center;}
+  input[type="text"],input[type="search"],select{font-size:16px!important;} /* prevent iOS zoom */
+}
+
 /* ══════════════════════════════════════════════════════════════
    4. LOADING SKELETON SHIMMER
    ══════════════════════════════════════════════════════════════ */
@@ -3537,61 +3594,96 @@ body.sse-disconnected #app{padding-top:38px;}
       <div class="grid-stack" id="ov-grid">
 
         <!-- ⓪ System Gauges widget  (default: full width, row 0) -->
-        <div class="grid-stack-item" gs-id="gauges" gs-x="0" gs-y="0" gs-w="12" gs-h="3" gs-min-w="4" gs-min-h="2">
+        <div class="grid-stack-item" gs-id="gauges" gs-x="0" gs-y="0" gs-w="12" gs-h="4" gs-min-w="4" gs-min-h="3">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('gauges')" title="Remove widget">✕</button>
-            <div class="metric-grid" id="gauge-row" style="margin:0;padding:8px;height:100%;box-sizing:border-box;align-content:start">
-              <div class="metric-card">
-                <div class="metric-top">
-                  <span class="metric-name">CPU Usage</span>
+            <div class="metric-grid" id="gauge-row" style="margin:0;padding:12px 14px;height:100%;box-sizing:border-box;align-content:center">
+
+              <!-- ── CPU ── -->
+              <div class="metric-card" style="align-items:center;text-align:center;padding:16px 12px;gap:8px">
+                <div class="metric-top" style="width:100%;justify-content:center;gap:10px">
+                  <span class="metric-name">CPU</span>
                   <span class="metric-badge" id="cpu-badge" style="background:var(--green2);color:var(--green)">0%</span>
                 </div>
-                <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
-                  <div style="position:relative;width:100px;height:100px">
-                    <canvas id="cpu-gauge-canvas" width="100" height="100"></canvas>
-                    <span id="cpu-gauge-text" style="position:absolute;left:50%;top:43%;transform:translate(-50%,-50%);font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);pointer-events:none">0%</span>
+                <div style="position:relative;width:160px;height:160px">
+                  <canvas id="cpu-gauge-canvas" width="160" height="160"></canvas>
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;margin-bottom:18px;pointer-events:none">
+                    <span id="cpu-gauge-text" style="font-size:30px;font-weight:700;font-family:var(--mono);color:#3fb950;line-height:1">0%</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">Usage</span>
                   </div>
-                  <span class="gauge-sub" id="cpu-cores">— cores</span>
                 </div>
-                <div class="pbar-wrap"><div class="pbar blue" id="cpu-pbar" style="width:0%"></div></div>
+                <div id="cpu-cores" style="font-size:12px;color:var(--text2);font-weight:500">— cores · — MHz</div>
+                <div class="pbar-wrap" style="width:100%;margin-top:2px"><div class="pbar blue" id="cpu-pbar" style="width:0%"></div></div>
               </div>
 
-              <div class="metric-card">
-                <div class="metric-top">
+              <!-- ── Memory ── -->
+              <div class="metric-card" style="align-items:center;text-align:center;padding:16px 12px;gap:8px">
+                <div class="metric-top" style="width:100%;justify-content:center;gap:10px">
                   <span class="metric-name">Memory</span>
                   <span class="metric-badge" id="mem-badge" style="background:var(--green2);color:var(--green)">0%</span>
                 </div>
-                <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
-                  <div style="position:relative;width:100px;height:100px">
-                    <canvas id="mem-gauge-canvas" width="100" height="100"></canvas>
-                    <span id="mem-gauge-text" style="position:absolute;left:50%;top:43%;transform:translate(-50%,-50%);font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);pointer-events:none">0%</span>
+                <div style="position:relative;width:160px;height:160px">
+                  <canvas id="mem-gauge-canvas" width="160" height="160"></canvas>
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;margin-bottom:18px;pointer-events:none">
+                    <span id="mem-gauge-text" style="font-size:30px;font-weight:700;font-family:var(--mono);color:#bc8cff;line-height:1">0%</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">RAM</span>
                   </div>
-                  <span class="gauge-sub" id="mem-detail">— / — GB</span>
                 </div>
-                <div class="pbar-wrap"><div class="pbar" id="mem-pbar" style="width:0%;background:var(--purple)"></div></div>
+                <div id="mem-detail" style="font-size:12px;color:var(--text2);font-weight:500">— / — GB</div>
+                <div class="pbar-wrap" style="width:100%;margin-top:2px"><div class="pbar" id="mem-pbar" style="width:0%;background:var(--purple)"></div></div>
               </div>
 
-              <div class="metric-card">
-                <div class="metric-top"><span class="metric-name">Load Average</span></div>
-                <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0;">
-                  <div class="ctr-row"><span>1 min</span><span id="load-1m">—</span></div>
-                  <div class="ctr-row"><span>5 min</span><span id="load-5m">—</span></div>
-                  <div class="ctr-row"><span>15 min</span><span id="load-15m">—</span></div>
+              <!-- ── Load & Uptime ── -->
+              <div class="metric-card" style="gap:10px;padding:16px">
+                <div class="metric-top">
+                  <span class="metric-name">Load Average</span>
                 </div>
-                <div class="ctr-row" style="margin-top:2px;"><span>Uptime</span><span id="uptime-val">—</span></div>
+                <div style="display:flex;flex-direction:column;gap:8px;flex:1;justify-content:center">
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>1 min</span><span id="load-1m" style="color:var(--text);font-family:var(--mono)">—</span></div>
+                    <div class="pbar-wrap"><div id="load-1m-bar" class="pbar blue" style="width:0%;transition:width .4s"></div></div>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>5 min</span><span id="load-5m" style="color:var(--text);font-family:var(--mono)">—</span></div>
+                    <div class="pbar-wrap"><div id="load-5m-bar" class="pbar blue" style="width:0%;transition:width .4s"></div></div>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>15 min</span><span id="load-15m" style="color:var(--text);font-family:var(--mono)">—</span></div>
+                    <div class="pbar-wrap"><div id="load-15m-bar" class="pbar blue" style="width:0%;transition:width .4s"></div></div>
+                  </div>
+                </div>
+                <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:2px">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>Uptime</span><span id="uptime-val" style="color:var(--green);font-family:var(--mono)">—</span></div>
+                </div>
               </div>
 
-              <div class="metric-card">
-                <div class="metric-top"><span class="metric-name">Containers</span></div>
-                <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0;">
-                  <div class="ctr-row"><span>Running</span><span id="ctr-running-count" style="color:var(--green)">—</span></div>
-                  <div class="ctr-row"><span>Stopped</span><span id="ctr-stopped-count" style="color:var(--red)">—</span></div>
-                  <div class="ctr-row"><span>Total</span><span id="ctr-total-count">—</span></div>
+              <!-- ── Containers ── -->
+              <div class="metric-card" style="gap:10px;padding:16px">
+                <div class="metric-top">
+                  <span class="metric-name">Containers</span>
                 </div>
-                <button class="btn blue" style="margin-top:4px;width:100%;justify-content:center;font-size:11px;padding:3px 8px" onclick="showTab('containers',null)">
-                  View Containers
+                <div style="display:flex;flex-direction:column;gap:6px;flex:1;justify-content:center">
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.2);border-radius:6px">
+                    <span style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
+                      <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block"></span>Running
+                    </span>
+                    <span id="ctr-running-count" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--green)">—</span>
+                  </div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px">
+                    <span style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
+                      <span style="width:7px;height:7px;border-radius:50%;background:var(--text3);display:inline-block"></span>Stopped
+                    </span>
+                    <span id="ctr-stopped-count" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text3)">—</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;padding:6px 10px 0;font-size:11px;color:var(--text3)">
+                    <span>Total</span><span id="ctr-total-count" style="font-family:var(--mono);color:var(--text2)">—</span>
+                  </div>
+                </div>
+                <button class="btn blue" style="margin-top:4px;width:100%;justify-content:center;font-size:11px;padding:5px 8px" onclick="showTab('containers',null)">
+                  View All Containers →
                 </button>
               </div>
+
             </div>
           </div>
         </div>
@@ -4098,23 +4190,23 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <!-- ── CHANNELS VIEW ── -->
       <div id="iptv-channels-view">
-        <div style="display:grid;grid-template-columns:260px 1fr;gap:14px;min-height:520px">
+        <div style="display:grid;grid-template-columns:260px 1fr;gap:14px;height:calc(100vh - 230px);min-height:560px">
 
           <!-- Left: channel browser -->
-          <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
             <div class="search-wrap" style="margin:0">
               <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
               <input type="text" id="iptv-search" placeholder="Search channels…" oninput="iptvFilterChannels()">
             </div>
             <div id="iptv-cat-pills" style="display:flex;gap:4px;flex-wrap:wrap"></div>
             <div id="iptv-channel-list"
-                 style="flex:1;overflow-y:auto;max-height:460px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:4px">
+                 style="flex:1;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:4px;min-height:0">
               <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading channels…</div>
             </div>
           </div>
 
           <!-- Right: player -->
-          <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
             <!-- Now-playing bar -->
             <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:8px 14px">
               <div style="display:flex;align-items:center;gap:10px">
@@ -4130,7 +4222,7 @@ body.sse-disconnected #app{padding-top:38px;}
               </div>
             </div>
             <!-- Player iframe -->
-            <div style="position:relative;background:#000;border-radius:var(--r);overflow:hidden;flex:1;min-height:400px">
+            <div style="position:relative;background:#000;border-radius:var(--r);overflow:hidden;flex:1;min-height:0">
               <div id="iptv-player-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text3)">
                 <div style="font-size:48px">📡</div>
                 <div style="font-size:14px">Click a channel to start watching</div>
@@ -4138,7 +4230,7 @@ body.sse-disconnected #app{padding-top:38px;}
               </div>
               <iframe id="iptv-player-frame"
                 src="about:blank"
-                style="width:100%;height:100%;min-height:400px;border:none;display:none"
+                style="width:100%;height:100%;border:none;display:none"
                 allow="autoplay;fullscreen;encrypted-media"
                 allowfullscreen
                 sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
@@ -4658,12 +4750,13 @@ function _makeGaugeChart(canvasId, color) {
                 data: [0, 100],
                 backgroundColor: [color, 'rgba(48,54,61,0.8)'],
                 borderWidth: 0,
+                borderRadius: 4,
                 hoverOffset: 0
             }]
         },
         options: {
             responsive: false,
-            cutout: '72%',
+            cutout: '68%',
             circumference: 270,
             rotation: 225,
             animation: { duration: 400 },
@@ -4745,6 +4838,15 @@ function startSSE() {
             setEl('load-15m', d.load_15m);
             setEl('uptime-val', d.uptime);
             setEl('mem-detail', d.mem_used_gb + ' / ' + d.mem_total_gb + ' GB');
+            // Load average bars — cap at cpuCount cores (fallback 8)
+            const _cores = window._cpuCount || 8;
+            const _loadPct = (v) => Math.min(parseFloat(v) / _cores * 100, 100).toFixed(1);
+            const lb1 = document.getElementById('load-1m-bar');
+            const lb5 = document.getElementById('load-5m-bar');
+            const lb15 = document.getElementById('load-15m-bar');
+            if (lb1) { const p=_loadPct(d.load_1m); lb1.style.width=p+'%'; lb1.className='pbar '+(p<50?'blue':p<80?'':''); lb1.style.background=p>=80?'var(--red)':p>=50?'var(--yellow)':''; }
+            if (lb5) { const p=_loadPct(d.load_5m); lb5.style.width=p+'%'; lb5.className='pbar '+(p<50?'blue':''); lb5.style.background=p>=80?'var(--red)':p>=50?'var(--yellow)':''; }
+            if (lb15) { const p=_loadPct(d.load_15m); lb15.style.width=p+'%'; lb15.className='pbar '+(p<50?'blue':''); lb15.style.background=p>=80?'var(--red)':p>=50?'var(--yellow)':''; }
         } catch(err) {}
     };
 
@@ -5539,6 +5641,9 @@ async function loadHardware() {
     try {
         const r = await fetch(API + '/api/hardware');
         const d = await r.json();
+
+        // Store core count globally for load-bar scaling
+        if (d.cpu && d.cpu.count) window._cpuCount = d.cpu.count;
 
         // ── CPU pie chart ──
         if (d.cpu) {

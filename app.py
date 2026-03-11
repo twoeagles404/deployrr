@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.0",
+            "version": "3.15.3",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1299,7 +1299,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.0"})
+    return jsonify({"update_available": False, "version": "3.15.3"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1602,7 +1602,7 @@ def api_rss_fetch():
         import urllib.request
         is_reddit = "reddit.com" in url
         if is_reddit:
-            headers = {"User-Agent": "linux:arrhub:v3.15.0 (by /u/arrhub_bot)"}
+            headers = {"User-Agent": "linux:arrhub:v3.15.3 (by /u/arrhub_bot)"}
         else:
             headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; +https://github.com/twoeagles404/arrhub)"}
         req = urllib.request.Request(url, headers=headers)
@@ -3435,7 +3435,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.0</div>
+      <div class="sb-version">v3.15.3</div>
     </div>
   </div>
 
@@ -4311,7 +4311,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.3</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>

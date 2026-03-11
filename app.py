@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.2 · Full deployment, update management, and real-time monitoring
+Version: 3.15.3 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -3102,14 +3102,27 @@ body.sse-disconnected #app{padding-top:38px;}
 @media(max-width:900px){#sb-collapse-btn{display:none;}}
 
 /* Collapsed sidebar state */
-#app.sb-collapsed #sidebar{width:60px;min-width:60px;}
-#app.sb-collapsed .sb-title,#app.sb-collapsed .sb-version,
-#app.sb-collapsed .sb-section-label,#app.sb-collapsed .sb-badge{display:none!important;}
-#app.sb-collapsed .sb-item{justify-content:center;padding:8px 0;}
-#app.sb-collapsed .sb-item>span:not(.sb-icon){display:none;}
-#app.sb-collapsed .sb-brand{justify-content:center;padding:12px 0;}
+#app.sb-collapsed #sidebar{width:56px;min-width:56px;overflow:hidden;}
+#app.sb-collapsed .sb-title,
+#app.sb-collapsed .sb-version,
+#app.sb-collapsed .sb-section-label,
+#app.sb-collapsed .sb-badge{display:none!important;}
+/* font-size:0 collapses bare text nodes (label text) without touching SVG */
+#app.sb-collapsed .sb-item{
+  font-size:0;
+  justify-content:center;
+  padding:10px 0;
+  margin:1px 6px;
+  border-radius:8px;
+}
+/* Keep icon sized and centered */
+#app.sb-collapsed .sb-item .sb-icon{
+  width:20px;height:20px;flex-shrink:0;margin:0;opacity:.85;
+}
+#app.sb-collapsed .sb-item.active .sb-icon{opacity:1;}
+#app.sb-collapsed .sb-brand{justify-content:center;padding:14px 0;}
 #app.sb-collapsed .sb-logo{margin:0;}
-#app.sb-collapsed #sidebar .sb-section{padding:6px 4px;}
+#app.sb-collapsed #sidebar .sb-section{padding:4px 0;}
 
 /* Card size slider */
 .ctr-size-slider{accent-color:var(--blue);width:80px;cursor:pointer;vertical-align:middle;}
@@ -3697,11 +3710,76 @@ body.sse-disconnected #app{padding-top:38px;}
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 System Info
               </div>
-              <div class="stat-grid" id="sys-info-grid">
-                <div class="stat-card"><div class="stat-card-val" id="si-os">—</div><div class="stat-card-label">OS</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="si-kernel">—</div><div class="stat-card-label">Kernel</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="si-arch">—</div><div class="stat-card-label">Architecture</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="si-python">—</div><div class="stat-card-label">Python</div></div>
+              <!-- Terminal-style system info rows -->
+              <div id="sys-info-grid" style="display:flex;flex-direction:column;gap:0">
+
+                <!-- OS -->
+                <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border)">
+                  <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                    <svg width="14" height="14" fill="none" stroke="var(--blue)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
+                  </div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Operating System</div>
+                    <div id="si-os" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                  </div>
+                  <div style="width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0"></div>
+                </div>
+
+                <!-- Kernel -->
+                <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border)">
+                  <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                    <svg width="14" height="14" fill="none" stroke="var(--purple,#bc8cff)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                  </div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Kernel</div>
+                    <div id="si-kernel" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                  </div>
+                </div>
+
+                <!-- Architecture + Python side by side -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);border-right:1px solid var(--border)">
+                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="14" height="14" fill="none" stroke="var(--yellow,#e3b341)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3l6 18M3 9h18M3 15h18"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Architecture</div>
+                      <div id="si-arch" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px">—</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border)">
+                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 12h8M12 8v8"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Python</div>
+                      <div id="si-python" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px">—</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Hostname + Uptime side by side -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-right:1px solid var(--border)">
+                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="14" height="14" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Hostname</div>
+                      <div id="si-hostname" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px">
+                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="14" height="14" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Uptime</div>
+                      <div id="si-uptime" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px">—</div>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             </div>
           </div>
@@ -3788,15 +3866,84 @@ body.sse-disconnected #app{padding-top:38px;}
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                 Docker &amp; Network
               </div>
-              <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
-                <!-- Docker stats -->
-                <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Docker Disk</div></div>
-                <!-- Network I/O stats -->
-                <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Net ↑ Sent</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Net ↓ Recv</div></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+
+                <!-- Docker section -->
+                <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+                  <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+                    <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                    Docker Engine
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                    <div style="background:var(--surface);border-radius:6px;padding:8px 10px">
+                      <div id="docker-images" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--blue);line-height:1">—</div>
+                      <div style="font-size:10px;color:var(--text3);margin-top:3px;display:flex;align-items:center;gap:4px">
+                        <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/></svg>
+                        Images
+                      </div>
+                    </div>
+                    <div style="background:var(--surface);border-radius:6px;padding:8px 10px">
+                      <div id="docker-volumes" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--yellow,#e3b341);line-height:1">—</div>
+                      <div style="font-size:10px;color:var(--text3);margin-top:3px;display:flex;align-items:center;gap:4px">
+                        <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/></svg>
+                        Volumes
+                      </div>
+                    </div>
+                    <div style="background:var(--surface);border-radius:6px;padding:8px 10px">
+                      <div id="docker-networks" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--purple,#bc8cff);line-height:1">—</div>
+                      <div style="font-size:10px;color:var(--text3);margin-top:3px;display:flex;align-items:center;gap:4px">
+                        <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+                        Networks
+                      </div>
+                    </div>
+                    <div style="background:var(--surface);border-radius:6px;padding:8px 10px">
+                      <div id="docker-disk" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text);line-height:1">—</div>
+                      <div style="font-size:10px;color:var(--text3);margin-top:3px;display:flex;align-items:center;gap:4px">
+                        <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l2 2"/></svg>
+                        Disk Used
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Network I/O section -->
+                <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+                  <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+                    <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
+                    Network I/O
+                  </div>
+                  <!-- Upload -->
+                  <div style="margin-bottom:10px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+                      <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                        <svg width="10" height="10" fill="none" stroke="var(--green)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+                        Upload
+                      </span>
+                      <span id="ov-net-sent" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--green)">—</span>
+                    </div>
+                    <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
+                      <div id="net-sent-bar" style="height:100%;width:30%;background:var(--green);border-radius:2px;transition:width .6s"></div>
+                    </div>
+                  </div>
+                  <!-- Download -->
+                  <div style="margin-bottom:10px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+                      <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                        <svg width="10" height="10" fill="none" stroke="var(--blue)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                        Download
+                      </span>
+                      <span id="ov-net-recv" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--blue)">—</span>
+                    </div>
+                    <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
+                      <div id="net-recv-bar" style="height:100%;width:55%;background:var(--blue);border-radius:2px;transition:width .6s"></div>
+                    </div>
+                  </div>
+                  <!-- Interface label -->
+                  <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:4px">
+                    Cumulative totals since boot
+                  </div>
+                </div>
+
               </div>
             </div>
           </div>
@@ -4581,7 +4728,7 @@ let currentTab = 'overview';
 let allContainers = [];
 let ctrFilter = 'all';
 let allCatalog = [];
-let catFilter = 'all';
+let catFilter = 'All';
 
 // ── Container table view state ─────────────────────────────────────────
 let ctrViewMode = 'grid';         // 'grid' | 'table'
@@ -4897,6 +5044,8 @@ async function loadOverview() {
         setEl('si-kernel', d.kernel || '—');
         setEl('si-arch', d.arch || '—');
         setEl('si-python', d.python || '—');
+        setEl('si-hostname', d.hostname || '—');
+        setEl('si-uptime', d.uptime_display || '—');
         setEl('cpu-cores', (d.cpu_count || '—') + ' cores');
         if (d.cpu_percent !== undefined) {
             updateGauge(_cpuChart,'cpu-gauge-text', d.cpu_percent, 100);
@@ -6234,25 +6383,32 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
                 </a>`).join('')}
               </div>`;
         } else {
-        // Rich card layout: thumbnail left, title+excerpt+date right
-        itemsEl.innerHTML = items.slice(0, 12).map(item => `
+        // Rich card layout for non-Reddit feeds — bigger tiles
+        itemsEl.innerHTML = `<div style="display:grid;gap:8px">` + items.slice(0, 15).map(item => `
             <a href="${item.link}" target="_blank" rel="noopener"
-               style="display:flex;gap:10px;text-decoration:none;padding:8px 4px;border-bottom:1px solid var(--border);transition:background .12s ease;"
-               onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+               style="display:flex;gap:12px;align-items:flex-start;text-decoration:none;
+                      background:var(--surface);border:1px solid var(--border);border-radius:8px;
+                      padding:10px 12px;transition:border-color .15s,transform .1s;"
+               onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-1px)'"
+               onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
               ${item.thumb
-                ? `<img src="${item.thumb}" loading="lazy" style="width:72px;height:52px;object-fit:cover;border-radius:5px;flex-shrink:0;background:var(--surface2)"
-                        onerror="this.style.display='none'">`
-                : `<div style="width:72px;height:52px;flex-shrink:0;background:var(--surface2);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text3)">📰</div>`}
-              <div style="flex:1;min-width:0;overflow:hidden">
-                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:3px;
+                ? `<img src="${item.thumb}" loading="lazy"
+                        style="width:88px;height:66px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--surface2)"
+                        onerror="this.outerHTML='<div style=\\'width:88px;height:66px;flex-shrink:0;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:26px\\'>📰</div>'">`
+                : `<div style="width:88px;height:66px;flex-shrink:0;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:26px;color:var(--text3)">📰</div>`}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;margin-bottom:4px;
                      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.title}</div>
                 ${item.excerpt
-                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.3;margin-bottom:3px;
+                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.45;margin-bottom:5px;
                             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.excerpt}</div>`
                     : ''}
-                <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
+                <div style="font-size:10px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                  <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
+                  ${item.date || ''}
+                </div>
               </div>
-            </a>`).join('');
+            </a>`).join('') + `</div>`;
         }
 
         // Update chevron badge with article count
@@ -6442,16 +6598,20 @@ function iptvPlayChannel(id, name, rowEl) {
     const nowSource   = document.getElementById('iptv-now-source');
 
     if (frame) {
-        frame.src = `https://dlstreams.top/watch.php?id=${id}`;
+        // embed.php gives a clean player-only view (no site header/nav/chat/ads)
+        frame.src = `https://dlstreams.top/embed.php?id=${id}`;
         frame.style.display = '';
+        // Extra: shift iframe up to hide any residual header band that may render
+        // inside the cross-origin frame; clipped by overflow:hidden on parent.
+        frame.style.marginTop = '-2px';
     }
     if (placeholder) placeholder.style.display = 'none';
     if (nowPlaying)  nowPlaying.textContent = name;
-    if (nowSource)   nowSource.textContent  = `DaddyLive · Channel ${id}`;
+    if (nowSource)   nowSource.textContent  = `DaddyLive · ${name}`;
 
-    // Update popout button URL
+    // Update popout button URL (popout still uses watch.php for full experience)
     const popoutBtn = document.getElementById('iptv-popout-btn');
-    if (popoutBtn) popoutBtn.dataset.url = `https://dlstreams.top/watch.php?id=${id}`;
+    if (popoutBtn) popoutBtn.dataset.url = `https://dlstreams.top/embed.php?id=${id}`;
 }
 
 function iptvPopout() {

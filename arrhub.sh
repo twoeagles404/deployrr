@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.15.1 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.15.2 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.15.1"
+VERSION="3.15.2"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -1399,25 +1399,58 @@ filter_apps() {
 self_update() {
     local script_path
     script_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+    local webui_dir="${SCRIPT_DIR}/arrhub-webui"
 
-    d_infobox "ArrHub Update" "Downloading latest version from GitHub...\n\nThis may take a moment."
+    d_infobox "ArrHub Update" "Downloading latest version from:\n  Branch: ${GITHUB_BRANCH}\n  Source: ${GITHUB_RAW}\n\nThis may take a moment."
 
-    local tmp_file="${TMP_DIR}/arrhub_latest.sh"
+    local tmp_sh="${TMP_DIR}/arrhub_latest.sh"
+    local tmp_py="${TMP_DIR}/arrhub_latest_app.py"
+    local ok_sh=false ok_py=false
 
-    if curl -fsSL "${GITHUB_RAW}/arrhub.sh" -o "${tmp_file}" 2>/dev/null; then
-        if [[ -s "${tmp_file}" ]]; then
-            chmod +x "${tmp_file}"
-            cp "${tmp_file}" "${script_path}"
-            log INFO "Self-update completed successfully"
-            d_msgbox "Update Complete" "ArrHub has been updated to the latest version.\n\nPlease restart the script."
-            exit 0
-        else
-            log_err "UPDATE" "Downloaded file is empty"
-            d_msgbox "Update Failed" "Downloaded file is empty. Check your internet connection."
-        fi
+    # ── 1. Download arrhub.sh ────────────────────────────────────────────
+    if curl -fsSL "${GITHUB_RAW}/arrhub.sh" -o "${tmp_sh}" 2>/dev/null && [[ -s "${tmp_sh}" ]]; then
+        chmod +x "${tmp_sh}"
+        cp "${tmp_sh}" "${script_path}"
+        log INFO "arrhub.sh updated from ${GITHUB_BRANCH}"
+        ok_sh=true
     else
-        log_err "UPDATE" "Failed to download from GitHub"
-        d_msgbox "Update Failed" "Could not download from:\n${GITHUB_RAW}/arrhub.sh\n\nCheck your internet connection."
+        log_err "UPDATE" "Failed to download arrhub.sh from ${GITHUB_RAW}"
+    fi
+
+    # ── 2. Download app.py (WebUI backend) ─────────────────────────────
+    mkdir -p "${webui_dir}"
+    if curl -fsSL "${GITHUB_RAW}/app.py" -o "${tmp_py}" 2>/dev/null && [[ -s "${tmp_py}" ]]; then
+        cp "${tmp_py}" "${webui_dir}/app.py"
+        log INFO "app.py updated from ${GITHUB_BRANCH}"
+        ok_py=true
+    else
+        log_err "UPDATE" "Failed to download app.py from ${GITHUB_RAW}"
+    fi
+
+    # ── 3. Restart WebUI container to pick up new app.py ────────────────
+    local container_restarted=false
+    if [[ "${ok_py}" == "true" ]]; then
+        if docker inspect arrhub_webui &>/dev/null 2>&1; then
+            d_infobox "ArrHub Update" "Restarting WebUI container..."
+            if docker restart arrhub_webui >> "${LOG_FILE}" 2>&1; then
+                log INFO "arrhub_webui restarted after update"
+                container_restarted=true
+            else
+                log_err "UPDATE" "docker restart arrhub_webui failed"
+            fi
+        fi
+    fi
+
+    # ── 4. Report result ─────────────────────────────────────────────────
+    if [[ "${ok_sh}" == "true" ]]; then
+        local msg="ArrHub updated from branch: ${GITHUB_BRANCH}\n"
+        [[ "${ok_py}" == "true" ]] && msg+="  ✓ WebUI (app.py) updated\n" || msg+="  ✗ WebUI download failed\n"
+        [[ "${container_restarted}" == "true" ]] && msg+="  ✓ WebUI container restarted\n" || msg+="  ⚠ Could not restart container — run: media → WebUI Control → Restart\n"
+        msg+="\nPlease restart the TUI script to apply TUI changes."
+        d_msgbox "Update Complete" "${msg}"
+        exit 0
+    else
+        d_msgbox "Update Failed" "Could not download from:\n  ${GITHUB_RAW}/arrhub.sh\n\nCheck internet and try again.\nBranch: ${GITHUB_BRANCH}"
     fi
 }
 
@@ -2414,6 +2447,7 @@ webui_menu() {
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v "${webui_dir}/app.py:/app/app.py:ro" \
                             --pid=host \
                             arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI started (fresh install)"
@@ -2453,6 +2487,7 @@ webui_menu() {
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v "${webui_dir}/app.py:/app/app.py:ro" \
                             --pid=host \
                             arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI rebuilt and restarted"

@@ -1503,6 +1503,14 @@ def api_rss_feeds():
             {"name": "Forbes", "url": "https://www.forbes.com/real-time/feed2/", "icon": "💰"},
             {"name": "Economist", "url": "https://www.economist.com/the-world-this-week/rss.xml", "icon": "💹"},
         ],
+        "Reddit": [
+            {"name": "r/selfhosted", "url": "https://www.reddit.com/r/selfhosted/.rss", "icon": "🤖"},
+            {"name": "r/homelab", "url": "https://www.reddit.com/r/homelab/.rss", "icon": "🖥️"},
+            {"name": "r/ProxmoxVE", "url": "https://www.reddit.com/r/Proxmox/.rss", "icon": "📦"},
+            {"name": "r/docker", "url": "https://www.reddit.com/r/docker/.rss", "icon": "🐳"},
+            {"name": "r/linux", "url": "https://www.reddit.com/r/linux/.rss", "icon": "🐧"},
+            {"name": "r/netsec", "url": "https://www.reddit.com/r/netsec/.rss", "icon": "🔐"},
+        ],
         "YouTube": [
             {"name": "Linus Tech Tips", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw", "icon": "▶️"},
             {"name": "Fireship", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA", "icon": "🔥"},
@@ -1510,7 +1518,67 @@ def api_rss_feeds():
             {"name": "TechLinked", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCeeFfhMcJa1kjtfZAGskOCA", "icon": "🔗"},
         ],
     }
+    # Append user custom feeds as their own category
+    custom = _load_custom_feeds()
+    if custom.get("feeds"):
+        my_rss = [f for f in custom["feeds"] if f.get("type") != "reddit"]
+        my_reddit = [f for f in custom["feeds"] if f.get("type") == "reddit"]
+        if my_rss:
+            feeds["My Feeds"] = my_rss
+        if my_reddit:
+            # Merge into Reddit category
+            feeds.setdefault("Reddit", [])
+            for f in my_reddit:
+                if not any(x["name"] == f["name"] for x in feeds["Reddit"]):
+                    feeds["Reddit"].append(f)
     return jsonify({"categories": feeds})
+
+CUSTOM_FEEDS_PATH = "/app/custom_feeds.json"
+
+def _load_custom_feeds():
+    """Load user-defined custom feeds from JSON."""
+    if os.path.exists(CUSTOM_FEEDS_PATH):
+        try:
+            with open(CUSTOM_FEEDS_PATH) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"feeds": []}
+
+def _save_custom_feeds(data):
+    """Persist user-defined custom feeds."""
+    os.makedirs(os.path.dirname(CUSTOM_FEEDS_PATH) or ".", exist_ok=True)
+    with open(CUSTOM_FEEDS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+@app.route("/api/rss/custom", methods=["GET"])
+def api_rss_custom_get():
+    return jsonify(_load_custom_feeds())
+
+@app.route("/api/rss/custom", methods=["POST"])
+def api_rss_custom_post():
+    try:
+        data = _load_custom_feeds()
+        new_feed = request.json or {}
+        if not new_feed.get("name") or not new_feed.get("url"):
+            return jsonify({"error": "name and url required"}), 400
+        # Remove any existing feed with same name
+        data["feeds"] = [f for f in data["feeds"] if f.get("name") != new_feed["name"]]
+        data["feeds"].append(new_feed)
+        _save_custom_feeds(data)
+        return jsonify({"status": "saved"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/rss/custom/<name>", methods=["DELETE"])
+def api_rss_custom_delete(name):
+    try:
+        data = _load_custom_feeds()
+        data["feeds"] = [f for f in data["feeds"] if f.get("name") != name]
+        _save_custom_feeds(data)
+        return jsonify({"status": "deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/rss/fetch")
 def api_rss_fetch():
@@ -1531,7 +1599,11 @@ def api_rss_fetch():
 
     try:
         import urllib.request
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.5; +https://github.com/twoeagles404/arrhub)"}
+        is_reddit = "reddit.com" in url
+        if is_reddit:
+            headers = {"User-Agent": "linux:arrhub:v3.14.0 (by /u/arrhub_bot)"}
+        else:
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.14; +https://github.com/twoeagles404/arrhub)"}
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
@@ -3174,15 +3246,11 @@ body.sse-disconnected #app{padding-top:38px;}
     </div>
     <div class="sb-item" onclick="showTab('stornet',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-      Storage &amp; Network
+      Infrastructure
     </div>
     <div class="sb-item" onclick="showTab('ports',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
       Port Map
-    </div>
-    <div class="sb-item" onclick="showTab('hardware',this)">
-      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
-      Hardware
     </div>
   </div>
 
@@ -3341,7 +3409,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
                   <div style="position:relative;width:100px;height:100px">
                     <canvas id="cpu-gauge-canvas" width="100" height="100"></canvas>
-                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
+                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;padding-bottom:18px">
                       <span id="cpu-gauge-text" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
                     </div>
                   </div>
@@ -3358,7 +3426,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
                   <div style="position:relative;width:100px;height:100px">
                     <canvas id="mem-gauge-canvas" width="100" height="100"></canvas>
-                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
+                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;padding-bottom:18px">
                       <span id="mem-gauge-text" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
                     </div>
                   </div>
@@ -3633,13 +3701,13 @@ body.sse-disconnected #app{padding-top:38px;}
     <div id="tab-stornet" class="tab-panel">
       <div class="section-header">
         <div>
-          <div class="section-title">💾 Storage &amp; 📡 Network</div>
-          <div class="section-sub">Disk usage and live bandwidth in one view</div>
+          <div class="section-title">🏗️ Infrastructure</div>
+          <div class="section-sub">Storage, network, and hardware in one view</div>
         </div>
         <button class="btn-primary" onclick="loadStorage();loadNetwork()">↺ Refresh</button>
       </div>
       <!-- ── Storage ── -->
-      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Disk Usage</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Storage</div>
       <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:18px"></div>
       <!-- ── Network ── -->
       <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Network</div>
@@ -3648,11 +3716,11 @@ body.sse-disconnected #app{padding-top:38px;}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
             <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↑ TX (Upload)</div>
-            <canvas id="net-tx-chart" height="55"></canvas>
+            <div style="position:relative;height:70px"><canvas id="net-tx-chart"></canvas></div>
           </div>
           <div>
             <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↓ RX (Download)</div>
-            <canvas id="net-rx-chart" height="55"></canvas>
+            <div style="position:relative;height:70px"><canvas id="net-rx-chart"></canvas></div>
           </div>
         </div>
       </div>
@@ -3660,6 +3728,18 @@ body.sse-disconnected #app{padding-top:38px;}
         <div class="panel-title">Interfaces</div>
         <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Rate ↑/↓</th><th>Status</th></tr></thead>
         <tbody id="net-table"></tbody></table>
+      </div>
+      <!-- ── Hardware (merged) ── -->
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin:18px 0 8px">Hardware</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="panel">
+          <div class="panel-title">CPU</div>
+          <div class="stat-grid" id="hw-cpu"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Memory</div>
+          <div id="hw-mem"></div>
+        </div>
       </div>
     </div>
 
@@ -3677,18 +3757,6 @@ body.sse-disconnected #app{padding-top:38px;}
       <div id="port-accordion"><div class="empty"><div class="empty-icon">🔌</div><div class="empty-text">Click Refresh to load port assignments</div></div></div>
     </div>
 
-    <!-- ── HARDWARE ── -->
-    <div id="tab-hardware" class="tab-panel">
-      <div class="section-header"><div class="section-title">Hardware</div></div>
-      <div class="panel">
-        <div class="panel-title">CPU</div>
-        <div class="stat-grid" id="hw-cpu"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-title">Memory</div>
-        <div id="hw-mem"></div>
-      </div>
-    </div>
 
     <!-- ── LOGS ── -->
     <div id="tab-logs" class="tab-panel">
@@ -3868,6 +3936,7 @@ body.sse-disconnected #app{padding-top:38px;}
             <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssExpandAll()">⊞ Expand All</button>
             <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssCollapseAll()">⊟ Collapse All</button>
           </div>
+          <button class="btn" style="font-size:11px;padding:4px 10px" onclick="openAddFeedModal()">➕ Add Feed</button>
           <button class="btn-primary" onclick="loadRSSFeeds()">↺ Refresh</button>
         </div>
       </div>
@@ -4068,6 +4137,41 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
     </div>
 
+    <!-- ── Add Feed Modal ── -->
+    <div id="add-feed-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
+      <div class="panel" style="width:min(480px,90vw);padding:20px;position:relative">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div style="font-size:14px;font-weight:700">Add Custom Feed</div>
+          <button class="btn" onclick="closeAddFeedModal()" style="padding:2px 8px;font-size:13px">✕</button>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:14px">
+          <button class="filter-pill active" id="add-feed-type-rss" onclick="setAddFeedType('rss')">📰 RSS / Atom URL</button>
+          <button class="filter-pill" id="add-feed-type-reddit" onclick="setAddFeedType('reddit')">🤖 Subreddit</button>
+        </div>
+        <div id="add-feed-form-rss">
+          <div style="margin-bottom:10px">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Feed Name</label>
+            <input id="add-feed-name-rss" type="text" placeholder="e.g. My Blog" style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">RSS / Atom URL</label>
+            <input id="add-feed-url-rss" type="url" placeholder="https://example.com/feed.xml" style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+        </div>
+        <div id="add-feed-form-reddit" style="display:none">
+          <div style="margin-bottom:14px">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Subreddit name (without r/)</label>
+            <input id="add-feed-sub" type="text" placeholder="e.g. proxmox" style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" onclick="closeAddFeedModal()">Cancel</button>
+          <button class="btn-primary" onclick="submitAddFeed()">Add Feed</button>
+        </div>
+        <div id="add-feed-status" style="margin-top:8px;font-size:12px;color:var(--text3)"></div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /main -->
 </div><!-- /app -->
@@ -4260,9 +4364,8 @@ function showTab(name, el) {
     // Lazy-load on first show
     if (name === 'overview') loadServiceLauncher();
     else if (name === 'containers') loadContainers();
-    else if (name === 'stornet') { loadStorage(); loadNetwork(); }
+    else if (name === 'stornet') { loadStorage(); loadNetwork(); loadHardware(); }
     else if (name === 'ports') loadPortMap();
-    else if (name === 'hardware') loadHardware();
     else if (name === 'logs') loadLogs();
     else if (name === 'deploy') loadCatalog();
     else if (name === 'stack') { loadStackManager(); loadDeployHistory(); }
@@ -5736,6 +5839,55 @@ function _rssUpdateCount(catId, n) {
     const countEl = document.getElementById('rss-count-' + catId);
     if (!countEl) return;
     countEl.textContent = n > 0 ? `${n} article${n!==1?'s':''}` : 'no articles';
+}
+
+// ── Add Feed Modal ─────────────────────────────────────────────
+let _addFeedType = 'rss';
+
+function openAddFeedModal() {
+  const modal = document.getElementById('add-feed-modal');
+  if (modal) { modal.style.display = 'flex'; }
+}
+function closeAddFeedModal() {
+  const modal = document.getElementById('add-feed-modal');
+  if (modal) modal.style.display = 'none';
+  // Clear inputs
+  ['add-feed-name-rss','add-feed-url-rss','add-feed-sub'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const st = document.getElementById('add-feed-status');
+  if (st) st.textContent = '';
+}
+function setAddFeedType(t) {
+  _addFeedType = t;
+  document.getElementById('add-feed-form-rss').style.display = t === 'rss' ? '' : 'none';
+  document.getElementById('add-feed-form-reddit').style.display = t === 'reddit' ? '' : 'none';
+  document.getElementById('add-feed-type-rss').classList.toggle('active', t === 'rss');
+  document.getElementById('add-feed-type-reddit').classList.toggle('active', t === 'reddit');
+}
+async function submitAddFeed() {
+  const status = document.getElementById('add-feed-status');
+  let payload;
+  if (_addFeedType === 'rss') {
+    const name = (document.getElementById('add-feed-name-rss')?.value || '').trim();
+    const url  = (document.getElementById('add-feed-url-rss')?.value || '').trim();
+    if (!name || !url) { if (status) status.textContent = 'Name and URL are required.'; return; }
+    payload = { name, url, icon: '📰', type: 'rss' };
+  } else {
+    const sub  = (document.getElementById('add-feed-sub')?.value || '').trim().replace(/^r\//, '');
+    if (!sub) { if (status) status.textContent = 'Subreddit name is required.'; return; }
+    payload = { name: 'r/' + sub, url: `https://www.reddit.com/r/${sub}/.rss`, icon: '🤖', type: 'reddit' };
+  }
+  if (status) status.textContent = 'Saving…';
+  try {
+    const r = await fetch(API + '/api/rss/custom', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const d = await r.json();
+    if (d.error) { if (status) status.textContent = 'Error: ' + d.error; return; }
+    if (status) status.textContent = '✓ Feed added!';
+    setTimeout(() => { closeAddFeedModal(); loadRSSFeeds(); }, 800);
+  } catch(e) {
+    if (status) status.textContent = 'Failed to save feed.';
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════

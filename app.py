@@ -934,7 +934,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.13.0",
+            "version": "3.14.0",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1892,6 +1892,57 @@ def api_radarr_calendar():
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "movies": []})
 
+@app.route("/api/services/radarr/queue")
+def api_radarr_queue():
+    """Active download queue from Radarr."""
+    url = _get_setting("radarr_url")
+    key = _get_setting("radarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        data = _svc_get(url, "/api/v3/queue?pageSize=20&includeUnknownMovieItems=false&includeMovie=true", key)
+        records = data.get("records", []) if isinstance(data, dict) else []
+        items = []
+        for rec in records[:15]:
+            movie = rec.get("movie", {})
+            poster = next((i["remoteUrl"] for i in movie.get("images", []) if i.get("coverType") == "poster"), None)
+            items.append({
+                "title": rec.get("title") or movie.get("title", "Unknown"),
+                "status": rec.get("status", ""),
+                "progress": round(100 - (rec.get("sizeleft", 0) / max(rec.get("size", 1), 1)) * 100, 1),
+                "size": rec.get("size", 0),
+                "sizeleft": rec.get("sizeleft", 0),
+                "timeleft": rec.get("timeleft", ""),
+                "quality": rec.get("quality", {}).get("quality", {}).get("name", ""),
+                "poster": poster,
+                "indexer": rec.get("indexer", ""),
+                "downloadClient": rec.get("downloadClient", ""),
+            })
+        return jsonify({"configured": True, "queue": items, "totalRecords": data.get("totalRecords", 0)})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "queue": []})
+
+@app.route("/api/services/radarr/library")
+def api_radarr_library():
+    """Radarr library stats."""
+    url = _get_setting("radarr_url")
+    key = _get_setting("radarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        movies = _svc_get(url, "/api/v3/movie", key)
+        total = len(movies)
+        monitored = sum(1 for m in movies if m.get("monitored"))
+        downloaded = sum(1 for m in movies if m.get("hasFile"))
+        missing = sum(1 for m in movies if m.get("monitored") and not m.get("hasFile"))
+        return jsonify({
+            "configured": True,
+            "total": total, "monitored": monitored,
+            "downloaded": downloaded, "missing": missing,
+        })
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e)})
+
 @app.route("/api/services/sonarr/calendar")
 def api_sonarr_calendar():
     """Upcoming episodes from Sonarr (next 7 days)."""
@@ -1914,6 +1965,61 @@ def api_sonarr_calendar():
         return jsonify({"configured": True, "episodes": episodes[:10]})
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "episodes": []})
+
+@app.route("/api/services/sonarr/queue")
+def api_sonarr_queue():
+    """Active download queue from Sonarr."""
+    url = _get_setting("sonarr_url")
+    key = _get_setting("sonarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        data = _svc_get(url, "/api/v3/queue?pageSize=20&includeUnknownSeriesItems=false&includeSeries=true&includeEpisode=true", key)
+        records = data.get("records", []) if isinstance(data, dict) else []
+        items = []
+        for rec in records[:15]:
+            series = rec.get("series", {})
+            episode = rec.get("episode", {})
+            poster = next((i["remoteUrl"] for i in series.get("images", []) if i.get("coverType") == "poster"), None)
+            ep_label = f"S{episode.get('seasonNumber',0):02d}E{episode.get('episodeNumber',0):02d}" if episode else ""
+            items.append({
+                "title": series.get("title", "Unknown"),
+                "episode": ep_label,
+                "episodeTitle": episode.get("title", ""),
+                "status": rec.get("status", ""),
+                "progress": round(100 - (rec.get("sizeleft", 0) / max(rec.get("size", 1), 1)) * 100, 1),
+                "size": rec.get("size", 0),
+                "sizeleft": rec.get("sizeleft", 0),
+                "timeleft": rec.get("timeleft", ""),
+                "quality": rec.get("quality", {}).get("quality", {}).get("name", ""),
+                "poster": poster,
+                "indexer": rec.get("indexer", ""),
+                "downloadClient": rec.get("downloadClient", ""),
+            })
+        return jsonify({"configured": True, "queue": items, "totalRecords": data.get("totalRecords", 0)})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "queue": []})
+
+@app.route("/api/services/sonarr/library")
+def api_sonarr_library():
+    """Sonarr library stats."""
+    url = _get_setting("sonarr_url")
+    key = _get_setting("sonarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        series_list = _svc_get(url, "/api/v3/series", key)
+        total = len(series_list)
+        monitored = sum(1 for s in series_list if s.get("monitored"))
+        episodes_total = sum(s.get("statistics", {}).get("episodeCount", 0) for s in series_list)
+        episodes_have = sum(s.get("statistics", {}).get("episodeFileCount", 0) for s in series_list)
+        return jsonify({
+            "configured": True,
+            "totalSeries": total, "monitored": monitored,
+            "episodes": episodes_total, "episodesOnDisk": episodes_have,
+        })
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e)})
 
 @app.route("/api/services/plex/sessions")
 def api_plex_sessions():
@@ -2276,6 +2382,45 @@ _HTML_SPA = r"""<!DOCTYPE html>
   transition:background .15s;
 }
 .widget-remove-btn:hover{background:var(--red)!important;color:#fff!important;}
+/* ── Compact widget content — auto-shrink text, hide overflow, tighten padding ── */
+.grid-stack-item-content .panel{container-type:inline-size;}
+.grid-stack-item-content .panel-title{font-size:clamp(11px,1.6vw,13px);padding:8px 12px;}
+.grid-stack-item .stat-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-bottom:8px;}
+.grid-stack-item .stat-card{padding:8px 10px;gap:4px;}
+.grid-stack-item .stat-card-val{font-size:clamp(12px,2vw,15px);}
+.grid-stack-item .stat-card-label{font-size:10px;}
+/* Ultra-compact mode — applied via JS when widget is resized small */
+.widget-compact .panel{padding:6px 8px;}
+.widget-compact .panel-title{font-size:11px;padding:4px 8px;gap:4px;}
+.widget-compact .stat-grid{grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:4px;}
+.widget-compact .gauge-wrap canvas{width:60px!important;height:60px!important;}
+.widget-compact .metric-card{padding:6px 8px;gap:2px;}
+.widget-compact .metric-name{font-size:10px;}
+.widget-compact .ctr-row{font-size:11px;}
+.widget-compact #service-cards-row{grid-template-columns:1fr!important;gap:6px!important;}
+/* ── Service card tabs ── */
+.svc-card{display:flex;flex-direction:column;overflow:hidden;}
+.svc-card-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);gap:6px;flex-shrink:0;}
+.svc-card-title{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;}
+.svc-tabs{display:flex;gap:2px;}
+.svc-tab{background:none;border:none;color:var(--text3);font-size:10px;font-weight:600;padding:3px 8px;border-radius:6px;cursor:pointer;transition:background .15s,color .15s;}
+.svc-tab:hover{background:var(--surface);color:var(--text2);}
+.svc-tab.active{background:var(--blue2);color:var(--blue);}
+.svc-card-body{display:flex;flex-direction:column;gap:4px;padding:6px 8px;overflow-y:auto;flex:1;min-height:0;}
+/* Clickable service items */
+.svc-item{display:flex;align-items:center;gap:8px;padding:4px 4px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;border-radius:4px;}
+.svc-item:hover{background:var(--surface);}
+.svc-item:last-child{border-bottom:none;}
+.svc-detail{display:none;padding:6px 10px;background:var(--bg3);border-radius:6px;margin:2px 0 4px;font-size:11px;color:var(--text2);line-height:1.5;border:1px solid var(--border);}
+.svc-detail.open{display:block;}
+/* Queue progress bar */
+.svc-q-bar{height:3px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:3px;}
+.svc-q-fill{height:100%;border-radius:2px;transition:width .5s ease;}
+/* Service library stats grid */
+.svc-lib-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0;}
+.svc-lib-stat{text-align:center;padding:10px 6px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);}
+.svc-lib-val{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text);}
+.svc-lib-label{font-size:10px;color:var(--text3);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;}
 /* Service launcher tiles */
 .launcher-tile{
   display:flex;flex-direction:column;align-items:center;gap:4px;
@@ -2449,11 +2594,14 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .gauge-sub{font-size:11px;color:var(--text2);font-weight:500;}
 
 /* ── Overview metric row ── */
-.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:20px;}
+.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;}
 .metric-card{
   background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
-  padding:16px;display:flex;flex-direction:column;gap:8px;
+  padding:12px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
 }
+/* When gauge widget is narrow, stack metric cards 2×2 */
+.grid-stack-item[gs-id="gauges"] .metric-grid{margin-bottom:0;}
+@container (max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr);}}
 .metric-top{display:flex;align-items:center;justify-content:space-between;}
 .metric-name{font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;}
 .metric-badge{font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600;}
@@ -3175,73 +3323,77 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
       </div>
 
-      <!-- Gauges row -->
-      <div class="metric-grid" id="gauge-row">
-        <div class="metric-card">
-          <div class="metric-top">
-            <span class="metric-name">CPU Usage</span>
-            <span class="metric-badge" id="cpu-badge" style="background:var(--green2);color:var(--green)">0%</span>
-          </div>
-          <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
-            <div style="position:relative;width:140px;height:140px">
-              <canvas id="cpu-gauge-canvas" width="140" height="140"></canvas>
-              <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
-                <span id="cpu-gauge-text" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
-              </div>
-            </div>
-            <span class="gauge-sub" id="cpu-cores">— cores</span>
-          </div>
-          <div class="pbar-wrap"><div class="pbar blue" id="cpu-pbar" style="width:0%"></div></div>
-        </div>
-
-        <div class="metric-card">
-          <div class="metric-top">
-            <span class="metric-name">Memory</span>
-            <span class="metric-badge" id="mem-badge" style="background:var(--green2);color:var(--green)">0%</span>
-          </div>
-          <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
-            <div style="position:relative;width:140px;height:140px">
-              <canvas id="mem-gauge-canvas" width="140" height="140"></canvas>
-              <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
-                <span id="mem-gauge-text" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
-              </div>
-            </div>
-            <span class="gauge-sub" id="mem-detail">— / — GB</span>
-          </div>
-          <div class="pbar-wrap"><div class="pbar" id="mem-pbar" style="width:0%;background:var(--purple)"></div></div>
-        </div>
-
-        <div class="metric-card">
-          <div class="metric-top"><span class="metric-name">Load Average</span></div>
-          <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0;">
-            <div class="ctr-row"><span>1 min</span><span id="load-1m">—</span></div>
-            <div class="ctr-row"><span>5 min</span><span id="load-5m">—</span></div>
-            <div class="ctr-row"><span>15 min</span><span id="load-15m">—</span></div>
-          </div>
-          <div class="ctr-row" style="margin-top:4px;"><span>Uptime</span><span id="uptime-val">—</span></div>
-        </div>
-
-        <div class="metric-card">
-          <div class="metric-top"><span class="metric-name">Containers</span></div>
-          <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0;">
-            <div class="ctr-row"><span>Running</span><span id="ctr-running-count" style="color:var(--green)">—</span></div>
-            <div class="ctr-row"><span>Stopped</span><span id="ctr-stopped-count" style="color:var(--red)">—</span></div>
-            <div class="ctr-row"><span>Total</span><span id="ctr-total-count">—</span></div>
-          </div>
-          <button class="btn blue" style="margin-top:6px;width:100%;justify-content:center" onclick="showTab('containers',null)">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-            View Containers
-          </button>
-        </div>
-      </div>
-
       <!-- ── Overview GridStack Dashboard ─────────────────────────────────
            Click "Edit Layout" in the header to enter drag-and-drop mode.
            Positions are saved to localStorage (key: arrhub_grid).        -->
       <div class="grid-stack" id="ov-grid">
 
-        <!-- ① System Info widget  (default: left half, row 0) -->
-        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
+        <!-- ⓪ System Gauges widget  (default: full width, row 0) -->
+        <div class="grid-stack-item" gs-id="gauges" gs-x="0" gs-y="0" gs-w="12" gs-h="3" gs-min-w="4" gs-min-h="2">
+          <div class="grid-stack-item-content">
+            <button class="widget-remove-btn" onclick="removeWidget('gauges')" title="Remove widget">✕</button>
+            <div class="metric-grid" id="gauge-row" style="margin:0;padding:8px;height:100%;box-sizing:border-box;align-content:start">
+              <div class="metric-card">
+                <div class="metric-top">
+                  <span class="metric-name">CPU Usage</span>
+                  <span class="metric-badge" id="cpu-badge" style="background:var(--green2);color:var(--green)">0%</span>
+                </div>
+                <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
+                  <div style="position:relative;width:100px;height:100px">
+                    <canvas id="cpu-gauge-canvas" width="100" height="100"></canvas>
+                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
+                      <span id="cpu-gauge-text" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
+                    </div>
+                  </div>
+                  <span class="gauge-sub" id="cpu-cores">— cores</span>
+                </div>
+                <div class="pbar-wrap"><div class="pbar blue" id="cpu-pbar" style="width:0%"></div></div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-top">
+                  <span class="metric-name">Memory</span>
+                  <span class="metric-badge" id="mem-badge" style="background:var(--green2);color:var(--green)">0%</span>
+                </div>
+                <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
+                  <div style="position:relative;width:100px;height:100px">
+                    <canvas id="mem-gauge-canvas" width="100" height="100"></canvas>
+                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
+                      <span id="mem-gauge-text" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
+                    </div>
+                  </div>
+                  <span class="gauge-sub" id="mem-detail">— / — GB</span>
+                </div>
+                <div class="pbar-wrap"><div class="pbar" id="mem-pbar" style="width:0%;background:var(--purple)"></div></div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-top"><span class="metric-name">Load Average</span></div>
+                <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0;">
+                  <div class="ctr-row"><span>1 min</span><span id="load-1m">—</span></div>
+                  <div class="ctr-row"><span>5 min</span><span id="load-5m">—</span></div>
+                  <div class="ctr-row"><span>15 min</span><span id="load-15m">—</span></div>
+                </div>
+                <div class="ctr-row" style="margin-top:2px;"><span>Uptime</span><span id="uptime-val">—</span></div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-top"><span class="metric-name">Containers</span></div>
+                <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0;">
+                  <div class="ctr-row"><span>Running</span><span id="ctr-running-count" style="color:var(--green)">—</span></div>
+                  <div class="ctr-row"><span>Stopped</span><span id="ctr-stopped-count" style="color:var(--red)">—</span></div>
+                  <div class="ctr-row"><span>Total</span><span id="ctr-total-count">—</span></div>
+                </div>
+                <button class="btn blue" style="margin-top:4px;width:100%;justify-content:center;font-size:11px;padding:3px 8px" onclick="showTab('containers',null)">
+                  View Containers
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ① System Info widget  (default: left half, row 3) -->
+        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="3" gs-w="6" gs-h="4" gs-min-w="3" gs-min-h="2">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
@@ -3259,8 +3411,8 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ② Weather widget  (default: right half, row 0) -->
-        <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
+        <!-- ② Weather widget  (default: right half, row 3) -->
+        <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="3" gs-w="6" gs-h="4" gs-min-w="3" gs-min-h="2">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('weather')" title="Remove widget">✕</button>
             <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:hidden">
@@ -3286,33 +3438,53 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ③ Service Cards row  (default: full width, row 4) -->
-        <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
+        <!-- ③ Service Cards row  (default: full width, row 7) -->
+        <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="7" gs-w="12" gs-h="5" gs-min-w="4" gs-min-h="3">
           <div class="grid-stack-item-content" style="overflow:hidden">
             <button class="widget-remove-btn" onclick="removeWidget('services')" title="Remove widget">✕</button>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box" id="service-cards-row">
-              <div class="panel" style="margin:0" id="radarr-card">
-                <div class="panel-title">🎥 Radarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span></div>
-                <div id="radarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box;overflow:auto" id="service-cards-row">
+              <div class="panel svc-card" style="margin:0" id="radarr-card">
+                <div class="svc-card-hdr">
+                  <span class="svc-card-title">🎥 Radarr</span>
+                  <div class="svc-tabs">
+                    <button class="svc-tab active" onclick="svcTabSwitch('radarr','upcoming',this)">Upcoming</button>
+                    <button class="svc-tab" onclick="svcTabSwitch('radarr','queue',this)">Queue</button>
+                    <button class="svc-tab" onclick="svcTabSwitch('radarr','library',this)">Library</button>
+                  </div>
+                </div>
+                <div id="radarr-card-body" class="svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
               </div>
-              <div class="panel" style="margin:0" id="sonarr-card">
-                <div class="panel-title">📺 Sonarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 7 days</span></div>
-                <div id="sonarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              <div class="panel svc-card" style="margin:0" id="sonarr-card">
+                <div class="svc-card-hdr">
+                  <span class="svc-card-title">📺 Sonarr</span>
+                  <div class="svc-tabs">
+                    <button class="svc-tab active" onclick="svcTabSwitch('sonarr','upcoming',this)">Upcoming</button>
+                    <button class="svc-tab" onclick="svcTabSwitch('sonarr','queue',this)">Queue</button>
+                    <button class="svc-tab" onclick="svcTabSwitch('sonarr','library',this)">Library</button>
+                  </div>
+                </div>
+                <div id="sonarr-card-body" class="svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
               </div>
-              <div class="panel" style="margin:0" id="plex-card">
-                <div class="panel-title">▶ Plex — Now Playing<span id="plex-stream-count" style="margin-left:auto;background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600"></span></div>
-                <div id="plex-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              <div class="panel svc-card" style="margin:0" id="plex-card">
+                <div class="svc-card-hdr">
+                  <span class="svc-card-title">▶ Plex — Now Playing</span>
+                  <span id="plex-stream-count" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600"></span>
+                </div>
+                <div id="plex-card-body" class="svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
               </div>
-              <div class="panel" style="margin:0" id="seerr-card">
-                <div class="panel-title">🎬 Seerr — Requests<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Recent</span></div>
-                <div id="seerr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              <div class="panel svc-card" style="margin:0" id="seerr-card">
+                <div class="svc-card-hdr">
+                  <span class="svc-card-title">🎬 Seerr — Requests</span>
+                  <span style="font-size:11px;font-weight:400;color:var(--text3)">Recent</span>
+                </div>
+                <div id="seerr-card-body" class="svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 9) -->
-        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="9" gs-w="12" gs-h="3">
+        <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 12) -->
+        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="12" gs-w="12" gs-h="3" gs-min-w="4" gs-min-h="2">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
@@ -3334,8 +3506,8 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ⑥ Recent Logs  (default: left 4 cols, row 12) -->
-        <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="12" gs-w="4" gs-h="4">
+        <!-- ⑥ Recent Logs  (default: left 4 cols, row 15) -->
+        <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="15" gs-w="4" gs-h="4" gs-min-w="2" gs-min-h="2">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('logs')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
@@ -3351,8 +3523,8 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ⑦ Containers Live  (default: right 8 cols, row 12) -->
-        <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="12" gs-w="8" gs-h="4">
+        <!-- ⑦ Containers Live  (default: right 8 cols, row 15) -->
+        <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="15" gs-w="8" gs-h="4" gs-min-w="3" gs-min-h="2">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('ctrs')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
@@ -3371,8 +3543,8 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ⑧ Service Launcher  (default: full width, row 16) -->
-        <div class="grid-stack-item" gs-id="launcher" gs-x="0" gs-y="16" gs-w="12" gs-h="3">
+        <!-- ⑧ Service Launcher  (default: full width, row 19) -->
+        <div class="grid-stack-item" gs-id="launcher" gs-x="0" gs-y="19" gs-w="12" gs-h="3" gs-min-w="3" gs-min-h="2">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('launcher')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:auto">
@@ -3705,7 +3877,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <!-- Feeds view -->
       <div id="rss-feeds-view">
-        <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px"></div>
+        <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;align-items:start"></div>
       </div>
 
       <!-- Live News view — confirmed-working embeds + quick-launch cards for the rest -->
@@ -5658,8 +5830,9 @@ async function loadOverviewExtras() {
 
 // ── Service Card Loaders ───────────────────────────────────────────────
 // Each checks if the service is configured; if not, shows a "configure" prompt.
+// Radarr/Sonarr support tabs: Upcoming | Queue | Library
 
-function _svcUnconfigured(bodyId, svcName, settingsTab) {
+function _svcUnconfigured(bodyId, svcName) {
     const el = document.getElementById(bodyId);
     if (el) el.innerHTML = `<div style="text-align:center;padding:12px 8px;color:var(--text3);font-size:12px">
       <div style="font-size:20px;margin-bottom:4px">⚙️</div>
@@ -5672,30 +5845,140 @@ function _svcError(bodyId, msg) {
     if (el) el.innerHTML = `<div style="color:var(--text3);font-size:11px;padding:8px;text-align:center">⚠ ${msg}</div>`;
 }
 
+function _svcEmpty(bodyId, msg) {
+    const el = document.getElementById(bodyId);
+    if (el) el.innerHTML = `<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">${msg}</div>`;
+}
+
+// Helper: format bytes to human-readable
+function _fmtSize(bytes) {
+    if (!bytes) return '—';
+    const gb = bytes / (1024*1024*1024);
+    if (gb >= 1) return gb.toFixed(1) + ' GB';
+    const mb = bytes / (1024*1024);
+    return mb.toFixed(0) + ' MB';
+}
+
+// ── Tab switch handler ──
+const _svcActiveTab = { radarr: 'upcoming', sonarr: 'upcoming' };
+
+function svcTabSwitch(svc, tab, btnEl) {
+    _svcActiveTab[svc] = tab;
+    // Update active tab button
+    const card = document.getElementById(svc + '-card');
+    if (card) card.querySelectorAll('.svc-tab').forEach(b => b.classList.toggle('active', b === btnEl));
+    // Load the right data
+    if (svc === 'radarr') {
+        if (tab === 'upcoming') loadRadarrCard();
+        else if (tab === 'queue') loadRadarrQueue();
+        else loadRadarrLibrary();
+    } else if (svc === 'sonarr') {
+        if (tab === 'upcoming') loadSonarrCard();
+        else if (tab === 'queue') loadSonarrQueue();
+        else loadSonarrLibrary();
+    }
+}
+
+// ── Toggle inline detail on click ──
+function _toggleDetail(detailId) {
+    const d = document.getElementById(detailId);
+    if (d) d.classList.toggle('open');
+}
+
+// ── Poster helper ──
+function _posterImg(url) {
+    return url
+        ? `<img src="${url}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">`
+        : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>';
+}
+
+// ══════════════════════════════════════════════════════════════════
+// RADARR — Upcoming / Queue / Library
+// ══════════════════════════════════════════════════════════════════
 async function loadRadarrCard() {
     try {
         const r = await fetch(API + '/api/services/radarr/calendar');
         const d = await r.json();
         if (!d.configured) return _svcUnconfigured('radarr-card-body', 'Radarr');
-        if (d.error)  return _svcError('radarr-card-body', d.error);
+        if (d.error) return _svcError('radarr-card-body', d.error);
         const el = document.getElementById('radarr-card-body');
         if (!el) return;
-        if (!d.movies || !d.movies.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming releases in the next 14 days</div>';
-            return;
-        }
-        el.innerHTML = d.movies.map(m => `
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
-            ${m.poster ? `<img src="${m.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
-            <div style="flex:1;min-width:0">
-              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title} <span style="color:var(--text3);font-weight:400">(${m.year||''})</span></div>
-              <div style="font-size:10px;color:var(--text3)">${m.date || 'TBA'}</div>
+        if (!d.movies || !d.movies.length) return _svcEmpty('radarr-card-body', 'No upcoming releases (14 days)');
+        el.innerHTML = d.movies.map((m, i) => {
+            const did = 'rd-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(m.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title} <span style="color:var(--text3);font-weight:400">(${m.year||''})</span></div>
+                <div style="font-size:10px;color:var(--text3)">${m.date || 'TBA'}</div>
+              </div>
+              ${m.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
             </div>
-            ${m.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
-          </div>`).join('');
+            <div class="svc-detail" id="${did}">
+              <b>${m.title}</b> (${m.year||'?'})<br>
+              Release: ${m.date || 'TBA'}<br>
+              Status: ${m.hasFile ? '✅ On disk' : '⏳ Awaiting release'}
+            </div>`;
+        }).join('');
     } catch(e) { _svcError('radarr-card-body', 'Could not reach Radarr'); }
 }
 
+async function loadRadarrQueue() {
+    const bodyId = 'radarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/radarr/queue');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Radarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        if (!d.queue || !d.queue.length) return _svcEmpty(bodyId, 'Nothing downloading');
+        el.innerHTML = `<div style="font-size:10px;color:var(--text3);margin-bottom:4px">${d.totalRecords} item${d.totalRecords!==1?'s':''} in queue</div>` +
+            d.queue.map((q, i) => {
+            const pct = q.progress || 0;
+            const barColor = pct > 90 ? 'var(--green)' : pct > 50 ? 'var(--blue)' : 'var(--yellow)';
+            const did = 'rq-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(q.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${q.title}</div>
+                <div class="svc-q-bar"><div class="svc-q-fill" style="width:${pct}%;background:${barColor}"></div></div>
+              </div>
+              <div style="text-align:right;flex-shrink:0">
+                <div style="font-size:11px;font-weight:600;color:var(--blue)">${pct.toFixed(0)}%</div>
+                <div style="font-size:9px;color:var(--text3)">${q.timeleft || '—'}</div>
+              </div>
+            </div>
+            <div class="svc-detail" id="${did}">
+              Quality: ${q.quality || '?'} · Size: ${_fmtSize(q.size)}<br>
+              Client: ${q.downloadClient || '?'} · Indexer: ${q.indexer || '?'}<br>
+              Status: ${q.status}
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError(bodyId, 'Could not reach Radarr queue'); }
+}
+
+async function loadRadarrLibrary() {
+    const bodyId = 'radarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/radarr/library');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Radarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        el.innerHTML = `<div class="svc-lib-grid">
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.total}</div><div class="svc-lib-label">Total Movies</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.monitored}</div><div class="svc-lib-label">Monitored</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--green)">${d.downloaded}</div><div class="svc-lib-label">Downloaded</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--red)">${d.missing}</div><div class="svc-lib-label">Missing</div></div>
+        </div>`;
+    } catch(e) { _svcError(bodyId, 'Could not load library stats'); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// SONARR — Upcoming / Queue / Library
+// ══════════════════════════════════════════════════════════════════
 async function loadSonarrCard() {
     try {
         const r = await fetch(API + '/api/services/sonarr/calendar');
@@ -5704,23 +5987,85 @@ async function loadSonarrCard() {
         if (d.error) return _svcError('sonarr-card-body', d.error);
         const el = document.getElementById('sonarr-card-body');
         if (!el) return;
-        if (!d.episodes || !d.episodes.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming episodes this week</div>';
-            return;
-        }
-        el.innerHTML = d.episodes.map(ep => `
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
-            ${ep.poster ? `<img src="${ep.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
-            <div style="flex:1;min-width:0">
-              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ep.series}</div>
-              <div style="font-size:10px;color:var(--text2)">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} · ${ep.title}</div>
-              <div style="font-size:10px;color:var(--text3)">${ep.airDate || 'TBA'}</div>
+        if (!d.episodes || !d.episodes.length) return _svcEmpty('sonarr-card-body', 'No upcoming episodes this week');
+        el.innerHTML = d.episodes.map((ep, i) => {
+            const did = 'sd-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(ep.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ep.series}</div>
+                <div style="font-size:10px;color:var(--text2)">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} · ${ep.title}</div>
+                <div style="font-size:10px;color:var(--text3)">${ep.airDate || 'TBA'}</div>
+              </div>
+              ${ep.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
             </div>
-            ${ep.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
-          </div>`).join('');
+            <div class="svc-detail" id="${did}">
+              <b>${ep.series}</b> — ${ep.title}<br>
+              Season ${ep.season}, Episode ${ep.episode}<br>
+              Air date: ${ep.airDate || 'TBA'}<br>
+              Status: ${ep.hasFile ? '✅ On disk' : '⏳ Not yet downloaded'}
+            </div>`;
+        }).join('');
     } catch(e) { _svcError('sonarr-card-body', 'Could not reach Sonarr'); }
 }
 
+async function loadSonarrQueue() {
+    const bodyId = 'sonarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/sonarr/queue');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Sonarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        if (!d.queue || !d.queue.length) return _svcEmpty(bodyId, 'Nothing downloading');
+        el.innerHTML = `<div style="font-size:10px;color:var(--text3);margin-bottom:4px">${d.totalRecords} item${d.totalRecords!==1?'s':''} in queue</div>` +
+            d.queue.map((q, i) => {
+            const pct = q.progress || 0;
+            const barColor = pct > 90 ? 'var(--green)' : pct > 50 ? 'var(--blue)' : 'var(--yellow)';
+            const did = 'sq-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(q.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${q.title}</div>
+                <div style="font-size:10px;color:var(--text2)">${q.episode} · ${q.episodeTitle}</div>
+                <div class="svc-q-bar"><div class="svc-q-fill" style="width:${pct}%;background:${barColor}"></div></div>
+              </div>
+              <div style="text-align:right;flex-shrink:0">
+                <div style="font-size:11px;font-weight:600;color:var(--blue)">${pct.toFixed(0)}%</div>
+                <div style="font-size:9px;color:var(--text3)">${q.timeleft || '—'}</div>
+              </div>
+            </div>
+            <div class="svc-detail" id="${did}">
+              Quality: ${q.quality || '?'} · Size: ${_fmtSize(q.size)}<br>
+              Client: ${q.downloadClient || '?'} · Indexer: ${q.indexer || '?'}<br>
+              Status: ${q.status}
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError(bodyId, 'Could not reach Sonarr queue'); }
+}
+
+async function loadSonarrLibrary() {
+    const bodyId = 'sonarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/sonarr/library');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Sonarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        el.innerHTML = `<div class="svc-lib-grid">
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.totalSeries}</div><div class="svc-lib-label">Total Series</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.monitored}</div><div class="svc-lib-label">Monitored</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--green)">${d.episodesOnDisk}</div><div class="svc-lib-label">Episodes on Disk</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--blue)">${d.episodes}</div><div class="svc-lib-label">Total Episodes</div></div>
+        </div>`;
+    } catch(e) { _svcError(bodyId, 'Could not load library stats'); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PLEX — Now Playing
+// ══════════════════════════════════════════════════════════════════
 async function loadPlexCard() {
     try {
         const r = await fetch(API + '/api/services/plex/sessions');
@@ -5731,15 +6076,12 @@ async function loadPlexCard() {
         if (!el) return;
         const count = document.getElementById('plex-stream-count');
         if (count) count.textContent = (d.sessions||[]).length + ' stream' + ((d.sessions||[]).length===1?'':'s');
-        if (!d.sessions || !d.sessions.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">Nothing playing right now</div>';
-            return;
-        }
+        if (!d.sessions || !d.sessions.length) return _svcEmpty('plex-card-body', 'Nothing playing right now');
         el.innerHTML = d.sessions.map(s => {
             const pct = s.progress || 0;
             const barColor = pct > 80 ? 'var(--green)' : 'var(--blue)';
-            return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
                 <span style="font-size:14px">▶</span>
                 <div style="flex:1;min-width:0">
                   <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.title}</div>
@@ -5748,14 +6090,15 @@ async function loadPlexCard() {
                 </div>
                 <span style="font-size:11px;font-weight:600;color:var(--blue);flex-shrink:0">${pct}%</span>
               </div>
-              <div style="background:var(--surface2);border-radius:2px;height:3px">
-                <div style="width:${pct}%;height:3px;background:${barColor};border-radius:2px;transition:width .5s ease"></div>
-              </div>
+              <div class="svc-q-bar"><div class="svc-q-fill" style="width:${pct}%;background:${barColor}"></div></div>
             </div>`;
         }).join('');
     } catch(e) { _svcError('plex-card-body', 'Could not reach Plex'); }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// SEERR — Requests
+// ══════════════════════════════════════════════════════════════════
 async function loadSeerrCard() {
     const STATUS_LABELS = {1:'Pending',2:'Approved',3:'Declined',4:'Available'};
     const STATUS_COLORS = {1:'var(--yellow)',2:'var(--green)',3:'var(--red)',4:'var(--blue)'};
@@ -5766,21 +6109,24 @@ async function loadSeerrCard() {
         if (d.error) return _svcError('seerr-card-body', d.error);
         const el = document.getElementById('seerr-card-body');
         if (!el) return;
-        if (!d.requests || !d.requests.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No recent requests</div>';
-            return;
-        }
-        el.innerHTML = d.requests.map(req => {
+        if (!d.requests || !d.requests.length) return _svcEmpty('seerr-card-body', 'No recent requests');
+        el.innerHTML = d.requests.map((req, i) => {
             const lbl   = STATUS_LABELS[req.status] || 'Unknown';
             const color = STATUS_COLORS[req.status] || 'var(--text3)';
             const typeIcon = req.type === 'movie' ? '🎬' : req.type === 'tv' ? '📺' : '❓';
-            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
+            const did = 'sr-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
               <span style="font-size:16px;flex-shrink:0">${typeIcon}</span>
               <div style="flex:1;min-width:0">
                 <div style="font-size:12px;font-weight:600;color:var(--text2)">TMDB #${req.title || req.id}</div>
                 <div style="font-size:10px;color:var(--text3)">by ${req.requestedBy || '?'} · ${req.createdAt}</div>
               </div>
               <span style="font-size:10px;font-weight:600;color:${color};flex-shrink:0">${lbl}</span>
+            </div>
+            <div class="svc-detail" id="${did}">
+              Type: ${req.type || '?'} · Status: ${lbl}<br>
+              Requested by: ${req.requestedBy || '?'}<br>
+              Date: ${req.createdAt}
             </div>`;
         }).join('');
     } catch(e) { _svcError('seerr-card-body', 'Could not reach Seerr'); }
@@ -6070,6 +6416,12 @@ function hlsPlay(videoId, url) {
 let _gs  = null;
 let _gsEditing = false;
 
+// Toggle .widget-compact class based on actual pixel width/height of the widget
+function _applyCompactClass(item) {
+  const rect = item.getBoundingClientRect();
+  item.classList.toggle('widget-compact', rect.width < 400 || rect.height < 200);
+}
+
 function _gsInit() {
   if (_gs || typeof GridStack === 'undefined') return false;
   const el = document.getElementById('ov-grid');
@@ -6087,22 +6439,29 @@ function _gsInit() {
     resizable: { handles: 'e,se,s,sw,w' },  // resize from all sides
     draggable: { handle: '.panel-title' },   // drag by title bar only
   }, el);
-  // When a widget is resized, tell Chart.js canvases inside to resize too
+  // When a widget is resized, tell Chart.js canvases inside to resize + toggle compact class
   _gs.on('resizestop', (event, element) => {
     element.querySelectorAll('canvas').forEach(canvas => {
       const chart = (typeof Chart !== 'undefined' && Chart.getChart) ? Chart.getChart(canvas) : null;
       if (chart) { chart.resize(); }
     });
     element.querySelectorAll('.panel,.stat-grid').forEach(el => { el.style.opacity = '0.99'; requestAnimationFrame(() => { el.style.opacity = ''; }); });
+    _applyCompactClass(element);
   });
-  // Restore saved layout
+  // Apply compact class to all widgets initially
+  el.querySelectorAll('.grid-stack-item').forEach(item => _applyCompactClass(item));
+  // Restore saved layout — invalidate if widget set changed (layout version bump)
+  const _GRID_VER = 2;  // bump when adding/removing widgets
   const saved = localStorage.getItem('arrhub_grid');
-  if (saved) {
+  const savedVer = parseInt(localStorage.getItem('arrhub_grid_ver') || '0');
+  if (saved && savedVer === _GRID_VER) {
     try {
       const items = JSON.parse(saved);
-      // Only apply saved positions if item IDs match current widgets
       _gs.load(items, false);
     } catch(e) { localStorage.removeItem('arrhub_grid'); }
+  } else {
+    localStorage.removeItem('arrhub_grid');
+    localStorage.setItem('arrhub_grid_ver', String(_GRID_VER));
   }
   // Show Reset button if a saved layout exists
   const resetBtn = document.getElementById('ov-reset-btn');
@@ -6114,13 +6473,14 @@ function _gsInit() {
 
 // ── Widget palette definitions ────────────────────────────────────────────────
 const WIDGET_DEFS = {
-  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:4, dx:0,  dy:0  },
-  weather:  { label: 'Weather',          icon: '🌤️', dw:6,  dh:4, dx:6,  dy:0  },
-  services: { label: 'Service Cards',    icon: '🃏',  dw:12, dh:5, dx:0,  dy:4  },
-  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:3, dx:0,  dy:9  },
-  logs:     { label: 'Recent Logs',      icon: '📋',  dw:4,  dh:4, dx:0,  dy:12 },
-  ctrs:     { label: 'Containers',       icon: '📦',  dw:8,  dh:4, dx:4,  dy:12 },
-  launcher: { label: 'Service Launcher', icon: '🚀',  dw:12, dh:3, dx:0,  dy:16 },
+  gauges:   { label: 'System Gauges',    icon: '📊',  dw:12, dh:3, dx:0,  dy:0  },
+  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:4, dx:0,  dy:3  },
+  weather:  { label: 'Weather',          icon: '🌤️', dw:6,  dh:4, dx:6,  dy:3  },
+  services: { label: 'Service Cards',    icon: '🃏',  dw:12, dh:5, dx:0,  dy:7  },
+  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:3, dx:0,  dy:12 },
+  logs:     { label: 'Recent Logs',      icon: '📋',  dw:4,  dh:4, dx:0,  dy:15 },
+  ctrs:     { label: 'Containers',       icon: '📦',  dw:8,  dh:4, dx:4,  dy:15 },
+  launcher: { label: 'Service Launcher', icon: '🚀',  dw:12, dh:3, dx:0,  dy:19 },
 };
 
 let _hiddenWidgets = new Set();

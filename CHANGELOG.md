@@ -6,6 +6,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.14.0] — 2026-03-10
+
+### Added
+- **Radarr/Sonarr tabbed service cards** — each card now has Upcoming, Queue, and Library tabs.
+  Queue tab shows active downloads with progress bars, time remaining, quality, indexer, and
+  download client info. Library tab shows aggregate stats (total, monitored, downloaded, missing).
+- **Click-to-expand detail** — all service card items (Radarr, Sonarr, Plex, Seerr) are now
+  clickable to reveal an inline detail panel with additional metadata.
+- **System Gauges widget** — CPU, Memory, Load Average, and Containers are now a proper GridStack
+  widget (`gs-id="gauges"`) that can be dragged, resized, and rearranged alongside other widgets.
+  Previously the gauge row was stuck outside the grid.
+- **Widget minimum sizes** — all widgets now have `gs-min-w` and `gs-min-h` constraints to prevent
+  them from being resized too small to be useful.
+- **Responsive compact mode** — widgets auto-detect their rendered size and toggle a `.widget-compact`
+  CSS class that tightens padding, shrinks fonts, and stacks grids for small widget sizes.
+- **New API endpoints** — `/api/services/radarr/queue`, `/api/services/radarr/library`,
+  `/api/services/sonarr/queue`, `/api/services/sonarr/library`.
+
+### Fixed
+- **RSS feed collapse bug** — clicking a feed dropdown no longer collapses other feeds in the same
+  CSS grid row. Fixed by adding `align-items:start` to the feed grid container.
+- **GridStack layout version** — added `_GRID_VER` key to invalidate stale saved layouts when
+  widget structure changes (e.g., adding the gauges widget).
+
+---
+
 ## [3.13.0] — 2026-03-10
 
 ### Fixed

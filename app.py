@@ -3229,10 +3229,7 @@ body.sse-disconnected #app{padding-top:38px;}
     min-height:unset!important;
   }
   #iptv-channel-list{max-height:200px!important;}
-  #iptv-player-frame,
-  #iptv-channels-view > div > div:last-child > div[style*="position:relative"]{
-    min-height:240px!important;
-  }
+  #iptv-player-wrap{min-height:240px!important;}
   /* Overview gauges: keep 2 columns on tablet */
   .metric-grid{grid-template-columns:repeat(2,1fr)!important;}
   /* Topbar: hide less critical stats */
@@ -4369,15 +4366,21 @@ body.sse-disconnected #app{padding-top:38px;}
               </div>
             </div>
             <!-- Player iframe -->
-            <div style="position:relative;background:#000;border-radius:var(--r);overflow:hidden;flex:1;min-height:0">
+            <div id="iptv-player-wrap" style="position:relative;background:#000;border-radius:var(--r);overflow:hidden;flex:1;min-height:0">
               <div id="iptv-player-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text3)">
                 <div style="font-size:48px">📡</div>
                 <div style="font-size:14px">Click a channel to start watching</div>
                 <div style="font-size:11px;color:var(--text3)">1000+ free live channels via DaddyLive</div>
               </div>
+              <!--
+                CSS header-crop trick: parent has overflow:hidden + position:relative.
+                The iframe is pushed up by 68px (DaddyLive navbar height) so the
+                navbar scrolls out of view while the video player fills the container.
+                We also stretch width slightly right so the chat sidebar is clipped.
+              -->
               <iframe id="iptv-player-frame"
                 src="about:blank"
-                style="width:100%;height:100%;border:none;display:none"
+                style="position:absolute;top:-68px;left:0;width:100%;height:calc(100% + 68px);border:none;display:none"
                 allow="autoplay;fullscreen;encrypted-media"
                 allowfullscreen
                 sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
@@ -6598,20 +6601,18 @@ function iptvPlayChannel(id, name, rowEl) {
     const nowSource   = document.getElementById('iptv-now-source');
 
     if (frame) {
-        // embed.php gives a clean player-only view (no site header/nav/chat/ads)
-        frame.src = `https://dlstreams.top/embed.php?id=${id}`;
+        // Use watch.php — the parent container has overflow:hidden and the iframe
+        // is positioned top:-68px to clip DaddyLive's navbar out of view.
+        frame.src = `https://dlstreams.top/watch.php?id=${id}`;
         frame.style.display = '';
-        // Extra: shift iframe up to hide any residual header band that may render
-        // inside the cross-origin frame; clipped by overflow:hidden on parent.
-        frame.style.marginTop = '-2px';
     }
     if (placeholder) placeholder.style.display = 'none';
     if (nowPlaying)  nowPlaying.textContent = name;
     if (nowSource)   nowSource.textContent  = `DaddyLive · ${name}`;
 
-    // Update popout button URL (popout still uses watch.php for full experience)
+    // Pop-out opens the full watch page in a new tab
     const popoutBtn = document.getElementById('iptv-popout-btn');
-    if (popoutBtn) popoutBtn.dataset.url = `https://dlstreams.top/embed.php?id=${id}`;
+    if (popoutBtn) popoutBtn.dataset.url = `https://dlstreams.top/watch.php?id=${id}`;
 }
 
 function iptvPopout() {

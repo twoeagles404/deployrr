@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.10.0 · Full deployment, update management, and real-time monitoring
+Version: 3.14.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -1298,7 +1298,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.1.0"})
+    return jsonify({"update_available": False, "version": "3.14.0"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -3157,7 +3157,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.10.0</div>
+      <div class="sb-version">v3.14.0</div>
     </div>
   </div>
 
@@ -3849,7 +3849,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.10.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.14.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>

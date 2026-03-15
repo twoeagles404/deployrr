@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# ArrHub — Master Installer v3.15.1
+# ArrHub — Master Installer v3.15.7
 # =============================================================================
 #
 # ONE-COMMAND INSTALL (dev branch — always uses latest dev code):
@@ -32,7 +32,7 @@ GITHUB_BRANCH="${ARRHUB_BRANCH:-${GITHUB_BRANCH}}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="3.15.1"
+VERSION="3.15.7"
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Install paths ─────────────────────────────────────────────────────────────
@@ -346,6 +346,7 @@ if [[ "${DOCKER_OK}" == "true" ]]; then
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${DEST}/apps:/opt/arrhub/apps:ro" \
             -v "${DEST}/data:/data" \
+            -v "${DEST}/arrhub-webui/app.py:/app/app.py:ro" \
             --pid=host \
             "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1
         then

@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.7 · Full deployment, update management, and real-time monitoring
+Version: 3.15.8 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.7",
+            "version": "3.15.8",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1299,7 +1299,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.7"})
+    return jsonify({"update_available": False, "version": "3.15.8"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1827,10 +1827,42 @@ def api_rss_fetch():
     except Exception as e:
         return jsonify({"error": str(e), "items": []}), 200
 
+def _iptv_get_custom():
+    raw = _db_get("iptv_custom_channels", None)
+    if raw:
+        try: return json.loads(raw)
+        except Exception: pass
+    return []
+
 @app.route("/api/iptv/channels")
 def api_iptv_channels():
-    """Return curated MovieBite channel list — no blocking external calls."""
-    return jsonify({"channels": _IPTV_FALLBACK_CHANNELS, "count": len(_IPTV_FALLBACK_CHANNELS)})
+    """Return merged fallback + user-added channels."""
+    custom = _iptv_get_custom()
+    # Merge: custom channels first, then fallback (skip duplicates by id)
+    custom_ids = {c["id"] for c in custom}
+    merged = custom + [c for c in _IPTV_FALLBACK_CHANNELS if c["id"] not in custom_ids]
+    return jsonify({"channels": merged, "count": len(merged)})
+
+@app.route("/api/iptv/channels/custom", methods=["POST"])
+def api_iptv_add_custom_channel():
+    data = request.get_json() or {}
+    ch_id   = (data.get("id") or "").strip()
+    ch_name = (data.get("name") or "").strip()
+    ch_group = (data.get("group") or "Custom").strip()
+    if not ch_id or not ch_name:
+        return jsonify({"error": "Missing id or name"}), 400
+    channels = _iptv_get_custom()
+    if not any(c["id"] == ch_id for c in channels):
+        channels.append({"id": ch_id, "name": ch_name, "group": ch_group, "logo": "", "custom": True})
+        _db_set("iptv_custom_channels", json.dumps(channels))
+    return jsonify({"ok": True})
+
+@app.route("/api/iptv/channels/custom/<ch_id>", methods=["DELETE"])
+def api_iptv_delete_custom_channel(ch_id):
+    channels = _iptv_get_custom()
+    channels = [c for c in channels if c["id"] != ch_id]
+    _db_set("iptv_custom_channels", json.dumps(channels))
+    return jsonify({"ok": True})
 
 @app.route("/api/iptv/schedule")
 def api_iptv_schedule():
@@ -3325,7 +3357,7 @@ body.sse-disconnected #app{padding-top:38px;}
   flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:3px;cursor:pointer;color:var(--text3);font-size:10px;font-weight:500;
   border:none;background:none;padding:4px 2px;
-  transition:color var(--transition);
+  transition:color var(--transition);flex-shrink:0;
 }
 .bn-item:hover,.bn-item.active{color:var(--blue);}
 .bn-item svg{width:20px;height:20px;}
@@ -3432,6 +3464,28 @@ body.sse-disconnected #app{padding-top:38px;}
   #topbar .tb-stat:nth-child(n+2){display:none;}
   /* Deployment grid: single column */
   #launcher-grid{grid-template-columns:repeat(3,1fr)!important;}
+}
+
+/* ── Feeds tab mobile ── */
+@media(max-width:600px){
+  #feeds-rss-grid,#feeds-reddit-grid,#feeds-yt-grid{
+    grid-template-columns:repeat(auto-fill,minmax(160px,1fr))!important;
+    gap:8px!important;
+  }
+  #feeds-pills-row{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;}
+  #feeds-pills-row .filter-pill{white-space:nowrap;flex-shrink:0;}
+  #tab-feeds .section-header{flex-direction:column;align-items:flex-start;gap:6px;}
+}
+/* ── IPTV modal mobile ── */
+@media(max-width:480px){
+  #iptv-add-modal .panel{width:98vw!important;padding:14px!important;}
+  #feeds-add-modal .panel, #feeds-newcat-modal .panel{width:98vw!important;padding:14px!important;}
+}
+/* ── Feeds on very small screens ── */
+@media(max-width:400px){
+  #feeds-rss-grid,#feeds-reddit-grid,#feeds-yt-grid{
+    grid-template-columns:1fr!important;
+  }
 }
 
 /* Ensure tap targets are large enough on all mobile sizes */
@@ -3598,7 +3652,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.7</div>
+      <div class="sb-version">v3.15.8</div>
     </div>
   </div>
 
@@ -4474,7 +4528,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.7</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.8</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -4490,10 +4544,11 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="section-title">📺 IPTV Player</div>
           <div class="section-sub">Live channels · Sports · Multiview · Schedule</div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <button class="view-btn active" id="iptv-view-channels" onclick="iptvSetView('channels')">📡 Channels</button>
           <button class="view-btn" id="iptv-view-schedule" onclick="iptvSetView('schedule')">📅 Schedule</button>
           <button class="view-btn" id="iptv-view-multiview" onclick="iptvSetView('multiview')">⊞ Multiview</button>
+          <button class="btn" style="font-size:11px;padding:4px 10px" onclick="iptvShowAddChannel()">＋ Channel</button>
           <button class="btn-primary" onclick="iptvReload()">↺ Refresh</button>
         </div>
       </div>
@@ -4562,6 +4617,32 @@ body.sse-disconnected #app{padding-top:38px;}
               <video id="iptv-hls-player" controls muted playsinline
                 style="width:100%;max-height:280px;background:#000;border-radius:var(--r);margin-top:6px;display:none"></video>
             </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ADD CHANNEL MODAL ── -->
+      <div id="iptv-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;align-items:center;justify-content:center">
+        <div class="panel" style="width:380px;max-width:95vw;padding:20px">
+          <div class="panel-title" style="margin-bottom:14px">📺 Add Custom Channel</div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Channel Name *</label>
+              <input id="iptv-add-name" type="text" placeholder="e.g. Sky Sports F1" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">MovieBite Slug (from URL) *</label>
+              <input id="iptv-add-slug" type="text" placeholder="e.g. SKY-SPORTS-F1" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+              <div style="font-size:10px;color:var(--text3);margin-top:4px">Visit <a href="https://live.moviebite.cc" target="_blank" style="color:var(--blue)">live.moviebite.cc</a>, find the channel, copy the last part of the URL</div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Group</label>
+              <input id="iptv-add-group" type="text" placeholder="Sports, News, Entertainment…" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button onclick="iptvHideAddChannel()" class="btn" style="flex:1;padding:8px">Cancel</button>
+            <button onclick="iptvSaveAddChannel()" class="btn-primary" style="flex:1;padding:8px">Add Channel</button>
           </div>
         </div>
       </div>
@@ -4744,22 +4825,26 @@ body.sse-disconnected #app{padding-top:38px;}
 </div><!-- /app -->
 
 <!-- ══ MOBILE BOTTOM NAV ══ -->
-<nav id="bottom-nav">
+<nav id="bottom-nav" style="overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none">
   <button class="bn-item active" onclick="showTab('overview',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm10 0a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zm10-3a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1v-7z"/></svg>
-    <span>Overview</span>
+    <span>Home</span>
   </button>
   <button class="bn-item" onclick="showTab('containers',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-    <span>Containers</span>
+    <span>Docker</span>
   </button>
   <button class="bn-item" onclick="showTab('deploy',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
     <span>Deploy</span>
   </button>
-  <button class="bn-item" onclick="showTab('logs',this);closeSidebar()">
-    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-    <span>Logs</span>
+  <button class="bn-item" onclick="showTab('feeds',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7M6 17a1 1 0 110 2 1 1 0 010-2z"/></svg>
+    <span>Feeds</span>
+  </button>
+  <button class="bn-item" onclick="showTab('iptv',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+    <span>IPTV</span>
   </button>
   <button class="bn-item" onclick="toggleSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -7148,13 +7233,16 @@ function iptvRenderList() {
         return;
     }
     el.innerHTML = _iptvFiltered.map(ch => `
-        <div onclick="iptvPlayChannel('${ch.id}','${ch.name.replace(/'/g,"\\'")}',this)"
-             style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:5px;cursor:pointer;transition:background .1s;${_iptvCurrentId===ch.id?'background:var(--blue2);color:var(--blue);':'color:var(--text2);'}"
-             onmouseover="if('${ch.id}'!=='${_iptvCurrentId}')this.style.background='var(--surface)'"
-             onmouseout="if('${ch.id}'!=='${_iptvCurrentId}')this.style.background=''">
-          <span style="font-size:14px;width:22px;text-align:center;flex-shrink:0">${ch.logo ? `<img src="${ch.logo}" style="width:18px;height:18px;object-fit:contain" onerror="this.replaceWith('📺')">` : '📺'}</span>
-          <span style="font-size:12px;font-weight:${_iptvCurrentId===ch.id?600:400};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ch.name}</span>
-          ${ch.group?`<span style="font-size:9px;color:var(--text3);margin-left:auto;flex-shrink:0;white-space:nowrap">${ch.group}</span>`:''}
+        <div style="display:flex;align-items:center;border-radius:5px;transition:background .1s;${_iptvCurrentId===ch.id?'background:var(--blue2);color:var(--blue);':'color:var(--text2);'}">
+          <div onclick="iptvPlayChannel('${ch.id}','${ch.name.replace(/'/g,"\\'")}',this.parentElement)"
+               style="display:flex;align-items:center;gap:8px;padding:7px 8px;flex:1;min-width:0;cursor:pointer"
+               onmouseover="if('${ch.id}'!=='${_iptvCurrentId}')this.parentElement.style.background='var(--surface)'"
+               onmouseout="if('${ch.id}'!=='${_iptvCurrentId}')this.parentElement.style.background=''">
+            <span style="font-size:14px;width:22px;text-align:center;flex-shrink:0">${ch.logo ? `<img src="${ch.logo}" style="width:18px;height:18px;object-fit:contain" onerror="this.replaceWith('📺')">` : '📺'}</span>
+            <span style="font-size:12px;font-weight:${_iptvCurrentId===ch.id?600:400};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">${ch.name}</span>
+            ${ch.group?`<span style="font-size:9px;color:var(--text3);flex-shrink:0;white-space:nowrap;margin-left:4px">${ch.group}</span>`:''}
+          </div>
+          ${ch.custom ? `<button onclick="iptvDeleteCustomChannel('${ch.id}',event)" style="background:none;border:none;color:var(--text3);cursor:pointer;padding:4px 8px;flex-shrink:0;font-size:11px;line-height:1" title="Remove">✕</button>` : ''}
         </div>`).join('');
 }
 
@@ -7338,6 +7426,56 @@ function iptvAddToMultiview() {
 function iptvReload() {
     _iptvChannels = []; _iptvFiltered = []; _iptvInited = false;
     iptvInit();
+}
+
+// ── Add / delete custom channels ────────────────────────────────────────────
+function iptvShowAddChannel() {
+    const m = document.getElementById('iptv-add-modal');
+    if (!m) return;
+    document.getElementById('iptv-add-name').value = '';
+    document.getElementById('iptv-add-slug').value = '';
+    document.getElementById('iptv-add-group').value = '';
+    m.style.display = 'flex';
+}
+function iptvHideAddChannel() {
+    const m = document.getElementById('iptv-add-modal');
+    if (m) m.style.display = 'none';
+}
+async function iptvSaveAddChannel() {
+    const name  = document.getElementById('iptv-add-name').value.trim();
+    const slug  = document.getElementById('iptv-add-slug').value.trim().toUpperCase().replace(/\s+/g,'-');
+    const group = document.getElementById('iptv-add-group').value.trim() || 'Custom';
+    if (!name || !slug) { showToast('Name and Slug are required','error',2000); return; }
+    try {
+        const r = await fetch(API+'/api/iptv/channels/custom', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({id:slug, name, group})
+        });
+        const d = await r.json();
+        if (d.error) { showToast('Error: '+d.error,'error'); return; }
+        iptvHideAddChannel();
+        showToast(`"${name}" added to channels`,'success');
+        // Reload channel list
+        _iptvChannels = []; _iptvInited = false;
+        await iptvFetchChannels();
+    } catch(e) { showToast('Failed to add channel','error'); }
+}
+async function iptvDeleteCustomChannel(id, event) {
+    if (event) event.stopPropagation();
+    if (!confirm('Remove this channel from your list?')) return;
+    try {
+        await fetch(API+`/api/iptv/channels/custom/${encodeURIComponent(id)}`, {method:'DELETE'});
+        showToast('Channel removed','success',2000);
+        if (_iptvCurrentId === id) {
+            const frame = document.getElementById('iptv-player-frame');
+            const placeholder = document.getElementById('iptv-player-placeholder');
+            if (frame) { frame.src='about:blank'; frame.style.display='none'; }
+            if (placeholder) placeholder.style.display='';
+            _iptvCurrentId = null;
+        }
+        _iptvChannels = []; _iptvInited = false;
+        await iptvFetchChannels();
+    } catch(e) { showToast('Failed to remove channel','error'); }
 }
 
 // ══════════════════════════════════════════════════════════════════════

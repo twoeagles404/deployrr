@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.6 · Full deployment, update management, and real-time monitoring
+Version: 3.15.7 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.6",
+            "version": "3.15.7",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1299,7 +1299,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.6"})
+    return jsonify({"update_available": False, "version": "3.15.7"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1599,44 +1599,111 @@ def api_rss_fetch():
         return jsonify(_rss_cache[cache_key]["data"])
 
     try:
-        import urllib.request, re as _re_url, datetime as _dt
+        import urllib.request, re as _re, html as _html_mod, datetime as _dt
         is_reddit = "reddit.com" in url
 
         # ── Reddit: use JSON API (much more reliable than RSS from servers) ──
         if is_reddit:
-            m = _re_url.search(r'reddit\.com/r/([A-Za-z0-9_]+)', url)
+            m = _re.search(r'reddit\.com/r/([A-Za-z0-9_]+)', url)
             if m:
                 subreddit = m.group(1)
-                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25"
+                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25&raw_json=1"
                 req_json = urllib.request.Request(json_url, headers={
-                    "User-Agent": "linux:arrhub:v3.15.6 (by /u/arrhub_bot)",
-                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.reddit.com/",
+                    "DNT": "1",
                 })
                 with urllib.request.urlopen(req_json, timeout=15) as resp_j:
                     rdata = json.loads(resp_j.read())
                 posts = rdata.get("data", {}).get("children", [])
                 reddit_items = []
-                for post in posts[:20]:
+                for post in posts[:25]:
                     pd = post.get("data", {})
                     title = pd.get("title", "Untitled")
                     permalink = "https://www.reddit.com" + pd.get("permalink", "#")
+                    post_url = pd.get("url", permalink)
                     created = pd.get("created_utc")
                     date = _dt.datetime.utcfromtimestamp(created).strftime("%Y-%m-%d %H:%M") if created else ""
-                    # thumbnail: prefer preview images (higher quality)
+
+                    # ── Detect post type ────────────────────────────────────
+                    post_hint = pd.get("post_hint", "")
+                    is_video = pd.get("is_video", False)
+                    is_gallery = pd.get("is_gallery", False)
+                    domain = pd.get("domain", "")
+                    # v.redd.it, youtube, streamable, etc.
+                    is_video_link = is_video or post_hint == "rich:video" or "v.redd.it" in domain or "youtube.com" in domain or "youtu.be" in domain or "streamable.com" in domain
+                    is_image = post_hint == "image" or (post_url or "").lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".gifv"))
+                    is_gif = (post_url or "").lower().endswith((".gif", ".gifv")) or "i.imgur.com" in domain
+
+                    # ── Thumbnail — best quality source first ────────────────
                     thumb = None
+                    # 1. Preview images (highest quality, handles most types)
                     try:
                         imgs = pd["preview"]["images"]
                         if imgs:
-                            thumb = imgs[0]["source"]["url"].replace("&amp;", "&")
+                            # Try mp4 preview for GIFs (avoids huge GIF files)
+                            if is_gif:
+                                try:
+                                    thumb = imgs[0]["variants"]["mp4"]["source"]["url"].replace("&amp;", "&")
+                                except Exception:
+                                    pass
+                            if not thumb:
+                                thumb = imgs[0]["source"]["url"].replace("&amp;", "&")
                     except Exception:
                         pass
+                    # 2. Reddit video thumbnail
+                    if not thumb and is_video:
+                        try:
+                            thumb = pd["media"]["reddit_video"]["fallback_url"].replace("&amp;", "&").split("?")[0].rsplit("/", 1)[0] + "/DASH_480.mp4"
+                        except Exception:
+                            pass
+                    # 3. Gallery first image
+                    if not thumb and is_gallery:
+                        try:
+                            first_id = list(pd["media_metadata"].keys())[0]
+                            m = pd["media_metadata"][first_id]
+                            thumb = m["s"]["u"].replace("&amp;", "&")
+                        except Exception:
+                            pass
+                    # 4. Direct image URL
+                    if not thumb and is_image:
+                        thumb = post_url
+                    # 5. Fallback thumbnail
                     if not thumb:
                         tn = pd.get("thumbnail", "")
                         if tn and tn.startswith("http") and tn not in ("self", "default", "nsfw", "spoiler"):
                             thumb = tn
+
+                    # ── Video URL for direct-play embed ─────────────────────
+                    video_url = None
+                    if is_video:
+                        try:
+                            video_url = pd["media"]["reddit_video"]["fallback_url"].replace("&amp;", "&")
+                        except Exception:
+                            pass
+
                     excerpt = (pd.get("selftext") or "")[:200]
-                    reddit_items.append({"title": title, "link": permalink, "date": date,
-                                         "thumb": thumb, "excerpt": excerpt})
+                    flair = pd.get("link_flair_text") or ""
+                    subreddit_name = pd.get("subreddit_name_prefixed", "")
+                    score = pd.get("score", 0)
+                    num_comments = pd.get("num_comments", 0)
+
+                    reddit_items.append({
+                        "title": title,
+                        "link": permalink,
+                        "post_url": post_url,
+                        "date": date,
+                        "thumb": thumb,
+                        "excerpt": excerpt,
+                        "post_type": "video" if is_video_link else ("gif" if is_gif else ("gallery" if is_gallery else ("image" if is_image else "text"))),
+                        "video_url": video_url,
+                        "flair": flair,
+                        "score": score,
+                        "num_comments": num_comments,
+                        "subreddit": subreddit_name,
+                    })
                 result = {"items": reddit_items}
                 _rss_cache[cache_key] = {"data": result, "ts": time.time()}
                 return jsonify(result)
@@ -3531,7 +3598,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.6</div>
+      <div class="sb-version">v3.15.7</div>
     </div>
   </div>
 
@@ -3716,9 +3783,9 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
                 <div style="position:relative;width:160px;height:160px">
                   <canvas id="cpu-gauge-canvas" width="160" height="160"></canvas>
-                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;margin-bottom:18px;pointer-events:none">
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-8px);pointer-events:none">
                     <span id="cpu-gauge-text" style="font-size:30px;font-weight:700;font-family:var(--mono);color:#3fb950;line-height:1">0%</span>
-                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">Usage</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:3px;letter-spacing:.04em;text-transform:uppercase">Usage</span>
                   </div>
                 </div>
                 <div id="cpu-cores" style="font-size:12px;color:var(--text2);font-weight:500">— cores · — MHz</div>
@@ -3733,9 +3800,9 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
                 <div style="position:relative;width:160px;height:160px">
                   <canvas id="mem-gauge-canvas" width="160" height="160"></canvas>
-                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;margin-bottom:18px;pointer-events:none">
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-8px);pointer-events:none">
                     <span id="mem-gauge-text" style="font-size:30px;font-weight:700;font-family:var(--mono);color:#bc8cff;line-height:1">0%</span>
-                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">RAM</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:3px;letter-spacing:.04em;text-transform:uppercase">RAM</span>
                   </div>
                 </div>
                 <div id="mem-detail" style="font-size:12px;color:var(--text2);font-weight:500">— / — GB</div>
@@ -3798,7 +3865,7 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ① System Info widget  (default: left half, row 3) -->
-        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="3" gs-w="6" gs-h="4" gs-min-w="3" gs-min-h="2">
+        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="3" gs-w="6" gs-h="5" gs-min-w="3" gs-min-h="3">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
@@ -3810,68 +3877,68 @@ body.sse-disconnected #app{padding-top:38px;}
               <div id="sys-info-grid" style="display:flex;flex-direction:column;gap:0">
 
                 <!-- OS -->
-                <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border)">
-                  <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                    <svg width="14" height="14" fill="none" stroke="var(--blue)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
+                <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border)">
+                  <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                    <svg width="13" height="13" fill="none" stroke="var(--blue)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
                   </div>
                   <div style="flex:1;min-width:0">
-                    <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Operating System</div>
-                    <div id="si-os" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                    <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Operating System</div>
+                    <div id="si-os" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
                   </div>
-                  <div style="width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0"></div>
+                  <div style="width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0"></div>
                 </div>
 
                 <!-- Kernel -->
-                <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border)">
-                  <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                    <svg width="14" height="14" fill="none" stroke="var(--purple,#bc8cff)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border)">
+                  <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                    <svg width="13" height="13" fill="none" stroke="var(--purple,#bc8cff)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
                   </div>
                   <div style="flex:1;min-width:0">
-                    <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Kernel</div>
-                    <div id="si-kernel" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                    <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Kernel</div>
+                    <div id="si-kernel" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
                   </div>
                 </div>
 
                 <!-- Architecture + Python side by side -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);border-right:1px solid var(--border)">
-                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                      <svg width="14" height="14" fill="none" stroke="var(--yellow,#e3b341)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3l6 18M3 9h18M3 15h18"/></svg>
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border);border-right:1px solid var(--border)">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" fill="none" stroke="var(--yellow,#e3b341)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3l6 18M3 9h18M3 15h18"/></svg>
                     </div>
                     <div style="min-width:0">
-                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Architecture</div>
-                      <div id="si-arch" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px">—</div>
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Architecture</div>
+                      <div id="si-arch" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px">—</div>
                     </div>
                   </div>
-                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border)">
-                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 12h8M12 8v8"/></svg>
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border)">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 12h8M12 8v8"/></svg>
                     </div>
                     <div style="min-width:0">
-                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Python</div>
-                      <div id="si-python" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px">—</div>
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Python</div>
+                      <div id="si-python" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px">—</div>
                     </div>
                   </div>
                 </div>
 
                 <!-- Hostname + Uptime side by side -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-right:1px solid var(--border)">
-                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                      <svg width="14" height="14" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-right:1px solid var(--border)">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
                     </div>
                     <div style="min-width:0">
-                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Hostname</div>
-                      <div id="si-hostname" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Hostname</div>
+                      <div id="si-hostname" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
                     </div>
                   </div>
-                  <div style="display:flex;align-items:center;gap:10px;padding:9px 12px">
-                    <div style="width:28px;height:28px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                      <svg width="14" height="14" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
                     </div>
                     <div style="min-width:0">
-                      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Uptime</div>
-                      <div id="si-uptime" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:3px">—</div>
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Uptime</div>
+                      <div id="si-uptime" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px">—</div>
                     </div>
                   </div>
                 </div>
@@ -3954,7 +4021,7 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 12) -->
-        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="12" gs-w="12" gs-h="3" gs-min-w="4" gs-min-h="2">
+        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="12" gs-w="12" gs-h="4" gs-min-w="4" gs-min-h="3">
           <div class="grid-stack-item-content">
             <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Remove widget">✕</button>
             <div class="panel" style="margin:0;height:100%;overflow:hidden">
@@ -4407,7 +4474,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.6</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.7</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -6426,14 +6493,41 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
         const d = await r.json();
         const items = d.items || [];
         if (!items.length) {
-            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">No items found</div></div>';
+            const errMsg = d.error ? `Error: ${d.error}` : 'No items found';
+            grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">${errMsg}</div></div>`;
             return;
         }
-        const limit = mode === 'youtube' ? 18 : 24;
+        const limit = mode === 'youtube' ? 18 : 25;
         const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
         grid.innerHTML = items.slice(0, limit).map(item => {
-            const isYT = mode === 'youtube' || (item.link||'').includes('youtube.com');
-            const thumb = item.thumb;
+            const isYT   = mode === 'youtube' || (item.link||'').includes('youtube.com');
+            const isReddit = mode === 'reddit';
+            const ptype  = item.post_type || (isYT ? 'youtube' : 'article');
+            const thumb  = item.thumb;
+
+            // ── Media type badge ──────────────────────────────────────────
+            const typeBadge = (() => {
+                if (ptype === 'video')   return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">▶ Video</div>`;
+                if (ptype === 'gif')     return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#ff6b6b;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">GIF</div>`;
+                if (ptype === 'gallery') return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">🖼 Gallery</div>`;
+                if (isYT)                return `<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:red;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">▶ YT</div>`;
+                return '';
+            })();
+
+            // ── Placeholder icon per type ─────────────────────────────────
+            const placeholderIcon = ptype === 'video' ? '▶' : ptype === 'gif' ? '🎞' : ptype === 'gallery' ? '🖼' : ptype === 'image' ? '🖼' : isYT ? '▶' : '📰';
+
+            // ── Reddit meta footer (score + comments) ─────────────────────
+            const redditMeta = isReddit ? `
+                <div style="display:flex;align-items:center;gap:10px;font-size:10px;color:var(--text3);margin-top:3px">
+                  ${item.flair ? `<span style="background:var(--surface2);padding:1px 5px;border-radius:3px;color:var(--text2);font-size:9px">${safe(item.flair)}</span>` : ''}
+                  <span style="display:flex;align-items:center;gap:3px">▲ ${(item.score||0).toLocaleString()}</span>
+                  <span style="display:flex;align-items:center;gap:3px">💬 ${(item.num_comments||0).toLocaleString()}</span>
+                </div>` : '';
+
+            const aspectRatio = isYT || ptype === 'video' ? '56.25%' : '52%';
+
             return `
             <a href="${item.link}" target="_blank" rel="noopener" style="
               display:flex;flex-direction:column;text-decoration:none;
@@ -6441,25 +6535,27 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
               overflow:hidden;transition:border-color .15s,transform .1s"
               onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
               onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
-              <!-- Thumbnail -->
+              <!-- Thumbnail / Media -->
               ${thumb
-                ? `<div style="position:relative;width:100%;padding-top:${isYT?'56.25%':'52%'};background:var(--surface2);overflow:hidden">
+                ? `<div style="position:relative;width:100%;padding-top:${aspectRatio};background:var(--surface2);overflow:hidden">
                      <img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
-                          onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:32px\\'>${isYT?'▶':'📰'}</div>'">
-                     ${isYT ? `<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:red;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">▶ YT</div>` : ''}
+                          onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${placeholderIcon}</div>'">
+                     ${typeBadge}
                    </div>`
-                : `<div style="width:100%;padding-top:${isYT?'56.25%':'40%'};position:relative;background:var(--surface2)">
-                     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${isYT?'▶':'📰'}</div>
+                : `<div style="width:100%;padding-top:${aspectRatio};position:relative;background:var(--surface2)">
+                     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${placeholderIcon}</div>
+                     ${typeBadge}
                    </div>`}
               <!-- Content -->
-              <div style="padding:10px 12px 12px;flex:1;display:flex;flex-direction:column;gap:4px">
-                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;
-                     display:-webkit-box;-webkit-line-clamp:${mode==='reddit'?2:3};-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
-                ${(item.excerpt && mode !== 'youtube')
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;
+                     display:-webkit-box;-webkit-line-clamp:${isReddit?2:3};-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                ${(item.excerpt && !isYT && ptype === 'text')
                     ? `<div style="font-size:11px;color:var(--text2);line-height:1.4;
                             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.excerpt)}</div>`
                     : ''}
-                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:5px;display:flex;align-items:center;gap:4px">
+                ${redditMeta}
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px;display:flex;align-items:center;gap:4px">
                   <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
                   ${safe(item.date || '')}
                 </div>
@@ -6467,7 +6563,7 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
             </a>`;
         }).join('');
     } catch(e) {
-        grid.innerHTML = '<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load feed</div>';
+        grid.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load feed: ${e.message}</div>`;
     }
 }
 
@@ -8003,10 +8099,10 @@ function _gsInit() {
 // ── Widget palette definitions ────────────────────────────────────────────────
 const WIDGET_DEFS = {
   gauges:   { label: 'System Gauges',    icon: '📊',  dw:12, dh:3, dx:0,  dy:0  },
-  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:4, dx:0,  dy:3  },
+  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:5, dx:0,  dy:3  },
   weather:  { label: 'Weather',          icon: '🌤️', dw:6,  dh:4, dx:6,  dy:3  },
   services: { label: 'Service Cards',    icon: '🃏',  dw:12, dh:5, dx:0,  dy:7  },
-  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:3, dx:0,  dy:12 },
+  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:4, dx:0,  dy:12 },
   logs:     { label: 'Recent Logs',      icon: '📋',  dw:4,  dh:4, dx:0,  dy:15 },
   ctrs:     { label: 'Containers',       icon: '📦',  dw:8,  dh:4, dx:4,  dy:15 },
   launcher: { label: 'Service Launcher', icon: '🚀',  dw:12, dh:3, dx:0,  dy:19 },

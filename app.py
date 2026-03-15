@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.5 · Full deployment, update management, and real-time monitoring
+Version: 3.15.6 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.5",
+            "version": "3.15.6",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1299,7 +1299,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.5"})
+    return jsonify({"update_available": False, "version": "3.15.6"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1599,20 +1599,53 @@ def api_rss_fetch():
         return jsonify(_rss_cache[cache_key]["data"])
 
     try:
-        import urllib.request
+        import urllib.request, re as _re_url, datetime as _dt
         is_reddit = "reddit.com" in url
+
+        # ── Reddit: use JSON API (much more reliable than RSS from servers) ──
         if is_reddit:
-            # old.reddit.com has more permissive CORS/crawl rules than www.reddit.com
-            url = url.replace("www.reddit.com", "old.reddit.com")
-            headers = {
-                "User-Agent": "linux:arrhub:v3.15.5 (by /u/arrhub_bot)",
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            }
-        else:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; +https://github.com/twoeagles404/arrhub)",
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            }
+            m = _re_url.search(r'reddit\.com/r/([A-Za-z0-9_]+)', url)
+            if m:
+                subreddit = m.group(1)
+                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25"
+                req_json = urllib.request.Request(json_url, headers={
+                    "User-Agent": "linux:arrhub:v3.15.6 (by /u/arrhub_bot)",
+                    "Accept": "application/json",
+                })
+                with urllib.request.urlopen(req_json, timeout=15) as resp_j:
+                    rdata = json.loads(resp_j.read())
+                posts = rdata.get("data", {}).get("children", [])
+                reddit_items = []
+                for post in posts[:20]:
+                    pd = post.get("data", {})
+                    title = pd.get("title", "Untitled")
+                    permalink = "https://www.reddit.com" + pd.get("permalink", "#")
+                    created = pd.get("created_utc")
+                    date = _dt.datetime.utcfromtimestamp(created).strftime("%Y-%m-%d %H:%M") if created else ""
+                    # thumbnail: prefer preview images (higher quality)
+                    thumb = None
+                    try:
+                        imgs = pd["preview"]["images"]
+                        if imgs:
+                            thumb = imgs[0]["source"]["url"].replace("&amp;", "&")
+                    except Exception:
+                        pass
+                    if not thumb:
+                        tn = pd.get("thumbnail", "")
+                        if tn and tn.startswith("http") and tn not in ("self", "default", "nsfw", "spoiler"):
+                            thumb = tn
+                    excerpt = (pd.get("selftext") or "")[:200]
+                    reddit_items.append({"title": title, "link": permalink, "date": date,
+                                         "thumb": thumb, "excerpt": excerpt})
+                result = {"items": reddit_items}
+                _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                return jsonify(result)
+
+        # ── Non-Reddit: standard RSS/Atom fetch ───────────────────────────
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; +https://github.com/twoeagles404/arrhub)",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        }
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read()
@@ -1729,7 +1762,7 @@ def api_rss_fetch():
 
 @app.route("/api/iptv/channels")
 def api_iptv_channels():
-    """Return curated DaddyLive channel list — no blocking external calls."""
+    """Return curated MovieBite channel list — no blocking external calls."""
     return jsonify({"channels": _IPTV_FALLBACK_CHANNELS, "count": len(_IPTV_FALLBACK_CHANNELS)})
 
 @app.route("/api/iptv/schedule")
@@ -1834,6 +1867,11 @@ def _feeds_get_subs():
         except Exception:
             pass
     return {
+        "_type_meta": {
+            "rss":     {"name": "RSS",     "icon": "📰"},
+            "reddit":  {"name": "Reddit",  "icon": "🤖"},
+            "youtube": {"name": "YouTube", "icon": "▶"},
+        },
         "rss": [
             {"id": "selfhst",    "name": "selfh.st",       "url": "https://selfh.st/news/feed.xml"},
             {"id": "lsio",       "name": "linuxserver.io",  "url": "https://blog.linuxserver.io/feed/"},
@@ -1858,6 +1896,37 @@ def _feeds_get_subs():
 def api_feeds_get_subscriptions():
     return jsonify(_feeds_get_subs())
 
+@app.route("/api/feeds/categories", methods=["POST"])
+def api_feeds_add_category():
+    """Create a new custom feed category type."""
+    data = request.get_json() or {}
+    cat_id   = (data.get("id") or "").strip().lower().replace(" ", "_")
+    cat_name = (data.get("name") or "").strip()
+    cat_icon = (data.get("icon") or "📡").strip()
+    if not cat_id or not cat_name:
+        return jsonify({"error": "Missing id or name"}), 400
+    if cat_id in ("rss", "reddit", "youtube", "_type_meta"):
+        return jsonify({"error": "Reserved category name"}), 400
+    subs = _feeds_get_subs()
+    meta = subs.setdefault("_type_meta", {})
+    if cat_id not in meta:
+        meta[cat_id] = {"name": cat_name, "icon": cat_icon}
+    if cat_id not in subs:
+        subs[cat_id] = []
+    _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
+@app.route("/api/feeds/categories/<cat_id>", methods=["DELETE"])
+def api_feeds_delete_category(cat_id):
+    """Delete a custom feed category type and all its subscriptions."""
+    if cat_id in ("rss", "reddit", "youtube"):
+        return jsonify({"error": "Cannot delete built-in categories"}), 400
+    subs = _feeds_get_subs()
+    subs.get("_type_meta", {}).pop(cat_id, None)
+    subs.pop(cat_id, None)
+    _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
 @app.route("/api/feeds/subscriptions", methods=["POST"])
 def api_feeds_add_subscription():
     data = request.get_json() or {}
@@ -1868,6 +1937,7 @@ def api_feeds_add_subscription():
     if not sub_type or not sub_id or not sub_name or not sub_url:
         return jsonify({"error": "Missing fields"}), 400
     subs = _feeds_get_subs()
+    # Ensure the type exists in subs (custom types may not have been initialised yet)
     if sub_type not in subs:
         subs[sub_type] = []
     if not any(s["id"] == sub_id for s in subs[sub_type]):
@@ -3461,7 +3531,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.5</div>
+      <div class="sb-version">v3.15.6</div>
     </div>
   </div>
 
@@ -4337,7 +4407,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.5</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.6</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -4367,7 +4437,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
           <!-- Left: channel browser -->
           <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
-            <div class="search-wrap" style="margin:0">
+            <div class="search-wrap" style="margin:0;flex:none">
               <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
               <input type="text" id="iptv-search" placeholder="Search channels…" oninput="iptvFilterChannels()">
             </div>
@@ -4386,7 +4456,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 <span style="font-size:18px">📺</span>
                 <div>
                   <div id="iptv-now-playing" style="font-size:13px;font-weight:600;color:var(--text)">Select a channel</div>
-                  <div id="iptv-now-source" style="font-size:10px;color:var(--text3)">DaddyLive · 1000+ channels</div>
+                  <div id="iptv-now-source" style="font-size:10px;color:var(--text3)">MovieBite · Select a channel</div>
                 </div>
               </div>
               <div style="display:flex;gap:6px">
@@ -4399,13 +4469,12 @@ body.sse-disconnected #app{padding-top:38px;}
               <div id="iptv-player-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text3)">
                 <div style="font-size:48px">📡</div>
                 <div style="font-size:14px">Click a channel to start watching</div>
-                <div style="font-size:11px;color:var(--text3)">1000+ free live channels via DaddyLive</div>
+                <div style="font-size:11px;color:var(--text3)">Live channels via MovieBite — select a channel to watch</div>
               </div>
               <!--
                 CSS header-crop trick: parent has overflow:hidden + position:relative.
-                The iframe is pushed up by 68px (DaddyLive navbar height) so the
-                navbar scrolls out of view while the video player fills the container.
-                We also stretch width slightly right so the chat sidebar is clipped.
+                The iframe is pushed up by 55px (MovieBite site header height) so the
+                site navigation is hidden and only the player fills the container.
               -->
               <iframe id="iptv-player-frame"
                 src="about:blank"
@@ -4468,13 +4537,8 @@ body.sse-disconnected #app{padding-top:38px;}
           <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7M6 17a1 1 0 110 2 1 1 0 010-2z"/></svg>
           <span style="font-weight:600;font-size:15px">Feeds</span>
         </div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <button class="filter-pill active" id="feeds-pill-rss"    onclick="feedsNav('rss',this)">📰 RSS</button>
-          <button class="filter-pill"        id="feeds-pill-reddit" onclick="feedsNav('reddit',this)">🤖 Reddit</button>
-          <button class="filter-pill"        id="feeds-pill-youtube"onclick="feedsNav('youtube',this)">▶ YouTube</button>
-          <button class="filter-pill"        id="feeds-pill-hn"     onclick="feedsNav('hn',this)">🔶 HN</button>
-          <button class="filter-pill"        id="feeds-pill-manage" onclick="feedsNav('manage',this)">⚙ Manage</button>
-          <button class="btn blue" id="feeds-refresh-btn" onclick="feedsRefreshCurrent()" style="padding:4px 12px;font-size:11px">↻ Refresh</button>
+        <div id="feeds-pills-row" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <!-- pills are rendered dynamically by loadFeedsTab() -->
         </div>
       </div>
 
@@ -4501,44 +4565,43 @@ body.sse-disconnected #app{padding-top:38px;}
         <div id="feeds-hn-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
       </div>
 
+      <!-- Custom category pages are injected here by JS -->
+      <div id="feeds-custom-pages"></div>
+
       <!-- ── Manage sub-page ──────────────────────────────────────────── -->
       <div id="feeds-page-manage" style="display:none">
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
-
-          <!-- RSS management -->
-          <div class="panel" style="margin:0">
-            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
-              <span>📰 RSS Feeds</span>
-              <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="feedsShowAddModal('rss')">+ Add</button>
-            </div>
-            <div id="feeds-manage-rss" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto"></div>
-          </div>
-
-          <!-- Reddit management -->
-          <div class="panel" style="margin:0">
-            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
-              <span>🤖 Subreddits</span>
-              <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="feedsShowAddModal('reddit')">+ Add</button>
-            </div>
-            <div id="feeds-manage-reddit" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto"></div>
-          </div>
-
-          <!-- YouTube management -->
-          <div class="panel" style="margin:0">
-            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
-              <span>▶ YouTube Channels</span>
-              <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="feedsShowAddModal('youtube')">+ Add</button>
-            </div>
-            <div id="feeds-manage-youtube" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto"></div>
-            <div style="font-size:10px;color:var(--text3);margin-top:8px;padding:6px;background:var(--bg3);border-radius:4px">
-              💡 Find channel ID in channel URL: youtube.com/channel/<b>UCxxxxxx</b>
-            </div>
-          </div>
-
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <span style="font-size:13px;font-weight:600;color:var(--text)">Manage Subscriptions</span>
+          <button class="btn-primary" style="font-size:11px;padding:4px 12px" onclick="feedsShowNewCatModal()">＋ New Category</button>
+        </div>
+        <div id="feeds-manage-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
+          <!-- rendered dynamically by _feedsRenderManage() -->
         </div>
       </div>
 
     </div><!-- /tab-feeds -->
+
+    <!-- New Category modal -->
+    <div id="feeds-newcat-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;align-items:center;justify-content:center">
+      <div class="panel" style="width:340px;max-width:95vw;padding:20px">
+        <div class="panel-title" style="margin-bottom:14px">➕ New Feed Category</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Category Name *</label>
+            <input id="newcat-name" type="text" placeholder="e.g. Podcasts" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Icon (emoji) *</label>
+            <input id="newcat-icon" type="text" placeholder="🎙" maxlength="4" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:16px;box-sizing:border-box">
+          </div>
+          <div style="font-size:10px;color:var(--text3)">Custom categories use standard RSS/Atom feeds — just like the RSS tab.</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button onclick="feedsHideNewCatModal()" class="btn" style="flex:1;padding:8px">Cancel</button>
+          <button onclick="feedsSaveNewCat()" class="btn-primary" style="flex:1;padding:8px">Create Category</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Add Feed Modal -->
     <div id="feeds-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;display:none;align-items:center;justify-content:center">
@@ -6153,20 +6216,43 @@ let _feedsRedditActive = null;
 let _feedsYTActive = null;
 let _feedsAddType  = 'rss';
 
-// ── Navigation ───────────────────────────────────────────────────────
+// All known category types (built-in + custom from _type_meta)
+let _feedsAllTypes = ['rss','reddit','youtube','hn']; // built-in order; custom appended
+
+function _feedsBuildNavPills() {
+    const row = document.getElementById('feeds-pills-row');
+    if (!row) return;
+    const meta = _feedsSubs._type_meta || {};
+    // Built-in types always shown first
+    const builtIn = ['rss','reddit','youtube','hn'];
+    const custom   = Object.keys(meta).filter(k => !builtIn.includes(k) && k !== '_type_meta');
+    _feedsAllTypes = [...builtIn, ...custom];
+
+    row.innerHTML = [
+        ..._feedsAllTypes.map(p => {
+            const icon = p === 'rss' ? '📰' : p === 'reddit' ? '🤖' : p === 'youtube' ? '▶' : p === 'hn' ? '🔶' : (meta[p]?.icon || '📡');
+            const name = p === 'rss' ? 'RSS' : p === 'reddit' ? 'Reddit' : p === 'youtube' ? 'YouTube' : p === 'hn' ? 'HN' : (meta[p]?.name || p);
+            return `<button class="filter-pill${p===_feedsPage?' active':''}" id="feeds-pill-${p}" onclick="feedsNav('${p}',this)">${icon} ${name}</button>`;
+        }),
+        `<button class="filter-pill${_feedsPage==='manage'?' active':''}" id="feeds-pill-manage" onclick="feedsNav('manage',this)" style="margin-left:auto">⚙ Manage</button>`
+    ].join('');
+}
+
 function feedsNav(page, el) {
     _feedsPage = page;
-    ['rss','reddit','youtube','hn','manage'].forEach(p => {
+    // Hide all known pages
+    [..._feedsAllTypes, 'manage'].forEach(p => {
         const pg = document.getElementById('feeds-page-' + p);
         if (pg) pg.style.display = (p === page) ? '' : 'none';
         const pill = document.getElementById('feeds-pill-' + p);
         if (pill) pill.classList.toggle('active', p === page);
     });
     if (page === 'rss')     _feedsLoadRssPage();
-    if (page === 'reddit')  _feedsLoadRedditPage();
-    if (page === 'youtube') _feedsLoadYTPage();
-    if (page === 'hn')      _feedsLoadHN();
-    if (page === 'manage')  _feedsRenderManage();
+    else if (page === 'reddit')  _feedsLoadRedditPage();
+    else if (page === 'youtube') _feedsLoadYTPage();
+    else if (page === 'hn')      _feedsLoadHN();
+    else if (page === 'manage')  _feedsRenderManage();
+    else                         _feedsLoadCustomPage(page);
 }
 
 function feedsRefreshCurrent() { feedsNav(_feedsPage, null); }
@@ -6176,8 +6262,26 @@ async function loadFeedsTab() {
     try {
         const r = await fetch(API + '/api/feeds/subscriptions');
         _feedsSubs = await r.json();
-    } catch(e) { _feedsSubs = {rss:[], reddit:[], youtube:[]}; }
+    } catch(e) { _feedsSubs = {rss:[], reddit:[], youtube:[], _type_meta:{}}; }
+    // Ensure _type_meta exists
+    if (!_feedsSubs._type_meta) _feedsSubs._type_meta = {};
+    _feedsBuildNavPills();
+    // Inject custom page divs
+    _feedsInjectCustomPageDivs();
     feedsNav('rss', document.getElementById('feeds-pill-rss'));
+}
+
+function _feedsInjectCustomPageDivs() {
+    const container = document.getElementById('feeds-custom-pages');
+    if (!container) return;
+    const meta = _feedsSubs._type_meta || {};
+    const builtIn = ['rss','reddit','youtube','hn'];
+    const custom = Object.keys(meta).filter(k => !builtIn.includes(k));
+    container.innerHTML = custom.map(k => `
+      <div id="feeds-page-${k}" style="display:none">
+        <div id="feeds-${k}-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+        <div id="feeds-${k}-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px"></div>
+      </div>`).join('');
 }
 
 // ── RSS sub-page ─────────────────────────────────────────────────────
@@ -6368,24 +6472,69 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
 }
 
 // ── Manage sub-page ──────────────────────────────────────────────────
+// ── Custom type page loader ───────────────────────────────────────────
+function _feedsLoadCustomPage(type) {
+    const tabs = document.getElementById(`feeds-${type}-source-tabs`);
+    const grid = document.getElementById(`feeds-${type}-grid`);
+    if (!tabs || !grid) return;
+    const meta = _feedsSubs._type_meta || {};
+    const icon = meta[type]?.icon || '📡';
+    const sources = _feedsSubs[type] || [];
+    if (!sources.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">${icon}</div><div class="empty-text">No feeds yet — add some in Manage</div></div>`;
+        return;
+    }
+    let activeId = sources[0].id;
+    tabs.innerHTML = sources.map(s =>
+        `<button class="filter-pill${s.id===activeId?' active':''}" onclick="_feedsSelectCustom('${type}','${s.id}',this)">${s.name}</button>`
+    ).join('');
+    _feedsFetchAndRenderCards(sources[0].url, grid, 'rss');
+}
+
+function _feedsSelectCustom(type, id, el) {
+    document.querySelectorAll(`#feeds-${type}-source-tabs .filter-pill`).forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const src = (_feedsSubs[type] || []).find(s => s.id === id);
+    if (src) _feedsFetchAndRenderCards(src.url, document.getElementById(`feeds-${type}-grid`), 'rss');
+}
+
+// ── Manage sub-page ──────────────────────────────────────────────────
 function _feedsRenderManage() {
-    ['rss','reddit','youtube'].forEach(type => {
-        const el = document.getElementById('feeds-manage-' + type);
-        if (!el) return;
+    const grid = document.getElementById('feeds-manage-grid');
+    if (!grid) return;
+    const meta = _feedsSubs._type_meta || {};
+    const builtIn = ['rss','reddit','youtube'];
+    const allTypes = [...builtIn, ...Object.keys(meta).filter(k => !builtIn.includes(k))];
+    const icons = {rss:'📰', reddit:'🤖', youtube:'▶'};
+    const names = {rss:'RSS Feeds', reddit:'Reddit', youtube:'YouTube'};
+
+    grid.innerHTML = allTypes.map(type => {
+        const icon = icons[type] || meta[type]?.icon || '📡';
+        const name = names[type] || meta[type]?.name || type;
         const list = _feedsSubs[type] || [];
-        if (!list.length) {
-            el.innerHTML = `<div style="font-size:12px;color:var(--text3);padding:6px">No ${type} sources yet</div>`;
-            return;
-        }
-        el.innerHTML = list.map(s => `
-          <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px">
-            <div style="flex:1;min-width:0">
-              <div style="font-size:12px;font-weight:600;color:var(--text)">${s.name}</div>
-              <div style="font-size:10px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.url || s.id}</div>
+        const isCustom = !builtIn.includes(type);
+        return `
+          <div class="panel">
+            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+              <span>${icon} ${name}</span>
+              <div style="display:flex;gap:4px">
+                <button class="btn blue" style="padding:3px 8px;font-size:11px" onclick="feedsShowAddModal('${type}')">+ Add</button>
+                ${isCustom ? `<button class="btn" style="padding:3px 8px;font-size:11px;color:var(--red)" onclick="_feedsDeleteCategory('${type}')" title="Delete category">🗑</button>` : ''}
+              </div>
             </div>
-            <button onclick="_feedsDeleteSub('${type}','${s.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 4px;flex-shrink:0" title="Remove">✕</button>
-          </div>`).join('');
-    });
+            <div id="feeds-manage-${type}" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto">
+              ${list.length ? list.map(s => `
+                <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px">
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:12px;font-weight:600;color:var(--text)">${s.name}</div>
+                    <div style="font-size:10px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.url || s.id}</div>
+                  </div>
+                  <button onclick="_feedsDeleteSub('${type}','${s.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 4px;flex-shrink:0" title="Remove">✕</button>
+                </div>`).join('') : `<div style="font-size:12px;color:var(--text3);padding:6px">No sources yet</div>`}
+            </div>
+          </div>`;
+    }).join('');
 }
 
 async function _feedsDeleteSub(type, id) {
@@ -6412,6 +6561,7 @@ function feedsShowAddModal(type) {
     document.getElementById('feeds-add-name').value = '';
     document.getElementById('feeds-add-url').value  = '';
     document.getElementById('feeds-add-id').value   = '';
+    const meta = _feedsSubs._type_meta || {};
     if (type === 'rss') {
         title.textContent = '📰 Add RSS Feed';
         urlRow.style.display = '';
@@ -6430,8 +6580,61 @@ function feedsShowAddModal(type) {
         urlLbl.textContent = 'Channel ID (from youtube.com/channel/UC...)';
         idRow.style.display = 'none';
         document.getElementById('feeds-add-url').placeholder = 'UCsBjURrPoezykLs9EqgamOA';
+    } else {
+        // Custom category — always RSS-style URL
+        const icon = meta[type]?.icon || '📡';
+        const name = meta[type]?.name || type;
+        title.textContent = `${icon} Add Feed to ${name}`;
+        urlRow.style.display = '';
+        urlLbl.textContent = 'RSS / Atom Feed URL';
+        idRow.style.display = 'none';
+        document.getElementById('feeds-add-url').placeholder = 'https://example.com/feed.xml';
     }
     modal.style.display = 'flex';
+}
+
+// ── New Category modal ────────────────────────────────────────────────
+function feedsShowNewCatModal() {
+    const m = document.getElementById('feeds-newcat-modal');
+    if (m) { document.getElementById('newcat-name').value=''; document.getElementById('newcat-icon').value=''; m.style.display='flex'; }
+}
+function feedsHideNewCatModal() {
+    const m = document.getElementById('feeds-newcat-modal');
+    if (m) m.style.display='none';
+}
+async function feedsSaveNewCat() {
+    const name = document.getElementById('newcat-name').value.trim();
+    const icon = document.getElementById('newcat-icon').value.trim() || '📡';
+    if (!name) { showToast('Category name is required','error',2000); return; }
+    const id = name.toLowerCase().replace(/[^a-z0-9_]/g,'_').replace(/_+/g,'_');
+    try {
+        const r = await fetch(API+'/api/feeds/categories', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name,icon})});
+        const d = await r.json();
+        if (d.error) { showToast('Error: '+d.error,'error'); return; }
+        feedsHideNewCatModal();
+        // Reload subs and rebuild nav
+        const sr = await fetch(API+'/api/feeds/subscriptions');
+        _feedsSubs = await sr.json();
+        if (!_feedsSubs._type_meta) _feedsSubs._type_meta = {};
+        _feedsBuildNavPills();
+        _feedsInjectCustomPageDivs();
+        _feedsRenderManage();
+        showToast(`Category "${name}" created`,'success');
+    } catch(e) { showToast('Failed to create category','error'); }
+}
+
+async function _feedsDeleteCategory(type) {
+    if (!confirm(`Delete the "${type}" category and all its subscriptions?`)) return;
+    try {
+        await fetch(API+`/api/feeds/categories/${encodeURIComponent(type)}`, {method:'DELETE'});
+        delete _feedsSubs[type];
+        if (_feedsSubs._type_meta) delete _feedsSubs._type_meta[type];
+        _feedsBuildNavPills();
+        _feedsInjectCustomPageDivs();
+        _feedsRenderManage();
+        if (_feedsPage === type) feedsNav('rss', document.getElementById('feeds-pill-rss'));
+        showToast(`Category removed`,'success');
+    } catch(e) { showToast('Failed to delete category','error'); }
 }
 
 function feedsHideAddModal() {
@@ -6461,6 +6664,10 @@ async function feedsSaveAdd() {
         if (!chId) { showToast('Channel ID required', 'error', 2000); return; }
         id  = chId;
         url = `https://www.youtube.com/feeds/videos.xml?channel_id=${chId}`;
+    } else {
+        // Custom category: generic RSS URL
+        url = urlVal;
+        id  = urlVal.replace(/[^a-z0-9]/gi, '_').slice(0,32) || ('feed_' + Date.now());
     }
 
     try {
@@ -6966,7 +7173,7 @@ function iptvRenderMV() {
         return `
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
           ${ch
-            ? `<iframe src="https://dlstreams.top/watch.php?id=${ch.id}" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
+            ? `<iframe src="https://live.moviebite.cc/channels/${ch.id}" style="position:absolute;top:-55px;left:0;width:100%;height:calc(100% + 55px);border:none" allow="autoplay;fullscreen" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
             : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
                  <div style="font-size:28px">📺</div>
                  <div style="font-size:11px">Click to assign channel</div>

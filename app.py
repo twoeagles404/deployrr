@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.4 · Full deployment, update management, and real-time monitoring
+Version: 3.15.5 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.4",
+            "version": "3.15.5",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1299,7 +1299,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.4"})
+    return jsonify({"update_available": False, "version": "3.15.5"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1605,7 +1605,7 @@ def api_rss_fetch():
             # old.reddit.com has more permissive CORS/crawl rules than www.reddit.com
             url = url.replace("www.reddit.com", "old.reddit.com")
             headers = {
-                "User-Agent": "linux:arrhub:v3.15.4 (by /u/arrhub_bot)",
+                "User-Agent": "linux:arrhub:v3.15.5 (by /u/arrhub_bot)",
                 "Accept": "application/rss+xml, application/xml, text/xml, */*",
             }
         else:
@@ -3461,7 +3461,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.4</div>
+      <div class="sb-version">v3.15.5</div>
     </div>
   </div>
 
@@ -4337,7 +4337,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.4</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.5</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>

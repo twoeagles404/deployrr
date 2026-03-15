@@ -1824,6 +1824,65 @@ _IPTV_FALLBACK_CHANNELS = [
     {"id":"TSN-1",          "name":"TSN 1",                "group":"International", "logo":""},
 ]
 
+# ── Feeds subscription store ────────────────────────────────────────────
+def _feeds_get_subs():
+    """Return saved feed subscriptions from DB, with sensible defaults."""
+    raw = _db_get("feeds_subscriptions", None)
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    return {
+        "rss": [
+            {"id": "selfhst",    "name": "selfh.st",       "url": "https://selfh.st/news/feed.xml"},
+            {"id": "lsio",       "name": "linuxserver.io",  "url": "https://blog.linuxserver.io/feed/"},
+            {"id": "theverge",   "name": "The Verge",       "url": "https://www.theverge.com/rss/index.xml"},
+            {"id": "hn",         "name": "Hacker News",     "url": "https://hnrss.org/frontpage"},
+            {"id": "arstechnica","name": "Ars Technica",    "url": "https://feeds.arstechnica.com/arstechnica/index"},
+        ],
+        "reddit": [
+            {"id": "homelab",    "name": "r/homelab",       "url": "https://old.reddit.com/r/homelab/.rss"},
+            {"id": "selfhosted", "name": "r/selfhosted",    "url": "https://old.reddit.com/r/selfhosted/.rss"},
+            {"id": "proxmox",    "name": "r/Proxmox",       "url": "https://old.reddit.com/r/Proxmox/.rss"},
+            {"id": "docker",     "name": "r/docker",        "url": "https://old.reddit.com/r/docker/.rss"},
+        ],
+        "youtube": [
+            {"id": "UCR-DXc1voovS8nhAvccRZhg", "name": "Jeff Geerling",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg"},
+            {"id": "UCsBjURrPoezykLs9EqgamOA", "name": "Fireship",       "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA"},
+            {"id": "UCVS-4mLrAKFNZWoZ4eHiYbA", "name": "NetworkChuck",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCVS-4mLrAKFNZWoZ4eHiYbA"},
+        ]
+    }
+
+@app.route("/api/feeds/subscriptions", methods=["GET"])
+def api_feeds_get_subscriptions():
+    return jsonify(_feeds_get_subs())
+
+@app.route("/api/feeds/subscriptions", methods=["POST"])
+def api_feeds_add_subscription():
+    data = request.get_json() or {}
+    sub_type = data.get("type", "")
+    sub_id   = (data.get("id") or "").strip()
+    sub_name = (data.get("name") or "").strip()
+    sub_url  = (data.get("url") or "").strip()
+    if not sub_type or not sub_id or not sub_name or not sub_url:
+        return jsonify({"error": "Missing fields"}), 400
+    subs = _feeds_get_subs()
+    if sub_type not in subs:
+        subs[sub_type] = []
+    if not any(s["id"] == sub_id for s in subs[sub_type]):
+        subs[sub_type].append({"id": sub_id, "name": sub_name, "url": sub_url})
+        _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
+@app.route("/api/feeds/subscriptions/<sub_type>/<path:sub_id>", methods=["DELETE"])
+def api_feeds_delete_subscription(sub_type, sub_id):
+    subs = _feeds_get_subs()
+    if sub_type in subs:
+        subs[sub_type] = [s for s in subs[sub_type] if s["id"] != sub_id]
+        _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
 @app.route("/api/rss")
 def api_rss():
     """Fetch RSS feeds."""
@@ -3473,9 +3532,9 @@ body.sse-disconnected #app{padding-top:38px;}
 
   <div class="sb-section">
     <div class="sb-section-label">Feeds</div>
-    <div class="sb-item" onclick="showTab('rss',this)">
+    <div class="sb-item" onclick="showTab('feeds',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7m-6 0a1 1 0 11-2 0 1 1 0 012 0z"/></svg>
-      RSS Feeds
+      Feeds
     </div>
     <div class="sb-item" onclick="showTab('iptv',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.868v6.264a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
@@ -4398,185 +4457,123 @@ body.sse-disconnected #app{padding-top:38px;}
     </div>
 
     <!-- ── RSS / FEEDS ─────────────────────────────── -->
-    <div id="tab-rss" class="tab-panel">
-      <!-- RSS header with category tabs + view toggle -->
-      <div class="section-header">
-        <div class="section-title">Live Feeds</div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="view-btn active" id="rss-view-feeds" onclick="setRSSView('feeds')">📰 Feeds</button>
-          <button class="view-btn" id="rss-view-live" onclick="setRSSView('live')">📺 Live News</button>
-          <button class="view-btn" id="rss-view-iptv" onclick="setRSSView('iptv')">🎬 Free TV</button>
-          <div id="rss-all-controls" style="gap:6px;align-items:center">
-            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssExpandAll()">⊞ Expand All</button>
-            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssCollapseAll()">⊟ Collapse All</button>
-          </div>
-          <button class="btn" style="font-size:11px;padding:4px 10px" onclick="openAddFeedModal()">➕ Add Feed</button>
-          <button class="btn-primary" onclick="loadRSSFeeds()">↺ Refresh</button>
+    <div id="tab-feeds" class="tab-panel">
+      <!-- ═══════════════════════════════════════════════════════════════════
+           FEEDS TAB  (RSS · Reddit · YouTube · Hacker News)
+           ═══════════════════════════════════════════════════════════════════ -->
+
+      <!-- Sub-nav + action bar -->
+      <div class="section-header" style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7M6 17a1 1 0 110 2 1 1 0 010-2z"/></svg>
+          <span style="font-weight:600;font-size:15px">Feeds</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <button class="filter-pill active" id="feeds-pill-rss"    onclick="feedsNav('rss',this)">📰 RSS</button>
+          <button class="filter-pill"        id="feeds-pill-reddit" onclick="feedsNav('reddit',this)">🤖 Reddit</button>
+          <button class="filter-pill"        id="feeds-pill-youtube"onclick="feedsNav('youtube',this)">▶ YouTube</button>
+          <button class="filter-pill"        id="feeds-pill-hn"     onclick="feedsNav('hn',this)">🔶 HN</button>
+          <button class="filter-pill"        id="feeds-pill-manage" onclick="feedsNav('manage',this)">⚙ Manage</button>
+          <button class="btn blue" id="feeds-refresh-btn" onclick="feedsRefreshCurrent()" style="padding:4px 12px;font-size:11px">↻ Refresh</button>
         </div>
       </div>
 
-      <!-- Category filter pills -->
-      <div class="filter-row" id="rss-cat-pills" style="flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
-
-      <!-- Feeds view -->
-      <div id="rss-feeds-view">
-        <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;align-items:start"></div>
+      <!-- ── RSS sub-page ─────────────────────────────────────────────── -->
+      <div id="feeds-page-rss">
+        <div id="feeds-rss-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <div id="feeds-rss-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px"></div>
       </div>
 
-      <!-- Live News view — confirmed-working embeds + quick-launch cards for the rest -->
-      <!-- YouTube's live_stream?channel= embed only works when the channel explicitly
-           allows embedding. Al Jazeera and France 24 allow it; others often block it.
-           For blocked channels, quick-launch cards open the stream in a new tab. -->
-      <div id="rss-live-view" style="display:none">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:12px">
-          📺 Live news streams — confirmed embeds play inline; others open YouTube in a new tab.
-        </div>
-
-        <!-- ── Confirmed embeds ──────────────────────────────────────────── -->
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin-bottom:20px">
-          <div class="panel">
-            <div class="panel-title">🌍 Al Jazeera English</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCNye-wNBqNL5ZzHSJj3l8Bg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-            <a href="https://www.youtube.com/@aljazeeraenglish/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🇫🇷 France 24 English</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCQfwfsi5VrQ8yKZ-UGuIzgA&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-            <a href="https://www.youtube.com/@FRANCE24English/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🇩🇪 DW News</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCknLrEdhRCp1aegoMqRaCZg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-            <a href="https://www.youtube.com/@dwnews/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
-          </div>
-        </div>
-
-        <!-- ── Quick-launch cards (open YouTube live in new tab) ─────────── -->
-        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
-          <span>⚡ More Live Streams</span>
-          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens YouTube — some may block embedded playback)</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:20px">
-          <a href="https://www.youtube.com/@BBCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🇬🇧</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">BBC World News</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@SkyNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🌐</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Sky News</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@Bloomberg/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">📊</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Bloomberg</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@ABCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🇺🇸</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">ABC News Live</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@euronews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🇪🇺</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Euronews</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@NHKWorldNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🌏</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">NHK World</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@wionews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🌍</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">WION</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@CBSnews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🎙️</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">CBS News</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@lofimusic/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🎵</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Lofi Girl</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-        </div>
+      <!-- ── Reddit sub-page ──────────────────────────────────────────── -->
+      <div id="feeds-page-reddit" style="display:none">
+        <div id="feeds-reddit-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <div id="feeds-reddit-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px"></div>
       </div>
 
-      <!-- ─────────────────────────────────────────────────────────────────────
-           Free TV view — dlstreams.top channel browser + popular quick-launch
-           cards + custom M3U8 player + free streaming links
-           ───────────────────────────────────────────────────────────────────── -->
-      <div id="rss-iptv-view" style="display:none">
+      <!-- ── YouTube sub-page ─────────────────────────────────────────── -->
+      <div id="feeds-page-youtube" style="display:none">
+        <div id="feeds-yt-channel-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <div id="feeds-yt-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+      </div>
 
-        <!-- ① dlstreams.top embedded channel browser -->
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <div>
-            <div style="font-size:12px;font-weight:600;color:var(--text)">📡 DaddyLive — 1000+ Free Channels</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">Browse and click any channel to open its stream in the player below</div>
-          </div>
-          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="btn" style="font-size:11px;padding:4px 12px;text-decoration:none">
-            ↗ Open in New Tab
-          </a>
-        </div>
+      <!-- ── Hacker News sub-page ─────────────────────────────────────── -->
+      <div id="feeds-page-hn" style="display:none">
+        <div id="feeds-hn-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
+      </div>
 
-        <!-- Channel browser iframe — embed the 24/7 listing page -->
-        <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px">
-          <iframe id="dlstreams-browser"
-            src="https://dlstreams.top/24-7-channels.php"
-            style="width:100%;height:480px;border:none;background:var(--bg2)"
-            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
-            referrerpolicy="no-referrer"
-            loading="lazy"
-            title="DaddyLive Channel Browser">
-          </iframe>
-          <!-- Shown only if iframe is blocked by X-Frame-Options -->
-          <noscript><div style="padding:20px;text-align:center;color:var(--text3)">Enable JavaScript or <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" style="color:var(--blue)">open site directly</a></div></noscript>
-        </div>
+      <!-- ── Manage sub-page ──────────────────────────────────────────── -->
+      <div id="feeds-page-manage" style="display:none">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
 
-        <!-- ② Popular channel quick-launch cards (open watch page in new tab) -->
-        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
-          <span>⚡ Quick Launch</span>
-          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens channel in new tab)</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:20px">
-          <a href="https://dlstreams.top/watch.php?id=51"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇺🇸</div><div style="font-weight:600;color:var(--text);font-size:12px">ABC USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=44"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏈</div><div style="font-weight:600;color:var(--text);font-size:12px">ESPN USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=35"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">⚽</div><div style="font-weight:600;color:var(--text);font-size:12px">Sky Sports</div></a>
-          <a href="https://dlstreams.top/watch.php?id=61"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🌍</div><div style="font-weight:600;color:var(--text);font-size:12px">beIN Sports</div></a>
-          <a href="https://dlstreams.top/watch.php?id=72"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📺</div><div style="font-weight:600;color:var(--text);font-size:12px">CNN USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=57"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📰</div><div style="font-weight:600;color:var(--text);font-size:12px">Fox News</div></a>
-          <a href="https://dlstreams.top/watch.php?id=78"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇬🇧</div><div style="font-weight:600;color:var(--text);font-size:12px">BBC News</div></a>
-          <a href="https://dlstreams.top/watch.php?id=97"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏀</div><div style="font-weight:600;color:var(--text);font-size:12px">NBA TV</div></a>
-          <a href="https://dlstreams.top/watch.php?id=68"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🎬</div><div style="font-weight:600;color:var(--text);font-size:12px">TNT USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=86"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🚀</div><div style="font-weight:600;color:var(--text);font-size:12px">NASA TV</div></a>
-          <a href="https://dlstreams.top/watch.php?id=42"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇩🇪</div><div style="font-weight:600;color:var(--text);font-size:12px">DW News</div></a>
-          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0;border-style:dashed" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">+</div><div style="font-weight:600;color:var(--text3);font-size:12px">More…</div></a>
-        </div>
-
-        <!-- ③ Custom M3U8 URL player -->
-        <details style="margin-bottom:16px">
-          <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text);padding:8px 0;user-select:none">🔗 Custom HLS / M3U8 Stream Player</summary>
-          <div style="padding:10px 0">
-            <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Paste any direct M3U8 stream URL — plays in-browser via HLS.js</div>
-            <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
-              <input type="text" id="hls-custom-url" placeholder="https://example.com/stream.m3u8"
-                style="flex:1;min-width:260px;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px">
-              <button class="btn-primary" style="white-space:nowrap" onclick="hlsPlay('hls-custom',document.getElementById('hls-custom-url').value.trim())">▶ Play</button>
+          <!-- RSS management -->
+          <div class="panel" style="margin:0">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span>📰 RSS Feeds</span>
+              <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="feedsShowAddModal('rss')">+ Add</button>
             </div>
-            <video id="hls-custom" controls muted playsinline
-              style="width:100%;height:280px;background:#000;border-radius:var(--r);margin-top:8px;object-fit:contain;display:none"></video>
+            <div id="feeds-manage-rss" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto"></div>
           </div>
-        </details>
 
-        <!-- ④ Free streaming services — external links -->
-        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
-          <span>📺 Free Streaming Services</span>
-          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens in new tab)</span>
+          <!-- Reddit management -->
+          <div class="panel" style="margin:0">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span>🤖 Subreddits</span>
+              <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="feedsShowAddModal('reddit')">+ Add</button>
+            </div>
+            <div id="feeds-manage-reddit" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto"></div>
+          </div>
+
+          <!-- YouTube management -->
+          <div class="panel" style="margin:0">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span>▶ YouTube Channels</span>
+              <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="feedsShowAddModal('youtube')">+ Add</button>
+            </div>
+            <div id="feeds-manage-youtube" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto"></div>
+            <div style="font-size:10px;color:var(--text3);margin-top:8px;padding:6px;background:var(--bg3);border-radius:4px">
+              💡 Find channel ID in channel URL: youtube.com/channel/<b>UCxxxxxx</b>
+            </div>
+          </div>
+
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
+      </div>
+
+    </div><!-- /tab-feeds -->
+
+    <!-- Add Feed Modal -->
+    <div id="feeds-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;display:none;align-items:center;justify-content:center">
+      <div class="panel" style="margin:0;width:420px;max-width:95vw;position:relative">
+        <button onclick="feedsHideAddModal()" style="position:absolute;top:10px;right:10px;background:none;border:none;color:var(--text3);font-size:16px;cursor:pointer">✕</button>
+        <div class="panel-title" id="feeds-add-modal-title">Add Feed</div>
+        <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">NAME</label>
+            <input id="feeds-add-name" type="text" placeholder="e.g. TechCrunch"
+              style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+          <div id="feeds-add-url-row">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px" id="feeds-add-url-label">RSS URL</label>
+            <input id="feeds-add-url" type="text" placeholder="https://..."
+              style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+          <div id="feeds-add-id-row" style="display:none">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px" id="feeds-add-id-label">Channel ID</label>
+            <input id="feeds-add-id" type="text" placeholder="UCsBjURrPoezykLs9EqgamOA"
+              style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button onclick="feedsHideAddModal()" class="btn" style="flex:1;padding:8px">Cancel</button>
+          <button onclick="feedsSaveAdd()" class="btn blue" style="flex:1;padding:8px">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Old IPTV/Live stuff - keeping for backward compat
+         (commented out to avoid duplicate modals)
+          <!--
+          <a href="https://pluto.tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
+            <div style="font-size:24px">📡</div><div style="font-weight:600;color:var(--text);font-size:12px">Pluto TV</div>
           <a href="https://pluto.tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
             <div style="font-size:24px">📡</div><div style="font-weight:600;color:var(--text);font-size:12px">Pluto TV</div>
             <div style="font-size:10px;color:var(--text3);text-align:center">250+ channels</div>
@@ -4611,40 +4608,6 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
     </div>
 
-    <!-- ── Add Feed Modal ── -->
-    <div id="add-feed-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
-      <div class="panel" style="width:min(480px,90vw);padding:20px;position:relative">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <div style="font-size:14px;font-weight:700">Add Custom Feed</div>
-          <button class="btn" onclick="closeAddFeedModal()" style="padding:2px 8px;font-size:13px">✕</button>
-        </div>
-        <div style="display:flex;gap:6px;margin-bottom:14px">
-          <button class="filter-pill active" id="add-feed-type-rss" onclick="setAddFeedType('rss')">📰 RSS / Atom URL</button>
-          <button class="filter-pill" id="add-feed-type-reddit" onclick="setAddFeedType('reddit')">🤖 Subreddit</button>
-        </div>
-        <div id="add-feed-form-rss">
-          <div style="margin-bottom:10px">
-            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Feed Name</label>
-            <input id="add-feed-name-rss" type="text" placeholder="e.g. My Blog" style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
-          </div>
-          <div style="margin-bottom:14px">
-            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">RSS / Atom URL</label>
-            <input id="add-feed-url-rss" type="url" placeholder="https://example.com/feed.xml" style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
-          </div>
-        </div>
-        <div id="add-feed-form-reddit" style="display:none">
-          <div style="margin-bottom:14px">
-            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Subreddit name (without r/)</label>
-            <input id="add-feed-sub" type="text" placeholder="e.g. proxmox" style="width:100%;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
-          </div>
-        </div>
-        <div style="display:flex;justify-content:flex-end;gap:8px">
-          <button class="btn" onclick="closeAddFeedModal()">Cancel</button>
-          <button class="btn-primary" onclick="submitAddFeed()">Add Feed</button>
-        </div>
-        <div id="add-feed-status" style="margin-top:8px;font-size:12px;color:var(--text3)"></div>
-      </div>
-    </div>
 
   </div><!-- /content -->
 </div><!-- /main -->
@@ -4846,7 +4809,7 @@ function showTab(name, el) {
     else if (name === 'backup') loadBackups();
     else if (name === 'updates') checkUpdates();
     else if (name === 'settings') loadSettings();
-    else if (name === 'rss') loadRSSFeeds();
+    else if (name === 'feeds') loadFeedsTab();
     else if (name === 'iptv') iptvInit();
 }
 
@@ -6178,6 +6141,343 @@ async function loadDockerInfo() {
         setEl('docker-networks', d.networks || '—');
         setEl('docker-disk', d.disk_usage || '—');
     } catch(e) {}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FEEDS TAB — RSS · Reddit · YouTube · Hacker News
+// ══════════════════════════════════════════════════════════════════════
+let _feedsSubs     = {rss:[], reddit:[], youtube:[]};
+let _feedsPage     = 'rss';
+let _feedsRssActive = null;   // currently selected RSS source id
+let _feedsRedditActive = null;
+let _feedsYTActive = null;
+let _feedsAddType  = 'rss';
+
+// ── Navigation ───────────────────────────────────────────────────────
+function feedsNav(page, el) {
+    _feedsPage = page;
+    ['rss','reddit','youtube','hn','manage'].forEach(p => {
+        const pg = document.getElementById('feeds-page-' + p);
+        if (pg) pg.style.display = (p === page) ? '' : 'none';
+        const pill = document.getElementById('feeds-pill-' + p);
+        if (pill) pill.classList.toggle('active', p === page);
+    });
+    if (page === 'rss')     _feedsLoadRssPage();
+    if (page === 'reddit')  _feedsLoadRedditPage();
+    if (page === 'youtube') _feedsLoadYTPage();
+    if (page === 'hn')      _feedsLoadHN();
+    if (page === 'manage')  _feedsRenderManage();
+}
+
+function feedsRefreshCurrent() { feedsNav(_feedsPage, null); }
+
+// ── Bootstrap (called when Feeds tab is shown) ───────────────────────
+async function loadFeedsTab() {
+    try {
+        const r = await fetch(API + '/api/feeds/subscriptions');
+        _feedsSubs = await r.json();
+    } catch(e) { _feedsSubs = {rss:[], reddit:[], youtube:[]}; }
+    feedsNav('rss', document.getElementById('feeds-pill-rss'));
+}
+
+// ── RSS sub-page ─────────────────────────────────────────────────────
+function _feedsLoadRssPage() {
+    const tabs = document.getElementById('feeds-rss-source-tabs');
+    const grid = document.getElementById('feeds-rss-grid');
+    if (!tabs || !grid) return;
+    const sources = _feedsSubs.rss || [];
+    if (!sources.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">📰</div><div class="empty-text">No RSS feeds — add some in Manage</div></div>';
+        return;
+    }
+    // Source pills
+    tabs.innerHTML = sources.map(s =>
+        `<button class="filter-pill${s.id === _feedsRssActive ? ' active' : ''}"
+            onclick="_feedsSelectRss('${s.id}',this)">${s.name}</button>`
+    ).join('');
+    // Auto-select first if none active
+    if (!_feedsRssActive || !sources.find(s => s.id === _feedsRssActive))
+        _feedsRssActive = sources[0].id;
+    // Update active pill
+    tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    const activePill = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (sources.find(s=>s.id===_feedsRssActive)?.name));
+    if (activePill) activePill.classList.add('active');
+    _feedsFetchAndRenderCards(sources.find(s => s.id === _feedsRssActive)?.url, grid, 'rss');
+}
+
+function _feedsSelectRss(id, el) {
+    _feedsRssActive = id;
+    document.querySelectorAll('#feeds-rss-source-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const src = (_feedsSubs.rss || []).find(s => s.id === id);
+    if (src) _feedsFetchAndRenderCards(src.url, document.getElementById('feeds-rss-grid'), 'rss');
+}
+
+// ── Reddit sub-page ──────────────────────────────────────────────────
+function _feedsLoadRedditPage() {
+    const tabs = document.getElementById('feeds-reddit-source-tabs');
+    const grid = document.getElementById('feeds-reddit-grid');
+    if (!tabs || !grid) return;
+    const sources = _feedsSubs.reddit || [];
+    if (!sources.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">🤖</div><div class="empty-text">No subreddits — add some in Manage</div></div>';
+        return;
+    }
+    tabs.innerHTML = sources.map(s =>
+        `<button class="filter-pill${s.id === _feedsRedditActive ? ' active' : ''}"
+            onclick="_feedsSelectReddit('${s.id}',this)">${s.name}</button>`
+    ).join('');
+    if (!_feedsRedditActive || !sources.find(s => s.id === _feedsRedditActive))
+        _feedsRedditActive = sources[0].id;
+    tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    const activePill = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (sources.find(s=>s.id===_feedsRedditActive)?.name));
+    if (activePill) activePill.classList.add('active');
+    _feedsFetchAndRenderCards(sources.find(s => s.id === _feedsRedditActive)?.url, grid, 'reddit');
+}
+
+function _feedsSelectReddit(id, el) {
+    _feedsRedditActive = id;
+    document.querySelectorAll('#feeds-reddit-source-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const src = (_feedsSubs.reddit || []).find(s => s.id === id);
+    if (src) _feedsFetchAndRenderCards(src.url, document.getElementById('feeds-reddit-grid'), 'reddit');
+}
+
+// ── YouTube sub-page ─────────────────────────────────────────────────
+function _feedsLoadYTPage() {
+    const tabs = document.getElementById('feeds-yt-channel-tabs');
+    const grid = document.getElementById('feeds-yt-grid');
+    if (!tabs || !grid) return;
+    const channels = _feedsSubs.youtube || [];
+    if (!channels.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">▶</div><div class="empty-text">No YouTube channels — add some in Manage</div></div>';
+        return;
+    }
+    tabs.innerHTML = channels.map(c =>
+        `<button class="filter-pill${c.id === _feedsYTActive ? ' active' : ''}"
+            onclick="_feedsSelectYT('${c.id}',this)">${c.name}</button>`
+    ).join('');
+    if (!_feedsYTActive || !channels.find(c => c.id === _feedsYTActive))
+        _feedsYTActive = channels[0].id;
+    tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    const ac = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (channels.find(c=>c.id===_feedsYTActive)?.name));
+    if (ac) ac.classList.add('active');
+    _feedsFetchAndRenderCards(channels.find(c => c.id === _feedsYTActive)?.url, grid, 'youtube');
+}
+
+function _feedsSelectYT(id, el) {
+    _feedsYTActive = id;
+    document.querySelectorAll('#feeds-yt-channel-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const ch = (_feedsSubs.youtube || []).find(c => c.id === id);
+    if (ch) _feedsFetchAndRenderCards(ch.url, document.getElementById('feeds-yt-grid'), 'youtube');
+}
+
+// ── Hacker News ──────────────────────────────────────────────────────
+async function _feedsLoadHN() {
+    const list = document.getElementById('feeds-hn-list');
+    if (!list) return;
+    list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:12px">Loading Hacker News…</div>';
+    try {
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent('https://hnrss.org/frontpage')}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (!items.length) { list.innerHTML = '<div class="empty"><div class="empty-text">No HN stories</div></div>'; return; }
+        list.innerHTML = items.slice(0,30).map((item, i) => {
+            const domain = (() => { try { return new URL(item.link).hostname.replace('www.',''); } catch(e) { return ''; } })();
+            const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            return `
+            <a href="${item.link}" target="_blank" rel="noopener" style="
+              display:flex;align-items:center;gap:12px;text-decoration:none;
+              background:var(--surface);border:1px solid var(--border);border-radius:8px;
+              padding:10px 14px;transition:border-color .15s,background .15s"
+              onmouseover="this.style.borderColor='var(--yellow,#e3b341)';this.style.background='var(--bg3)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--surface)'">
+              <div style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text3);width:28px;text-align:right;flex-shrink:0">${i+1}</div>
+              <div style="width:3px;height:36px;background:var(--yellow,#e3b341);border-radius:2px;flex-shrink:0;opacity:.6"></div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                <div style="font-size:10px;color:var(--text3);display:flex;gap:10px;align-items:center">
+                  ${domain ? `<span style="background:var(--surface2);padding:1px 6px;border-radius:3px">${safe(domain)}</span>` : ''}
+                  <span>${item.date || ''}</span>
+                </div>
+              </div>
+              <svg width="14" height="14" fill="none" stroke="var(--text3)" viewBox="0 0 24 24" style="flex-shrink:0"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+            </a>`;
+        }).join('');
+    } catch(e) {
+        list.innerHTML = '<div style="color:var(--red);font-size:12px;padding:8px">Failed to load Hacker News</div>';
+    }
+}
+
+// ── Generic card fetcher + renderer ─────────────────────────────────
+async function _feedsFetchAndRenderCards(url, grid, mode) {
+    if (!url || !grid) return;
+    grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+    try {
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (!items.length) {
+            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">No items found</div></div>';
+            return;
+        }
+        const limit = mode === 'youtube' ? 18 : 24;
+        const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        grid.innerHTML = items.slice(0, limit).map(item => {
+            const isYT = mode === 'youtube' || (item.link||'').includes('youtube.com');
+            const thumb = item.thumb;
+            return `
+            <a href="${item.link}" target="_blank" rel="noopener" style="
+              display:flex;flex-direction:column;text-decoration:none;
+              background:var(--surface);border:1px solid var(--border);border-radius:10px;
+              overflow:hidden;transition:border-color .15s,transform .1s"
+              onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              <!-- Thumbnail -->
+              ${thumb
+                ? `<div style="position:relative;width:100%;padding-top:${isYT?'56.25%':'52%'};background:var(--surface2);overflow:hidden">
+                     <img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
+                          onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:32px\\'>${isYT?'▶':'📰'}</div>'">
+                     ${isYT ? `<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:red;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">▶ YT</div>` : ''}
+                   </div>`
+                : `<div style="width:100%;padding-top:${isYT?'56.25%':'40%'};position:relative;background:var(--surface2)">
+                     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${isYT?'▶':'📰'}</div>
+                   </div>`}
+              <!-- Content -->
+              <div style="padding:10px 12px 12px;flex:1;display:flex;flex-direction:column;gap:4px">
+                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;
+                     display:-webkit-box;-webkit-line-clamp:${mode==='reddit'?2:3};-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                ${(item.excerpt && mode !== 'youtube')
+                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.4;
+                            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.excerpt)}</div>`
+                    : ''}
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:5px;display:flex;align-items:center;gap:4px">
+                  <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
+                  ${safe(item.date || '')}
+                </div>
+              </div>
+            </a>`;
+        }).join('');
+    } catch(e) {
+        grid.innerHTML = '<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load feed</div>';
+    }
+}
+
+// ── Manage sub-page ──────────────────────────────────────────────────
+function _feedsRenderManage() {
+    ['rss','reddit','youtube'].forEach(type => {
+        const el = document.getElementById('feeds-manage-' + type);
+        if (!el) return;
+        const list = _feedsSubs[type] || [];
+        if (!list.length) {
+            el.innerHTML = `<div style="font-size:12px;color:var(--text3);padding:6px">No ${type} sources yet</div>`;
+            return;
+        }
+        el.innerHTML = list.map(s => `
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;color:var(--text)">${s.name}</div>
+              <div style="font-size:10px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.url || s.id}</div>
+            </div>
+            <button onclick="_feedsDeleteSub('${type}','${s.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 4px;flex-shrink:0" title="Remove">✕</button>
+          </div>`).join('');
+    });
+}
+
+async function _feedsDeleteSub(type, id) {
+    if (!confirm('Remove this subscription?')) return;
+    try {
+        await fetch(API + `/api/feeds/subscriptions/${type}/${encodeURIComponent(id)}`, {method:'DELETE'});
+        const subs = _feedsSubs[type] || [];
+        _feedsSubs[type] = subs.filter(s => s.id !== id);
+        _feedsRenderManage();
+        showToast('Subscription removed', 'success', 2000);
+    } catch(e) { showToast('Failed to remove', 'error'); }
+}
+
+// ── Add modal ────────────────────────────────────────────────────────
+function feedsShowAddModal(type) {
+    _feedsAddType = type;
+    const modal = document.getElementById('feeds-add-modal');
+    const title = document.getElementById('feeds-add-modal-title');
+    const urlRow = document.getElementById('feeds-add-url-row');
+    const idRow  = document.getElementById('feeds-add-id-row');
+    const urlLbl = document.getElementById('feeds-add-url-label');
+    const idLbl  = document.getElementById('feeds-add-id-label');
+    if (!modal) return;
+    document.getElementById('feeds-add-name').value = '';
+    document.getElementById('feeds-add-url').value  = '';
+    document.getElementById('feeds-add-id').value   = '';
+    if (type === 'rss') {
+        title.textContent = '📰 Add RSS Feed';
+        urlRow.style.display = '';
+        urlLbl.textContent = 'RSS Feed URL';
+        idRow.style.display = 'none';
+        document.getElementById('feeds-add-url').placeholder = 'https://techcrunch.com/feed/';
+    } else if (type === 'reddit') {
+        title.textContent = '🤖 Add Subreddit';
+        urlRow.style.display = 'none';
+        idRow.style.display = '';
+        idLbl.textContent = 'Subreddit (e.g. homelab or selfhosted)';
+        document.getElementById('feeds-add-id').placeholder = 'homelab';
+    } else if (type === 'youtube') {
+        title.textContent = '▶ Add YouTube Channel';
+        urlRow.style.display = '';
+        urlLbl.textContent = 'Channel ID (from youtube.com/channel/UC...)';
+        idRow.style.display = 'none';
+        document.getElementById('feeds-add-url').placeholder = 'UCsBjURrPoezykLs9EqgamOA';
+    }
+    modal.style.display = 'flex';
+}
+
+function feedsHideAddModal() {
+    const modal = document.getElementById('feeds-add-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function feedsSaveAdd() {
+    const type = _feedsAddType;
+    const name = document.getElementById('feeds-add-name').value.trim();
+    const urlVal = document.getElementById('feeds-add-url').value.trim();
+    const idVal  = document.getElementById('feeds-add-id').value.trim();
+    if (!name) { showToast('Name is required', 'error', 2000); return; }
+
+    let id, url;
+    if (type === 'rss') {
+        url = urlVal;
+        id  = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        if (!url) { showToast('URL is required', 'error', 2000); return; }
+    } else if (type === 'reddit') {
+        const sub = idVal.replace(/^r\//,'').replace(/\s/g,'');
+        if (!sub) { showToast('Subreddit name required', 'error', 2000); return; }
+        id  = sub.toLowerCase();
+        url = `https://old.reddit.com/r/${sub}/.rss`;
+    } else if (type === 'youtube') {
+        const chId = urlVal.replace(/\s/g,'');
+        if (!chId) { showToast('Channel ID required', 'error', 2000); return; }
+        id  = chId;
+        url = `https://www.youtube.com/feeds/videos.xml?channel_id=${chId}`;
+    }
+
+    try {
+        const r = await fetch(API + '/api/feeds/subscriptions', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({type, id, name, url})
+        });
+        const d = await r.json();
+        if (d.error) { showToast(d.error, 'error'); return; }
+        if (!_feedsSubs[type]) _feedsSubs[type] = [];
+        if (!_feedsSubs[type].find(s => s.id === id))
+            _feedsSubs[type].push({id, name, url});
+        feedsHideAddModal();
+        _feedsRenderManage();
+        showToast(`${name} added!`, 'success', 2000);
+    } catch(e) { showToast('Save failed', 'error'); }
 }
 
 // ── RSS Feeds ─────────────────────────────────────────────────────────

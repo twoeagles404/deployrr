@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.12 · Full deployment, update management, and real-time monitoring
+Version: 3.15.13 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.12",
+            "version": "3.15.13",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1311,7 +1311,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.12"})
+    return jsonify({"update_available": False, "version": "3.15.13"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -2358,26 +2358,32 @@ def api_feeds_og():
         return jsonify(_og_cache[cache_key]["data"])
     try:
         req = _ur2.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; Googlebot)",
-            "Accept": "text/html,application/xhtml+xml,*/*",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "identity",
+            "Cache-Control": "no-cache",
         })
-        with _ur2.urlopen(req, timeout=8) as r:
-            # Only read first 60KB — og:image is always in <head>
-            html = r.read(60000).decode("utf-8", "ignore")
-        # Extract og:image (two attribute orders)
+        with _ur2.urlopen(req, timeout=10) as r:
+            # Only read first 80KB — og:image is always in <head>
+            html = r.read(80000).decode("utf-8", "ignore")
+        # Extract og:image / twitter:image — handle both quote styles
         img = None
-        for pat in [
-            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']{10,})["\']',
-            r'<meta[^>]+content=["\']([^"\']{10,})["\'][^>]+property=["\']og:image["\']',
-            r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']{10,})["\']',
-            r'<meta[^>]+content=["\']([^"\']{10,})["\'][^>]+name=["\']twitter:image["\']',
-        ]:
+        patterns = [
+            r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\'<>]{10,})["\']',
+            r'<meta[^>]+content=["\']([^"\'<>]{10,})["\'][^>]+property=["\']og:image["\']',
+            r'<meta[^>]+name=["\']twitter:image(?::src)?["\'][^>]+content=["\']([^"\'<>]{10,})["\']',
+            r'<meta[^>]+content=["\']([^"\'<>]{10,})["\'][^>]+name=["\']twitter:image["\']',
+            # Some sites use data attributes or JSON-LD with imageUrl
+            r'"thumbnailUrl"\s*:\s*"([^"]{10,})"',
+            r'"image"\s*:\s*\{"@type"[^}]+"url"\s*:\s*"([^"]{10,})"',
+        ]
+        for pat in patterns:
             m = _re_og.search(pat, html, _re_og.I)
             if m:
-                img = m.group(1)
-                if not img.startswith("http"):
-                    img = None
-                else:
+                candidate = m.group(1).strip()
+                if candidate.startswith("http") and len(candidate) > 10:
+                    img = candidate
                     break
         result = {"img": img}
         _og_cache[cache_key] = {"data": result, "ts": time.time()}
@@ -3897,7 +3903,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.12</div>
+      <div class="sb-version">v3.15.13</div>
     </div>
   </div>
 
@@ -4844,7 +4850,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.12</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.13</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -4922,9 +4928,8 @@ body.sse-disconnected #app{padding-top:38px;}
               <iframe id="iptv-player-frame"
                 src="about:blank"
                 style="position:absolute;top:-55px;left:0;width:100%;height:calc(100% + 55px);border:none;display:none"
-                allow="autoplay;fullscreen;encrypted-media"
+                allow="autoplay;fullscreen;encrypted-media;picture-in-picture"
                 allowfullscreen
-                sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
               ></iframe>
             </div>
             <!-- Custom HLS URL -->
@@ -6990,7 +6995,6 @@ async function _feedsFetchRedditDirect(url, grid, appendMode) {
     try {
         const r = await fetch(`https://www.reddit.com/r/${sub}/${sort}.json?limit=25&raw_json=1&include_over_18=1${_feedsRedditAfter?'&after='+_feedsRedditAfter:''}`, {
             headers: { 'Accept': 'application/json' },
-            credentials: 'include',
             cache: 'default'
         });
         if (!r.ok) throw new Error(`HTTP ${r.status} — Reddit may be blocking requests`);
@@ -7232,18 +7236,24 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
 // ── og:image lazy thumbnail loader ───────────────────────────────────
 async function _feedsLazyLoadThumbs(grid) {
     if (!grid) return;
-    const placeholders = grid.querySelectorAll('[data-og-url]');
-    for (const ph of placeholders) {
-        const artUrl = ph.dataset.ogUrl;
-        if (!artUrl) continue;
-        try {
-            const r = await fetch(`/api/feeds/og?url=${encodeURIComponent(artUrl)}`);
-            const d = await r.json();
-            if (d.img) {
-                ph.innerHTML = `<img src="${d.img}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">`;
-                ph.removeAttribute('data-og-url');
-            }
-        } catch(e) { /* silently skip */ }
+    const placeholders = Array.from(grid.querySelectorAll('[data-og-url]'));
+    if (!placeholders.length) return;
+    // Fetch all og:images in parallel (max 8 at a time to avoid overwhelming server)
+    const BATCH = 8;
+    for (let i = 0; i < placeholders.length; i += BATCH) {
+        const batch = placeholders.slice(i, i + BATCH);
+        await Promise.all(batch.map(async ph => {
+            const artUrl = ph.dataset.ogUrl;
+            if (!artUrl) return;
+            try {
+                const r = await fetch(`/api/feeds/og?url=${encodeURIComponent(artUrl)}`);
+                const d = await r.json();
+                if (d.img) {
+                    ph.innerHTML = `<img src="${d.img}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">`;
+                    ph.removeAttribute('data-og-url');
+                }
+            } catch(e) { /* silently skip */ }
+        }));
     }
 }
 
@@ -7300,7 +7310,7 @@ async function feedsOpenComments(permalink, title) {
     }
     try {
         const apiUrl = fullLink.replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
-        const r = await fetch(apiUrl, { credentials:'include', headers:{'Accept':'application/json'} });
+        const r = await fetch(apiUrl, { headers:{'Accept':'application/json'} });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         const post = data[0]?.data?.children?.[0]?.data || {};
@@ -7392,6 +7402,8 @@ function _feedsRenderItems(grid, items, from, to, mode, append) {
     }).join('');
     if (append) grid.insertAdjacentHTML('beforeend', html);
     else grid.innerHTML = html;
+    // Trigger og:image lazy loading for any new placeholders
+    setTimeout(() => _feedsLazyLoadThumbs(grid), 120);
 }
 
 function feedsLoadMore(type) {

@@ -2482,41 +2482,47 @@ def api_reddit_comments():
     except Exception as e:
         return jsonify({"error": str(e)[:120]})
 
-# ── Premier League API (uses free football-data.org or api-football) ────
+# ── Premier League API (ESPN free endpoints — no API key needed) ────────
 _epl_cache: dict = {}
 
 @app.route("/api/epl/standings")
 def api_epl_standings():
-    """Fetch Premier League standings."""
+    """Fetch Premier League standings from ESPN free API."""
     import urllib.request as _ur, json as _jr
     cache_key = "epl_standings"
     if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 900:
         return jsonify(_epl_cache[cache_key]["data"])
     try:
-        # Use football-data.org free tier (PL competition = 2021)
-        api_key = _get_setting("football_api_key", "")
-        headers = {"User-Agent": "ArrHub/3.15"}
-        if api_key:
-            headers["X-Auth-Token"] = api_key
-        req = _ur.Request("https://api.football-data.org/v4/competitions/PL/standings", headers=headers)
+        req = _ur.Request(
+            "https://site.api.espn.com/apis/v2/sports/soccer/eng.1/standings",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+        )
         with _ur.urlopen(req, timeout=12) as r:
             data = _jr.loads(r.read())
         standings = []
-        for row in (data.get("standings", [{}])[0].get("table", [])):
+        entries = []
+        for child in data.get("children", []):
+            entries.extend(child.get("standings", {}).get("entries", []))
+        if not entries:
+            entries = data.get("standings", {}).get("entries", [])
+        for entry in entries:
+            team_info = entry.get("team", {})
+            stats = {s["name"]: s.get("value", s.get("displayValue", 0)) for s in entry.get("stats", [])}
             standings.append({
-                "pos": row.get("position"),
-                "team": row.get("team", {}).get("shortName", row.get("team", {}).get("name", "?")),
-                "crest": row.get("team", {}).get("crest", ""),
-                "played": row.get("playedGames", 0),
-                "won": row.get("won", 0),
-                "drawn": row.get("draw", 0),
-                "lost": row.get("lost", 0),
-                "gf": row.get("goalsFor", 0),
-                "ga": row.get("goalsAgainst", 0),
-                "gd": row.get("goalDifference", 0),
-                "pts": row.get("points", 0),
+                "pos": int(stats.get("rank", 0)),
+                "team": team_info.get("shortDisplayName", team_info.get("displayName", "?")),
+                "crest": team_info.get("logos", [{}])[0].get("href", "") if team_info.get("logos") else "",
+                "played": int(stats.get("gamesPlayed", 0)),
+                "won": int(stats.get("wins", 0)),
+                "drawn": int(stats.get("ties", 0)),
+                "lost": int(stats.get("losses", 0)),
+                "gf": int(stats.get("pointsFor", 0)),
+                "ga": int(stats.get("pointsAgainst", 0)),
+                "gd": int(stats.get("pointDifferential", 0)),
+                "pts": int(stats.get("points", 0)),
             })
-        result = {"standings": standings, "season": data.get("season", {}).get("id", "")}
+        standings.sort(key=lambda x: x["pos"])
+        result = {"standings": standings}
         _epl_cache[cache_key] = {"data": result, "ts": time.time()}
         return jsonify(result)
     except Exception as e:
@@ -2524,38 +2530,55 @@ def api_epl_standings():
 
 @app.route("/api/epl/matches")
 def api_epl_matches():
-    """Fetch upcoming and recent PL matches."""
-    import urllib.request as _ur, json as _jr, datetime as _dt
+    """Fetch upcoming and recent PL matches from ESPN free API."""
+    import urllib.request as _ur, json as _jr
     mtype = request.args.get("type", "upcoming")  # upcoming | results
     cache_key = f"epl_matches_{mtype}"
     if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 600:
         return jsonify(_epl_cache[cache_key]["data"])
     try:
-        api_key = _get_setting("football_api_key", "")
-        headers = {"User-Agent": "ArrHub/3.15"}
-        if api_key:
-            headers["X-Auth-Token"] = api_key
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        # ESPN scoreboard: dates param format YYYYMMDD, range up to 7 days
+        import datetime as _dt
         today = _dt.date.today()
         if mtype == "results":
-            url = f"https://api.football-data.org/v4/competitions/PL/matches?status=FINISHED&dateFrom={(today - _dt.timedelta(days=14)).isoformat()}&dateTo={today.isoformat()}"
+            # Fetch last 3 matchdays of results
+            dates_param = "&".join(f"dates={(today - _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(14))
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?{dates_param}&limit=50"
         else:
-            url = f"https://api.football-data.org/v4/competitions/PL/matches?status=SCHEDULED,TIMED,IN_PLAY,PAUSED&dateFrom={today.isoformat()}&dateTo={(today + _dt.timedelta(days=21)).isoformat()}"
-        req = _ur.Request(url, headers=headers)
+            dates_param = "&".join(f"dates={(today + _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(21))
+            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?{dates_param}&limit=50"
+        req = _ur.Request(url, headers={"User-Agent": ua})
         with _ur.urlopen(req, timeout=12) as r:
             data = _jr.loads(r.read())
         matches = []
-        for m in data.get("matches", []):
+        for event in data.get("events", []):
+            comp = event.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            home = next((c for c in competitors if c.get("homeAway") == "home"), {})
+            away = next((c for c in competitors if c.get("homeAway") == "away"), {})
+            home_team = home.get("team", {})
+            away_team = away.get("team", {})
+            status_obj = comp.get("status", {}).get("type", {})
+            status_name = status_obj.get("name", "")  # STATUS_SCHEDULED, STATUS_FINAL, STATUS_IN_PROGRESS
+            is_finished = status_name == "STATUS_FINAL"
+            is_live = status_name == "STATUS_IN_PROGRESS" or status_name == "STATUS_HALFTIME"
+            # Filter based on request type
+            if mtype == "results" and not is_finished:
+                continue
+            if mtype == "upcoming" and is_finished:
+                continue
             matches.append({
-                "id": m.get("id"),
-                "home": m.get("homeTeam", {}).get("shortName", "?"),
-                "homeCrest": m.get("homeTeam", {}).get("crest", ""),
-                "away": m.get("awayTeam", {}).get("shortName", "?"),
-                "awayCrest": m.get("awayTeam", {}).get("crest", ""),
-                "date": m.get("utcDate", ""),
-                "status": m.get("status", ""),
-                "scoreH": m.get("score", {}).get("fullTime", {}).get("home"),
-                "scoreA": m.get("score", {}).get("fullTime", {}).get("away"),
-                "matchday": m.get("matchday"),
+                "id": event.get("id"),
+                "home": home_team.get("shortDisplayName", home_team.get("displayName", "?")),
+                "homeCrest": home_team.get("logo", ""),
+                "away": away_team.get("shortDisplayName", away_team.get("displayName", "?")),
+                "awayCrest": away_team.get("logo", ""),
+                "date": event.get("date", ""),
+                "status": "IN_PLAY" if is_live else ("FINISHED" if is_finished else "SCHEDULED"),
+                "scoreH": int(home.get("score", 0)) if is_finished or is_live else None,
+                "scoreA": int(away.get("score", 0)) if is_finished or is_live else None,
+                "matchday": None,
             })
         result = {"matches": matches}
         _epl_cache[cache_key] = {"data": result, "ts": time.time()}
@@ -3166,6 +3189,10 @@ _HTML_SPA = r"""<!DOCTYPE html>
   --border:#d0d7de;--border2:#b8bfc7;
   --text:#1f2328;--text2:#656d76;--text3:#9198a1;
 }
+[data-theme="light"] #tab-overview .panel{background:rgba(255,255,255,0.7);border-color:rgba(0,0,0,0.08);box-shadow:0 2px 20px rgba(0,0,0,0.06);}
+[data-theme="light"] .metric-card{background:rgba(255,255,255,0.6);border-color:rgba(0,0,0,0.08);box-shadow:0 1px 12px rgba(0,0,0,0.06);}
+[data-theme="light"] .stat-card{background:rgba(255,255,255,0.6);border-color:rgba(0,0,0,0.08);box-shadow:0 1px 12px rgba(0,0,0,0.06);}
+[data-theme="light"] #alerts-bar{background:rgba(255,255,255,0.6);border-color:rgba(0,0,0,0.08);}
 [data-theme="nord"]{
   --bg:#2e3440;--bg2:#3b4252;--bg3:#434c5e;
   --surface:#434c5e;--surface2:#4c566a;
@@ -3415,20 +3442,44 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
   padding-bottom:0;
   border-bottom:none;
 }
-.section-title{font-size:32px;font-weight:300;color:var(--text);letter-spacing:-.5px;}
-.section-sub{font-size:12px;color:var(--text3);margin-top:4px;font-weight:400;}
+.section-title{font-size:34px;font-weight:200;color:var(--text);letter-spacing:-.8px;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;}
+.section-sub{font-size:13px;color:var(--text3);margin-top:2px;font-weight:400;letter-spacing:.01em;}
+
+/* ── Apple-style overview panels ── */
+#tab-overview .panel{
+  background:rgba(255,255,255,0.04);
+  backdrop-filter:blur(40px) saturate(180%);
+  -webkit-backdrop-filter:blur(40px) saturate(180%);
+  border:1px solid rgba(255,255,255,0.08);
+  border-radius:16px;
+  box-shadow:0 2px 20px rgba(0,0,0,0.15);
+  transition:transform .2s ease, box-shadow .2s ease;
+}
+#tab-overview .panel:hover{
+  transform:translateY(-1px);
+  box-shadow:0 4px 30px rgba(0,0,0,0.2);
+}
+#tab-overview .panel-title{
+  font-size:14px;font-weight:500;letter-spacing:.02em;
+  color:var(--text2);
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  padding-bottom:10px;margin-bottom:14px;
+}
 
 /* ── Stat cards row ── */
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;}
 .stat-card{
-  background:rgba(255,255,255,0.05);backdrop-filter:blur(20px);
+  background:rgba(255,255,255,0.04);
+  backdrop-filter:blur(40px) saturate(180%);
+  -webkit-backdrop-filter:blur(40px) saturate(180%);
   border:1px solid rgba(255,255,255,0.08);
-  border-radius:12px;padding:16px 18px;
+  border-radius:16px;padding:16px 18px;
   display:flex;flex-direction:column;gap:6px;
-  transition:border-color var(--transition),backdrop-filter var(--transition);
+  transition:transform .2s ease, box-shadow .2s ease;
   container-type:inline-size;overflow:hidden;min-height:0;
+  box-shadow:0 1px 12px rgba(0,0,0,0.12);
 }
-.stat-card:hover{border-color:rgba(255,255,255,0.12);background:rgba(255,255,255,0.07);}
+.stat-card:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,0,0,0.18);border-color:rgba(255,255,255,0.12);}
 .stat-card-icon{font-size:18px;margin-bottom:2px;}
 .stat-card-val{font-size:22px;font-weight:700;color:var(--text);font-family:var(--mono);}
 .stat-card-label{font-size:11px;color:var(--text2);}
@@ -3463,12 +3514,17 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .gauge-sub{font-size:11px;color:var(--text2);font-weight:500;}
 
 /* ── Overview metric row ── */
-.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;}
+.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;}
 .metric-card{
-  background:rgba(255,255,255,0.06);backdrop-filter:blur(20px);
-  border:1px solid rgba(255,255,255,0.1);border-radius:14px;
-  padding:14px 16px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
+  background:rgba(255,255,255,0.05);
+  backdrop-filter:blur(40px) saturate(180%);
+  -webkit-backdrop-filter:blur(40px) saturate(180%);
+  border:1px solid rgba(255,255,255,0.08);border-radius:16px;
+  padding:16px 18px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
+  box-shadow:0 1px 12px rgba(0,0,0,0.12);
+  transition:transform .2s ease, box-shadow .2s ease;
 }
+.metric-card:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,0,0,0.18);}
 /* When gauge widget is narrow, stack metric cards 2×2 */
 .grid-stack-item[gs-id="gauges"] .metric-grid{margin-bottom:0;}
 @container (max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr);}}
@@ -4071,17 +4127,20 @@ body.sse-disconnected #app{padding-top:38px;}
    10. ALERTS BAR
    ══════════════════════════════════════════════════════════════ */
 #alerts-bar{
-  border-radius:var(--r);margin-bottom:16px;
-  border:1px solid var(--border);
+  border-radius:16px;margin-bottom:16px;
+  border:1px solid rgba(255,255,255,0.08);
   overflow:hidden;
+  background:rgba(255,255,255,0.03);
+  backdrop-filter:blur(40px) saturate(180%);
+  -webkit-backdrop-filter:blur(40px) saturate(180%);
 }
 #alerts-bar-header{
   display:flex;align-items:center;justify-content:space-between;
-  padding:10px 14px;background:var(--bg2);cursor:pointer;
-  font-size:13px;font-weight:600;
+  padding:10px 14px;background:transparent;cursor:pointer;
+  font-size:13px;font-weight:500;
 }
-#alerts-bar-header:hover{background:var(--surface);}
-#alerts-body{padding:0 14px 10px;background:var(--bg2);}
+#alerts-bar-header:hover{background:rgba(255,255,255,0.03);}
+#alerts-body{padding:0 14px 10px;background:transparent;}
 #alerts-body.collapsed{display:none;}
 .alert-row{
   display:flex;align-items:center;gap:8px;
@@ -4266,10 +4325,11 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="alert-row"><span>🟢</span><span>Loading alerts...</span></div>
         </div>
       </div>
-      <div class="section-header">
+      <div class="section-header" style="margin-bottom:24px">
         <div>
-          <div class="section-title" id="ov-greeting">Good morning</div>
-          <div class="section-sub" id="ov-hostname">Loading...</div>
+          <div class="section-title" id="ov-greeting" style="margin-bottom:2px">Good morning</div>
+          <div class="section-sub" id="ov-date" style="font-size:14px;opacity:.6"></div>
+          <div class="section-sub" id="ov-hostname" style="font-size:11px;opacity:.4;margin-top:2px">Loading...</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <button id="ov-add-btn" class="btn" onclick="showWidgetPalette()" style="display:none;font-size:11px;padding:4px 12px;gap:4px">
@@ -8651,7 +8711,7 @@ function iptvPlayChannel(id, name, rowEl) {
         const streamUrls = {
             moviebite: `https://live.moviebite.cc/channels/${id}`,
             bintv: `https://www.bintv.net/channel/${id}`,
-            daddylive: `https://dlhd.sx/stream/stream-${id}.php`
+            daddylive: `https://daddylive.cv/stream/stream-${id}.php`
         };
         frame.src = streamUrls[_iptvSource] || streamUrls.moviebite;
         frame.style.display = '';
@@ -8665,7 +8725,7 @@ function iptvPlayChannel(id, name, rowEl) {
     const popUrls = {
         moviebite: `https://live.moviebite.cc/channels/${id}`,
         bintv: `https://www.bintv.net/channel/${id}`,
-        daddylive: `https://dlhd.sx/stream/stream-${id}.php`
+        daddylive: `https://daddylive.cv/stream/stream-${id}.php`
     };
     if (popoutBtn) popoutBtn.dataset.url = popUrls[_iptvSource] || popUrls.moviebite;
 }
@@ -8754,7 +8814,7 @@ function iptvRenderMV() {
         return `
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
           ${ch
-            ? `<iframe src="${_iptvSource==='daddylive'?'https://dlhd.sx/stream/stream-'+ch.id+'.php':_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe>`
+            ? `<iframe src="${_iptvSource==='daddylive'?'https://daddylive.cv/stream/stream-'+ch.id+'.php':_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe>`
             : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
                  <div style="font-size:28px">📺</div>
                  <div style="font-size:11px">Click to assign channel</div>
@@ -8830,7 +8890,7 @@ function iptvBrowseChannels() {
     const iframe = document.getElementById('iptv-browse-iframe');
     if (!modal) return;
     if (iframe) {
-        const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/', daddylive: 'https://dlhd.sx/24-7-channels.php' };
+        const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/', daddylive: 'https://daddylive.cv/channel' };
         iframe.src = urls[_iptvSource] || urls.moviebite;
     }
     modal.style.display = 'flex';
@@ -9525,6 +9585,7 @@ setInterval(() => {
 }, 30000);
 
 // ── Boot ──────────────────────────────────────────────────────────────
+updateGreeting();
 try { initGauges(); } catch(e) { console.warn('Chart.js not ready, gauges disabled:', e); }
 loadOverview();
 loadContainers();   // also populates allContainers for alerts
@@ -9853,17 +9914,14 @@ function updateGreeting() {
     let greeting = 'Good morning';
     if (h >= 12 && h < 18) greeting = 'Good afternoon';
     else if (h >= 18) greeting = 'Good evening';
-    
+
     const greetEl = document.getElementById('ov-greeting');
-    if (greetEl) {
-        const dateStr = new Date().toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'});
-        greetEl.textContent = greeting;
-        const subEl = document.getElementById('ov-hostname');
-        if (subEl && subEl.textContent === 'Loading...') {
-            // Keep hostname, will be loaded separately
-        } else if (subEl) {
-            subEl.textContent = dateStr;
-        }
+    if (greetEl) greetEl.textContent = greeting;
+
+    const dateEl = document.getElementById('ov-date');
+    if (dateEl) {
+        const now = new Date();
+        dateEl.textContent = now.toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'});
     }
 }
 

@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.15.14 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.15.16 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.15.15"
+VERSION="3.15.16"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -728,6 +728,9 @@ add_service_arrhub_webui() {
         fi
     fi
 
+    # Ensure persistent data dir exists
+    mkdir -p "${DEST}/data" 2>/dev/null || true
+
     {
         echo ""
         echo "  arrhub_webui:"
@@ -740,6 +743,9 @@ add_service_arrhub_webui() {
         echo "      - \"${hp_9999}:9999\""
         echo "    volumes:"
         echo "      - /var/run/docker.sock:/var/run/docker.sock:ro"
+        echo "      - ${DEST}/data:/data"
+        echo "      - ${DEST}/apps:/opt/arrhub/apps:ro"
+        echo "      - ${DEST}/arrhub-webui/app.py:/app/app.py:ro"
     } >> "${f}"
 }
 

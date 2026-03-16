@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.15 · Full deployment, update management, and real-time monitoring
+Version: 3.15.16 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.15",
+            "version": "3.15.16",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1316,7 +1316,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.15"})
+    return jsonify({"update_available": False, "version": "3.15.16"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -4003,6 +4003,22 @@ body.sse-disconnected #app{padding-top:38px;}
   #launcher-grid{grid-template-columns:repeat(3,1fr)!important;}
 }
 
+/* ── Football Hub mobile ── */
+@media(max-width:700px){
+  /* View buttons: wrap & reduce padding */
+  #tab-epl .section-header > div:last-child{flex-wrap:wrap;gap:4px;}
+  #tab-epl .view-btn{padding:4px 8px;font-size:11px;}
+  /* League selector: scrollable rows */
+  #football-league-selector > div:not(:first-child):not(:nth-child(3)){
+    flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+  }
+  .league-pill{font-size:10px;padding:4px 10px;}
+  /* Team modal: full width on phone */
+  #football-team-modal{padding:0;align-items:flex-end;}
+  #football-team-modal > .panel{width:100vw!important;max-width:100vw!important;max-height:85vh;border-radius:16px 16px 0 0;}
+  /* Match rows on small screens */
+  #football-fixtures-list > div, #football-results-list > div{padding:8px 8px;}
+}
 /* ── Feeds tab mobile ── */
 @media(max-width:600px){
   #feeds-rss-grid,#feeds-reddit-grid,#feeds-yt-grid{
@@ -4138,6 +4154,14 @@ body.sse-disconnected #app{padding-top:38px;}
   transition:all var(--transition);
 }
 .view-btn.active{background:var(--blue2);border-color:rgba(56,139,253,.5);color:var(--blue);}
+.league-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:5px 13px;border-radius:20px;border:1px solid var(--border);
+  background:var(--bg2);color:var(--text2);font-size:11px;cursor:pointer;
+  transition:all .15s;white-space:nowrap;
+}
+.league-pill:hover{background:var(--bg3);color:var(--text);}
+.league-pill.active{background:var(--accent,#2563eb);color:#fff;border-color:var(--accent,#2563eb);}
 
 /* ══════════════════════════════════════════════════════════════
    10. ALERTS BAR
@@ -4192,7 +4216,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.15</div>
+      <div class="sb-version">v3.15.16</div>
     </div>
   </div>
 
@@ -4273,7 +4297,7 @@ body.sse-disconnected #app{padding-top:38px;}
     </div>
     <div class="sb-item" onclick="showTab('epl',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4.5L6 21l1.5-7.5L2 9h7z"/></svg>
-      Premier League
+      Football
     </div>
   </div>
 
@@ -5155,7 +5179,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.15</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.16</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -5294,8 +5318,8 @@ body.sse-disconnected #app{padding-top:38px;}
             <div id="feeds-media-title" style="font-size:13px;font-weight:600;color:var(--text);line-height:1.3;max-width:calc(100% - 40px)"></div>
             <button onclick="feedsCloseMedia()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px" title="Close">✕</button>
           </div>
-          <div id="feeds-media-body" style="position:relative;width:100%;padding-top:56.25%;background:#000">
-            <iframe id="feeds-media-iframe" src="" frameborder="0" allow="autoplay;fullscreen;picture-in-picture;encrypted-media" allowfullscreen style="position:absolute;inset:0;width:100%;height:100%;border:none"></iframe>
+          <div id="feeds-media-body" style="background:#000;line-height:0">
+            <iframe id="feeds-media-iframe" src="" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture;web-share" allowfullscreen style="width:100%;aspect-ratio:16/9;display:block;border:none;min-height:180px"></iframe>
           </div>
           <div style="padding:10px 16px;display:flex;justify-content:flex-end">
             <a id="feeds-media-extlink" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ Open on YouTube</a>
@@ -5486,54 +5510,90 @@ body.sse-disconnected #app{padding-top:38px;}
     </div><!-- /tab-feeds -->
 
     <!-- ═══════════════════════════════════════════════════════════
-         PREMIER LEAGUE TAB
+         FOOTBALL HUB TAB
     ═══════════════════════════════════════════════════════════ -->
     <div id="tab-epl" class="tab-panel">
-      <div class="section-header" style="margin-bottom:14px">
+      <!-- Header -->
+      <div class="section-header" style="margin-bottom:10px">
         <div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:22px">⚽</span>
           <div>
-            <span style="font-weight:600;font-size:15px">Premier League</span>
-            <div style="font-size:11px;color:var(--text3)">Tables · Fixtures · Highlights</div>
+            <span style="font-weight:600;font-size:15px">Football Hub</span>
+            <div style="font-size:11px;color:var(--text3)">Tables · Fixtures · Results · Highlights · News</div>
           </div>
         </div>
-        <div style="display:flex;gap:6px;align-items:center">
-          <button class="view-btn active" id="epl-view-table" onclick="eplSetView('table')">📊 Table</button>
-          <button class="view-btn" id="epl-view-fixtures" onclick="eplSetView('fixtures')">📅 Fixtures</button>
-          <button class="view-btn" id="epl-view-results" onclick="eplSetView('results')">✅ Results</button>
-          <button class="view-btn" id="epl-view-highlights" onclick="eplSetView('highlights')">🎬 Highlights</button>
-          <button class="btn-primary" onclick="eplRefresh()">↺ Refresh</button>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <button class="view-btn active" id="football-view-table" onclick="footballSetView('table')">📊 Table</button>
+          <button class="view-btn" id="football-view-fixtures" onclick="footballSetView('fixtures')">📅 Fixtures</button>
+          <button class="view-btn" id="football-view-results" onclick="footballSetView('results')">✅ Results</button>
+          <button class="view-btn" id="football-view-highlights" onclick="footballSetView('highlights')">🎬 Highlights</button>
+          <button class="view-btn" id="football-view-news" onclick="footballSetView('news')">📰 News</button>
+          <button class="btn-primary" onclick="footballRefresh()">↺ Refresh</button>
         </div>
       </div>
 
-      <!-- Standings table -->
-      <div id="epl-table-view">
-        <div id="epl-standings" style="overflow-x:auto">
+      <!-- League Selector -->
+      <div id="football-league-selector" style="margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+        <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">🏆 Domestic Leagues</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+          <button class="league-pill active" onclick="footballSelectLeague('eng.1')">🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League</button>
+          <button class="league-pill" onclick="footballSelectLeague('esp.1')">🇪🇸 La Liga</button>
+          <button class="league-pill" onclick="footballSelectLeague('ger.1')">🇩🇪 Bundesliga</button>
+          <button class="league-pill" onclick="footballSelectLeague('ita.1')">🇮🇹 Serie A</button>
+          <button class="league-pill" onclick="footballSelectLeague('fra.1')">🇫🇷 Ligue 1</button>
+          <button class="league-pill" onclick="footballSelectLeague('usa.1')">🇺🇸 MLS</button>
+        </div>
+        <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">🌍 International &amp; Club</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <button class="league-pill" onclick="footballSelectLeague('uefa.champions')">🏆 Champions League</button>
+          <button class="league-pill" onclick="footballSelectLeague('uefa.europa')">🥈 Europa League</button>
+          <button class="league-pill" onclick="footballSelectLeague('fifa.world')">🌍 World Cup</button>
+          <button class="league-pill" onclick="footballSelectLeague('uefa.euro')">🇪🇺 Euros</button>
+          <button class="league-pill" onclick="footballSelectLeague('conmebol.america')">🌎 Copa America</button>
+          <button class="league-pill" onclick="footballSelectLeague('caf.nations')">🌍 AFCON</button>
+        </div>
+      </div>
+
+      <!-- League title bar -->
+      <div id="football-league-title" style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text)">🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League</div>
+
+      <!-- Content views -->
+      <div id="football-table-view">
+        <div id="football-standings" style="overflow-x:auto">
           <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading standings…</div>
         </div>
       </div>
-
-      <!-- Fixtures -->
-      <div id="epl-fixtures-view" style="display:none">
-        <div id="epl-fixtures-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px">
-          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading fixtures…</div>
-        </div>
+      <div id="football-fixtures-view" style="display:none">
+        <div id="football-fixtures-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
       </div>
-
-      <!-- Results -->
-      <div id="epl-results-view" style="display:none">
-        <div id="epl-results-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px">
-          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading results…</div>
-        </div>
+      <div id="football-results-view" style="display:none">
+        <div id="football-results-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
       </div>
-
-      <!-- Highlights -->
-      <div id="epl-highlights-view" style="display:none">
-        <div id="epl-highlights-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
-          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Loading highlights…</div>
-        </div>
+      <div id="football-highlights-view" style="display:none">
+        <div id="football-highlights-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px"></div>
+      </div>
+      <div id="football-news-view" style="display:none">
+        <div id="football-news-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
       </div>
     </div><!-- /tab-epl -->
+
+    <!-- Team Detail Modal -->
+    <div id="football-team-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:920;align-items:flex-start;justify-content:flex-end;padding:12px">
+      <div class="panel" style="width:460px;max-width:95vw;max-height:calc(100vh - 24px);overflow-y:auto;position:relative;padding:0">
+        <div style="padding:14px 16px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;position:sticky;top:0;background:var(--bg2);z-index:1">
+          <img id="football-team-crest" src="" style="width:28px;height:28px;object-fit:contain" onerror="this.style.display='none'">
+          <span id="football-team-name" style="font-weight:600;font-size:14px;flex:1"></span>
+          <button onclick="footballCloseTeamModal()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:0 4px;line-height:1">✕</button>
+        </div>
+        <div style="display:flex;border-bottom:1px solid var(--border)">
+          <button id="team-tab-btn-fixtures" onclick="footballTeamTab('fixtures')" style="flex:1;padding:9px;background:none;border:none;border-bottom:2px solid var(--accent,#2563eb);color:var(--text);font-size:12px;font-weight:500;cursor:pointer">📅 Fixtures &amp; Results</button>
+          <button id="team-tab-btn-news" onclick="footballTeamTab('news')" style="flex:1;padding:9px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:12px;cursor:pointer">📰 News</button>
+        </div>
+        <div id="football-team-content" style="padding:12px">
+          <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Loading…</div>
+        </div>
+      </div>
+    </div>
 
     <!-- New Category modal -->
     <div id="feeds-newcat-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;align-items:center;justify-content:center">
@@ -5818,6 +5878,8 @@ function showTab(name, el) {
     if (panel) { panel.classList.add('active'); panel.classList.add('fade-in'); }
     if (el) el.classList.add('active');
     currentTab = name;
+    // Auto-close sidebar on mobile after tab selection
+    if (window.innerWidth <= 900) closeSidebar();
 
     // Lazy-load on first show
     if (name === 'overview') { updateGreeting(); loadServiceLauncher(); }
@@ -5831,7 +5893,7 @@ function showTab(name, el) {
     else if (name === 'updates') checkUpdates();
     else if (name === 'settings') loadSettings();
     else if (name === 'feeds') loadFeedsTab();
-    else if (name === 'epl') eplInit();
+    else if (name === 'epl') footballInit();
     else if (name === 'iptv') iptvInit();
 }
 
@@ -8349,65 +8411,107 @@ async function submitAddFeed() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// 10a. PREMIER LEAGUE
+// 10a. FOOTBALL HUB (multi-league)
 // ══════════════════════════════════════════════════════════════════════
-let _eplInited = false;
-let _eplCurrentView = 'table';
+const FOOTBALL_LEAGUES = {
+    'eng.1':            { name:'Premier League',    flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿', highlights:['premier league','english premier','epl'] },
+    'esp.1':            { name:'La Liga',            flag:'🇪🇸', highlights:['la liga','laliga','spanish primera'] },
+    'ger.1':            { name:'Bundesliga',         flag:'🇩🇪', highlights:['bundesliga','german bundesliga'] },
+    'ita.1':            { name:'Serie A',            flag:'🇮🇹', highlights:['serie a','italian serie'] },
+    'fra.1':            { name:'Ligue 1',            flag:'🇫🇷', highlights:['ligue 1','french ligue'] },
+    'usa.1':            { name:'MLS',                flag:'🇺🇸', highlights:['mls','major league soccer'] },
+    'uefa.champions':   { name:'Champions League',  flag:'🏆', highlights:['champions league','ucl'] },
+    'uefa.europa':      { name:'Europa League',      flag:'🥈', highlights:['europa league','uel'] },
+    'fifa.world':       { name:'World Cup',          flag:'🌍', highlights:['world cup','fifa world'] },
+    'uefa.euro':        { name:'Euros',              flag:'🇪🇺', highlights:['euro 2024','euros','european championship'] },
+    'conmebol.america': { name:'Copa America',       flag:'🌎', highlights:['copa america'] },
+    'caf.nations':      { name:'AFCON',              flag:'🌍', highlights:['africa cup','afcon'] },
+};
+let _footballInited = false;
+let _footballCurrentView = 'table';
+let _footballLeague = 'eng.1';
+let _footballTeamId = null;
+let _footballTeamLeague = null;
+let _footballTeamTabActive = 'fixtures';
 
-function eplInit() {
-    if (!_eplInited) {
-        _eplInited = true;
-        eplLoadStandings();
+function footballInit() {
+    if (!_footballInited) {
+        _footballInited = true;
+        footballLoadStandings();
     }
 }
 
-function eplSetView(view) {
-    _eplCurrentView = view;
-    ['table','fixtures','results','highlights'].forEach(v => {
-        const el = document.getElementById('epl-'+v+'-view');
+function footballSelectLeague(code) {
+    if (!FOOTBALL_LEAGUES[code]) return;
+    _footballLeague = code;
+    // Update pill buttons
+    document.querySelectorAll('.league-pill').forEach(b => {
+        const oc = b.getAttribute('onclick') || '';
+        b.classList.toggle('active', oc.includes("'"+code+"'"));
+    });
+    // Update league title bar
+    const info = FOOTBALL_LEAGUES[code];
+    const titleEl = document.getElementById('football-league-title');
+    if (titleEl) titleEl.textContent = info.flag + ' ' + info.name;
+    // Reload current view
+    _footballDispatch(_footballCurrentView);
+}
+
+function footballSetView(view) {
+    _footballCurrentView = view;
+    ['table','fixtures','results','highlights','news'].forEach(v => {
+        const el = document.getElementById('football-'+v+'-view');
         if (el) el.style.display = v === view ? '' : 'none';
-        const btn = document.getElementById('epl-view-'+v);
+        const btn = document.getElementById('football-view-'+v);
         if (btn) btn.classList.toggle('active', v === view);
     });
-    // Lazy-load data for the selected view
-    if (view === 'table') eplLoadStandings();
-    else if (view === 'fixtures') eplLoadFixtures();
-    else if (view === 'results') eplLoadResults();
-    else if (view === 'highlights') eplLoadHighlights();
+    _footballDispatch(view);
 }
 
-function eplRefresh() {
-    _eplInited = false;
-    eplSetView(_eplCurrentView);
+function _footballDispatch(view) {
+    if (view === 'table')      footballLoadStandings();
+    else if (view === 'fixtures')   footballLoadFixtures();
+    else if (view === 'results')    footballLoadResults();
+    else if (view === 'highlights') footballLoadHighlights();
+    else if (view === 'news')       footballLoadNews();
 }
 
-async function eplLoadStandings() {
-    const el = document.getElementById('epl-standings');
+function footballRefresh() {
+    _footballInited = false;
+    footballSetView(_footballCurrentView);
+}
+
+async function footballLoadStandings() {
+    const el = document.getElementById('football-standings');
     if (!el) return;
+    const league = _footballLeague;
+    const info = FOOTBALL_LEAGUES[league] || {};
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading standings…</div>';
     try {
-        // Direct browser fetch from ESPN free API (no key needed, no CORS)
-        const r = await fetch('https://site.api.espn.com/apis/v2/sports/soccer/eng.1/standings');
+        const r = await fetch('https://site.api.espn.com/apis/v2/sports/soccer/'+league+'/standings');
         const raw = await r.json();
-        // Parse ESPN standings format
         let entries = [];
-        for (const child of (raw.children || [])) {
-            entries.push(...(child.standings?.entries || []));
-        }
+        for (const child of (raw.children || [])) entries.push(...(child.standings?.entries || []));
         if (!entries.length) entries = raw.standings?.entries || [];
+        if (!entries.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No standings for '+info.name+' right now.<br><span style="font-size:11px;color:var(--text3)">Competition may be between seasons or in knockout stage.</span></div>';
+            return;
+        }
         const rows = entries.map(e => {
             const team = e.team || {};
             const s = {};
             (e.stats || []).forEach(st => s[st.name] = st.value != null ? st.value : st.displayValue);
             return {
+                id: team.id || '',
                 pos: parseInt(s.rank || 0), team: team.shortDisplayName || team.displayName || '?',
-                crest: (team.logos || [{}])[0]?.href || '', played: parseInt(s.gamesPlayed || 0),
+                crest: (team.logos || [{}])[0]?.href || '',
+                played: parseInt(s.gamesPlayed || 0),
                 won: parseInt(s.wins || 0), drawn: parseInt(s.ties || 0), lost: parseInt(s.losses || 0),
                 gf: parseInt(s.pointsFor || 0), ga: parseInt(s.pointsAgainst || 0),
                 gd: parseInt(s.pointDifferential || 0), pts: parseInt(s.points || 0)
             };
         }).sort((a,b) => a.pos - b.pos);
-        if (!rows.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No standings data available.</div>'; return; }
+        const relegZone = rows.length - 3;
         let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
         html += '<thead><tr style="border-bottom:2px solid var(--border);color:var(--text2);text-align:left">';
         html += '<th style="padding:8px 6px;width:30px">#</th>';
@@ -8422,13 +8526,22 @@ async function eplLoadStandings() {
         html += '<th style="padding:8px 6px;text-align:center;width:44px;font-weight:700">Pts</th>';
         html += '</tr></thead><tbody>';
         rows.forEach((t, i) => {
-            const bg = i < 4 ? 'rgba(56,142,60,.08)' : i >= 17 ? 'rgba(211,47,47,.08)' : 'transparent';
-            const border = i < 4 ? '3px solid #388e3c' : i >= 17 ? '3px solid #d32f2f' : '3px solid transparent';
+            const bg = i < 4 ? 'rgba(56,142,60,.08)' : i >= relegZone ? 'rgba(211,47,47,.08)' : 'transparent';
+            const border = i < 4 ? '3px solid #388e3c' : i >= relegZone ? '3px solid #d32f2f' : '3px solid transparent';
+            const safeTeam = t.team.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+            const safeCrest = t.crest.replace(/"/g,'&quot;');
             html += '<tr style="border-bottom:1px solid var(--border);background:'+bg+'">';
             html += '<td style="padding:8px 6px;border-left:'+border+';font-weight:600">'+t.pos+'</td>';
-            html += '<td style="padding:8px 6px;display:flex;align-items:center;gap:8px">';
+            html += '<td style="padding:6px 6px">';
+            if (t.id) {
+                html += '<div style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:2px 0" onclick="footballShowTeam(\''+t.id+'\',\''+safeTeam+'\',\''+safeCrest+'\')" title="View '+safeTeam+' fixtures &amp; news">';
+            } else {
+                html += '<div style="display:flex;align-items:center;gap:8px">';
+            }
             if (t.crest) html += '<img src="'+t.crest+'" style="width:20px;height:20px;object-fit:contain" onerror="this.style.display=\'none\'">';
-            html += '<span style="font-weight:500">'+t.team+'</span></td>';
+            html += '<span style="font-weight:500">'+t.team+'</span>';
+            if (t.id) html += '<svg style="width:10px;height:10px;opacity:.35;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>';
+            html += '</div></td>';
             html += '<td style="padding:8px 6px;text-align:center">'+t.played+'</td>';
             html += '<td style="padding:8px 6px;text-align:center">'+t.won+'</td>';
             html += '<td style="padding:8px 6px;text-align:center">'+t.drawn+'</td>';
@@ -8436,24 +8549,24 @@ async function eplLoadStandings() {
             html += '<td style="padding:8px 6px;text-align:center">'+t.gf+'</td>';
             html += '<td style="padding:8px 6px;text-align:center">'+t.ga+'</td>';
             const gdColor = t.gd > 0 ? '#4caf50' : t.gd < 0 ? '#f44336' : 'var(--text2)';
-            html += '<td style="padding:8px 6px;text-align:center;color:'+gdColor+'">'+( t.gd > 0 ? '+' : '')+t.gd+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center;color:'+gdColor+'">'+(t.gd > 0 ? '+' : '')+t.gd+'</td>';
             html += '<td style="padding:8px 6px;text-align:center;font-weight:700;font-size:13px">'+t.pts+'</td>';
             html += '</tr>';
         });
         html += '</tbody></table>';
-        html += '<div style="display:flex;gap:14px;margin-top:10px;font-size:10px;color:var(--text3)">';
-        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#388e3c;border-radius:2px;display:inline-block"></span> Champions League</span>';
-        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#d32f2f;border-radius:2px;display:inline-block"></span> Relegation</span>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:10px;color:var(--text3)">';
+        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#388e3c;border-radius:2px;display:inline-block"></span> Top positions</span>';
+        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#d32f2f;border-radius:2px;display:inline-block"></span> Relegation zone</span>';
+        html += '<span style="display:flex;align-items:center;gap:4px"><svg style="width:10px;opacity:.4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg> Click team for fixtures &amp; news</span>';
         html += '</div>';
         el.innerHTML = html;
-    } catch (e) {
+    } catch(e) {
         el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load standings: '+e.message+'</div>';
     }
 }
 
-async function _eplFetchMatches(type) {
-    // Fetch from ESPN scoreboard — browser-side, no API key
-    const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?limit=100');
+async function _footballFetchMatches(league, type) {
+    const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+league+'/scoreboard?limit=100');
     const raw = await r.json();
     const matches = [];
     for (const event of (raw.events || [])) {
@@ -8468,176 +8581,279 @@ async function _eplFetchMatches(type) {
         if (type === 'results' && !isFinal) continue;
         if (type === 'upcoming' && isFinal) continue;
         matches.push({
-            home: ht.shortDisplayName || ht.displayName || '?',
-            homeCrest: ht.logo || '', away: at.shortDisplayName || at.displayName || '?',
+            home: ht.shortDisplayName || ht.displayName || '?', homeId: ht.id || '',
+            homeCrest: ht.logo || '',
+            away: at.shortDisplayName || at.displayName || '?', awayId: at.id || '',
             awayCrest: at.logo || '', date: event.date || '',
             status: isLive ? 'IN_PLAY' : (isFinal ? 'FINISHED' : 'SCHEDULED'),
             scoreH: (isFinal || isLive) ? parseInt(home.score || 0) : null,
             scoreA: (isFinal || isLive) ? parseInt(away.score || 0) : null,
-            matchday: null
         });
     }
     return matches;
 }
 
-async function eplLoadFixtures() {
-    const el = document.getElementById('epl-fixtures-list');
+function _footballMatchRow(m) {
+    const dt = m.date ? new Date(m.date) : null;
+    const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
+    const isFinal = m.status === 'FINISHED';
+    const score = m.scoreH != null ? m.scoreH+' - '+m.scoreA : 'vs';
+    const homeW = isFinal && m.scoreH > m.scoreA, awayW = isFinal && m.scoreA > m.scoreH;
+    const centerEl = m.status === 'IN_PLAY'
+        ? '<span style="background:#f44336;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">LIVE</span>'
+        : isFinal
+            ? '<div style="font-weight:700;font-size:15px;letter-spacing:1px">'+score+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
+            : '<span style="font-size:10px;color:var(--text3)">'+dateStr+'</span>';
+    let row = '<div style="display:flex;align-items:center;padding:10px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);gap:10px">';
+    row += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-align:right">';
+    row += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:13px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+m.home+'</span>';
+    if (m.homeCrest) row += '<img src="'+m.homeCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+    row += '</div><div style="min-width:88px;text-align:center">'+centerEl+'</div>';
+    row += '<div style="flex:1;display:flex;align-items:center;gap:6px">';
+    if (m.awayCrest) row += '<img src="'+m.awayCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+    row += '<span style="font-weight:'+(awayW?'700':'500')+';font-size:13px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+m.away+'</span>';
+    row += '</div></div>';
+    return row;
+}
+
+async function footballLoadFixtures() {
+    const el = document.getElementById('football-fixtures-list');
     if (!el) return;
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading fixtures…</div>';
     try {
-        const matches = await _eplFetchMatches('upcoming');
+        const matches = await _footballFetchMatches(_footballLeague, 'upcoming');
         if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No upcoming fixtures found.</div>'; return; }
-        // Group by date
         const grouped = {};
         matches.forEach(m => {
             const dt = m.date ? new Date(m.date) : null;
-            const key = dt ? dt.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'short'}) : 'Upcoming';
+            const key = dt ? dt.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'}) : 'Upcoming';
             if (!grouped[key]) grouped[key] = [];
             grouped[key].push(m);
         });
         let html = '';
         Object.entries(grouped).forEach(([label, list]) => {
             html += '<div style="font-size:12px;font-weight:600;color:var(--text2);margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)">'+label+'</div>';
-            list.forEach(m => {
-                const dt = m.date ? new Date(m.date) : null;
-                const dateStr = dt ? dt.toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'}) + ' · ' + dt.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}) : '';
-                const statusBadge = m.status === 'IN_PLAY' || m.status === 'PAUSED'
-                    ? '<span style="background:#f44336;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">LIVE</span>'
-                    : '<span style="font-size:10px;color:var(--text3)">'+dateStr+'</span>';
-                html += '<div style="display:flex;align-items:center;padding:10px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);gap:10px">';
-                html += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-align:right">';
-                html += '<span style="font-weight:500;font-size:13px">'+m.home+'</span>';
-                if (m.homeCrest) html += '<img src="'+m.homeCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
-                html += '</div>';
-                html += '<div style="min-width:80px;text-align:center">'+statusBadge+'</div>';
-                html += '<div style="flex:1;display:flex;align-items:center;gap:6px">';
-                if (m.awayCrest) html += '<img src="'+m.awayCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
-                html += '<span style="font-weight:500;font-size:13px">'+m.away+'</span>';
-                html += '</div>';
-                html += '</div>';
-            });
+            list.forEach(m => { html += _footballMatchRow(m); });
         });
         el.innerHTML = html;
-    } catch (e) {
+    } catch(e) {
         el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load fixtures: '+e.message+'</div>';
     }
 }
 
-async function eplLoadResults() {
-    const el = document.getElementById('epl-results-list');
+async function footballLoadResults() {
+    const el = document.getElementById('football-results-list');
     if (!el) return;
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading results…</div>';
     try {
-        const matches = (await _eplFetchMatches('results')).reverse(); // Most recent first
+        const matches = (await _footballFetchMatches(_footballLeague, 'results')).reverse();
         if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No recent results.</div>'; return; }
         let html = '';
-        let lastMD = '';
-        matches.forEach(m => {
-            const mdLabel = m.matchday ? 'Matchday ' + m.matchday : '';
-            if (mdLabel && mdLabel !== lastMD) {
-                html += '<div style="font-size:12px;font-weight:600;color:var(--text2);margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)">'+mdLabel+'</div>';
-                lastMD = mdLabel;
-            }
-            const dt = m.date ? new Date(m.date) : null;
-            const dateStr = dt ? dt.toLocaleDateString('en-GB', {day:'numeric', month:'short'}) : '';
-            const homeW = m.scoreH != null && m.scoreA != null && m.scoreH > m.scoreA;
-            const awayW = m.scoreH != null && m.scoreA != null && m.scoreA > m.scoreH;
-            const score = m.scoreH != null ? m.scoreH + ' - ' + m.scoreA : 'vs';
-            html += '<div style="display:flex;align-items:center;padding:10px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);gap:10px">';
-            html += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-align:right">';
-            html += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:13px;'+(homeW?'color:var(--text)':'color:var(--text2)')+'">'+m.home+'</span>';
-            if (m.homeCrest) html += '<img src="'+m.homeCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
-            html += '</div>';
-            html += '<div style="min-width:80px;text-align:center">';
-            html += '<div style="font-weight:700;font-size:15px;letter-spacing:1px">'+score+'</div>';
-            html += '<div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>';
-            html += '</div>';
-            html += '<div style="flex:1;display:flex;align-items:center;gap:6px">';
-            if (m.awayCrest) html += '<img src="'+m.awayCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
-            html += '<span style="font-weight:'+(awayW?'700':'500')+';font-size:13px;'+(awayW?'color:var(--text)':'color:var(--text2)')+'">'+m.away+'</span>';
-            html += '</div>';
-            html += '</div>';
-        });
+        matches.forEach(m => { html += _footballMatchRow(m); });
         el.innerHTML = html;
-    } catch (e) {
+    } catch(e) {
         el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load results: '+e.message+'</div>';
     }
 }
 
-async function eplLoadHighlights() {
-    const el = document.getElementById('epl-highlights-grid');
+async function footballLoadHighlights() {
+    const el = document.getElementById('football-highlights-grid');
     if (!el) return;
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Loading highlights…</div>';
+    const info = FOOTBALL_LEAGUES[_footballLeague] || {};
+    const keys = info.highlights || [];
     try {
-        // Try scorebat free API directly from browser
         let highlights = [];
         try {
             const r = await fetch('https://www.scorebat.com/video-api/v3/feed/?token=free');
             const allVids = await r.json();
             const vids = Array.isArray(allVids) ? allVids : (allVids.response || []);
-            const eplKeys = ['premier league', 'english premier', 'epl'];
             for (const v of vids) {
                 const comp = (v.competition || v.competitionName || '').toLowerCase();
-                if (!eplKeys.some(k => comp.includes(k))) continue;
+                if (!keys.some(k => comp.includes(k))) continue;
                 let embed = '';
-                for (const e of (v.videos || [])) { if (e.embed) { embed = e.embed; break; } }
-                highlights.push({ title: v.title || '', thumb: v.thumbnail || '', embed, date: v.date || '' });
+                for (const ev of (v.videos || [])) { if (ev.embed) { embed = ev.embed; break; } }
+                highlights.push({ title: v.title||'', thumb: v.thumbnail||'', embed, date: v.date||'' });
                 if (highlights.length >= 20) break;
             }
         } catch(e2) {
-            // Fallback to server proxy
             const r2 = await fetch('/api/epl/highlights');
-            const data2 = await r2.json();
-            highlights = data2.highlights || [];
+            const d2 = await r2.json();
+            highlights = (d2.highlights || []).filter(h => {
+                const comp = (h.competition || '').toLowerCase();
+                return keys.some(k => comp.includes(k));
+            });
         }
-        if (!highlights.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">No Premier League highlights available right now.</div>'; return; }
+        if (!highlights.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">No highlights for '+info.name+' right now.</div>'; return; }
         let html = '';
         highlights.forEach(h => {
             const dt = h.date ? new Date(h.date) : null;
-            const dateStr = dt ? dt.toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'}) : '';
-            html += '<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="eplPlayHighlight(this)">';
-            // Thumbnail or placeholder
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '';
+            html += '<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="footballPlayHighlight(this)">';
             if (h.thumb) {
                 html += '<div style="position:relative;padding-top:56.25%;background:#111">';
                 html += '<img src="'+h.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display=&quot;none&quot;">';
                 html += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(0,0,0,.7);border-radius:50%;display:flex;align-items:center;justify-content:center">';
-                html += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
-                html += '</div></div>';
+                html += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div>';
             } else {
-                html += '<div style="position:relative;padding-top:56.25%;background:#111">';
-                html += '<div style="display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px">⚽</div>';
-                html += '</div>';
+                html += '<div style="position:relative;padding-top:56.25%;background:#111"><div style="display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px">⚽</div></div>';
             }
-            html += '<div style="padding:10px 12px">';
-            html += '<div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+h.title+'</div>';
-            html += '<div style="font-size:10px;color:var(--text3)">'+dateStr+'</div>';
-            html += '</div>';
-            // Hidden embed
-            if (h.embed) html += '<div class="epl-embed-data" style="display:none">'+h.embed.replace(/</g,'\\x3c').replace(/>/g,'\\x3e')+'</div>';
+            html += '<div style="padding:10px 12px"><div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+h.title+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div>';
+            if (h.embed) html += '<div class="football-embed-data" style="display:none">'+h.embed.replace(/</g,'\\x3c').replace(/>/g,'\\x3e')+'</div>';
             html += '</div>';
         });
         el.innerHTML = html;
-    } catch (e) {
+    } catch(e) {
         el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Failed to load highlights: '+e.message+'</div>';
     }
 }
 
-function eplPlayHighlight(card) {
-    const embedEl = card.querySelector('.epl-embed-data');
+async function footballLoadNews() {
+    const el = document.getElementById('football-news-list');
+    if (!el) return;
+    const info = FOOTBALL_LEAGUES[_footballLeague] || {};
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading news…</div>';
+    try {
+        const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+_footballLeague+'/news?limit=20');
+        const raw = await r.json();
+        const articles = raw.articles || [];
+        if (!articles.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No news for '+info.name+' right now.</div>'; return; }
+        let html = '';
+        articles.forEach(a => {
+            const dt = a.published ? new Date(a.published) : null;
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
+            const imgUrl = (a.images || [])[0]?.url || '';
+            const link = a.links?.web?.href || a.links?.mobile?.href || '';
+            html += '<div style="display:flex;gap:12px;padding:12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);cursor:pointer" onclick="if(\''+link+'\')window.open(\''+link+'\',\'_blank\')">';
+            if (imgUrl) html += '<img src="'+imgUrl+'" style="width:88px;height:62px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display=\'none\'">';
+            html += '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12px;line-height:1.4;margin-bottom:4px">'+a.headline+'</div>';
+            if (a.description) html += '<div style="font-size:11px;color:var(--text2);line-height:1.4;margin-bottom:4px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">'+a.description+'</div>';
+            html += '<div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div></div>';
+        });
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load news: '+e.message+'</div>';
+    }
+}
+
+function footballPlayHighlight(card) {
+    const embedEl = card.querySelector('.football-embed-data');
     if (!embedEl) return;
-    const embedHtml = embedEl.textContent.replace(/\\x3c/g, '<').replace(/\\x3e/g, '>');
-    // Extract iframe src from embed HTML
+    const embedHtml = embedEl.textContent.replace(/\\x3c/g,'<').replace(/\\x3e/g,'>');
     const srcMatch = embedHtml.match(/src=["']([^"']+)["']/);
     if (srcMatch) {
-        // Open in a modal-style overlay
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:950;display:flex;align-items:center;justify-content:center;cursor:pointer';
         overlay.onclick = () => overlay.remove();
         overlay.innerHTML = '<div style="width:90%;max-width:900px;aspect-ratio:16/9;position:relative" onclick="event.stopPropagation()">'
-            + '<iframe src="'+srcMatch[1]+'" style="width:100%;height:100%;border:none;border-radius:8px" allow="autoplay;fullscreen;encrypted-media" allowfullscreen></iframe>'
-            + '<button onclick="this.parentNode.parentNode.remove()" style="position:absolute;top:-36px;right:0;background:none;border:none;color:#fff;font-size:24px;cursor:pointer">✕</button>'
-            + '</div>';
+            +'<iframe src="'+srcMatch[1]+'" style="width:100%;height:100%;border:none;border-radius:8px" allow="autoplay;fullscreen;encrypted-media" allowfullscreen></iframe>'
+            +'<button onclick="this.parentNode.parentNode.remove()" style="position:absolute;top:-36px;right:0;background:none;border:none;color:#fff;font-size:24px;cursor:pointer">✕</button>'
+            +'</div>';
         document.body.appendChild(overlay);
+    }
+}
+
+// ── Team Detail Modal ────────────────────────────────────────────────
+function footballShowTeam(teamId, teamName, teamCrest) {
+    if (!teamId) return;
+    _footballTeamId = teamId;
+    _footballTeamLeague = _footballLeague;
+    _footballTeamTabActive = 'fixtures';
+    document.getElementById('football-team-name').textContent = teamName;
+    const crestEl = document.getElementById('football-team-crest');
+    if (teamCrest) { crestEl.src = teamCrest; crestEl.style.display = ''; }
+    else { crestEl.style.display = 'none'; }
+    const modal = document.getElementById('football-team-modal');
+    modal.style.display = 'flex';
+    footballTeamTab('fixtures');
+}
+
+function footballCloseTeamModal() {
+    document.getElementById('football-team-modal').style.display = 'none';
+}
+
+function footballTeamTab(tab) {
+    _footballTeamTabActive = tab;
+    ['fixtures','news'].forEach(t => {
+        const btn = document.getElementById('team-tab-btn-'+t);
+        if (!btn) return;
+        const isActive = t === tab;
+        btn.style.color = isActive ? 'var(--text)' : 'var(--text2)';
+        btn.style.fontWeight = isActive ? '600' : 'normal';
+        btn.style.borderBottomColor = isActive ? 'var(--accent,#2563eb)' : 'transparent';
+    });
+    if (tab === 'fixtures') _footballTeamLoadFixtures();
+    else if (tab === 'news') _footballTeamLoadNews();
+}
+
+async function _footballTeamLoadFixtures() {
+    const el = document.getElementById('football-team-content');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading schedule…</div>';
+    try {
+        const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+_footballTeamLeague+'/teams/'+_footballTeamId+'/schedule');
+        const raw = await r.json();
+        const events = raw.events || [];
+        if (!events.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No schedule found.</div>'; return; }
+        let html = '';
+        for (const event of events) {
+            const comp = (event.competitions || [])[0] || {};
+            const competitors = comp.competitors || [];
+            const home = competitors.find(c => c.homeAway === 'home') || {};
+            const away = competitors.find(c => c.homeAway === 'away') || {};
+            const ht = home.team || {}, at = away.team || {};
+            const statusName = comp.status?.type?.name || '';
+            const isFinal = statusName === 'STATUS_FINAL';
+            const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
+            const dt = event.date ? new Date(event.date) : null;
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
+            const scoreH = (isFinal||isLive) ? parseInt(home.score||0) : null;
+            const scoreA = (isFinal||isLive) ? parseInt(away.score||0) : null;
+            const score = scoreH != null ? scoreH+' - '+scoreA : 'vs';
+            const homeW = isFinal && scoreH > scoreA, awayW = isFinal && scoreA > scoreH;
+            const centerEl = isLive
+                ? '<span style="background:#f44336;color:#fff;padding:2px 5px;border-radius:3px;font-size:9px;font-weight:600">LIVE</span>'
+                : isFinal
+                    ? '<div style="font-weight:700;font-size:14px;letter-spacing:1px">'+score+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
+                    : '<div style="font-size:10px;color:var(--text3);text-align:center;line-height:1.3">'+dateStr+'</div>';
+            html += '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);gap:8px;margin-bottom:6px">';
+            html += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:5px;text-align:right">';
+            if (ht.logo) html += '<img src="'+ht.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">';
+            html += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:12px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+( ht.shortDisplayName||ht.displayName||'?')+'</span></div>';
+            html += '<div style="min-width:72px;text-align:center">'+centerEl+'</div>';
+            html += '<div style="flex:1;display:flex;align-items:center;gap:5px">';
+            if (at.logo) html += '<img src="'+at.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">';
+            html += '<span style="font-weight:'+(awayW?'700':'500')+';font-size:12px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+( at.shortDisplayName||at.displayName||'?')+'</span></div>';
+            html += '</div>';
+        }
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed: '+e.message+'</div>';
+    }
+}
+
+async function _footballTeamLoadNews() {
+    const el = document.getElementById('football-team-content');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading news…</div>';
+    try {
+        const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+_footballTeamLeague+'/teams/'+_footballTeamId+'/news?limit=15');
+        const raw = await r.json();
+        const articles = raw.articles || [];
+        if (!articles.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No news available.</div>'; return; }
+        let html = '';
+        articles.forEach(a => {
+            const dt = a.published ? new Date(a.published) : null;
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short'}) : '';
+            const imgUrl = (a.images || [])[0]?.url || '';
+            const link = a.links?.web?.href || a.links?.mobile?.href || '';
+            html += '<div style="display:flex;gap:10px;padding:10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);margin-bottom:6px;cursor:pointer" onclick="if(\''+link+'\')window.open(\''+link+'\',\'_blank\')">';
+            if (imgUrl) html += '<img src="'+imgUrl+'" style="width:64px;height:48px;object-fit:cover;border-radius:4px;flex-shrink:0" onerror="this.style.display=\'none\'">';
+            html += '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:11px;line-height:1.4;margin-bottom:3px">'+a.headline+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div></div>';
+        });
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed: '+e.message+'</div>';
     }
 }
 

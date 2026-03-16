@@ -7337,13 +7337,19 @@ async function _feedsFetchRedditDirect(url, grid, appendMode) {
     const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const sort = _feedsRedditSort || 'hot';
     try {
-        const r = await fetch(API + `/api/reddit/feed?sub=${encodeURIComponent(sub)}&sort=${sort}&limit=25${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`, {
-            headers: { 'Accept': 'application/json' }
-        });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const resp = await r.json();
-        if (!resp.ok) throw new Error(resp.error || 'Reddit fetch failed');
-        const data = {data: resp.data};
+        // Direct browser fetch — old.reddit.com JSON endpoint (no CORS issues, NSFW works)
+        const redditUrl = `https://old.reddit.com/r/${encodeURIComponent(sub)}/${sort}.json?limit=25&include_over_18=1&raw_json=1${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`;
+        const r = await fetch(redditUrl);
+        if (!r.ok) {
+            // Fallback to server proxy if browser fetch fails
+            const r2 = await fetch(API + `/api/reddit/feed?sub=${encodeURIComponent(sub)}&sort=${sort}&limit=25${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`);
+            if (!r2.ok) throw new Error(`HTTP Error ${r2.status}: Blocked`);
+            const resp2 = await r2.json();
+            if (!resp2.ok) throw new Error(resp2.error || 'Reddit fetch failed');
+            var data = {data: resp2.data};
+        } else {
+            var data = await r.json();
+        }
         _feedsRedditAfter = data?.data?.after || null;
         const posts = (data?.data?.children || []).filter(p=>p.kind==='t3');
         if (!posts.length && !appendMode) {
@@ -7654,9 +7660,18 @@ async function feedsOpenComments(permalink, title) {
         </div>`;
     }
     try {
-        const commentUrl = fullLink.replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
-        const r = await fetch(API + `/api/reddit/comments?url=${encodeURIComponent(commentUrl)}`);
-        const data = await r.json();
+        // Direct browser fetch for comments (old.reddit.com for NSFW compat)
+        const commentUrl = fullLink.replace('www.reddit.com', 'old.reddit.com').replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
+        let data;
+        try {
+            const r = await fetch(commentUrl);
+            if (!r.ok) throw new Error('browser fetch failed');
+            data = await r.json();
+        } catch(e2) {
+            // Fallback to server proxy
+            const r2 = await fetch(API + `/api/reddit/comments?url=${encodeURIComponent(commentUrl)}`);
+            data = await r2.json();
+        }
         const post = data[0]?.data?.children?.[0]?.data || {};
         const comments = data[1]?.data?.children || [];
         if (bodyEl) bodyEl.textContent = post.selftext || (post.url && post.url !== fullLink ? post.url : '');
@@ -8355,11 +8370,28 @@ async function eplLoadStandings() {
     if (!el) return;
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading standings…</div>';
     try {
-        const r = await fetch('/api/epl/standings');
-        const data = await r.json();
-        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">⚠ '+data.error+'</div>'; return; }
-        const rows = data.standings || [];
-        if (!rows.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No standings data. Add a football-data.org API key in Settings.</div>'; return; }
+        // Direct browser fetch from ESPN free API (no key needed, no CORS)
+        const r = await fetch('https://site.api.espn.com/apis/v2/sports/soccer/eng.1/standings');
+        const raw = await r.json();
+        // Parse ESPN standings format
+        let entries = [];
+        for (const child of (raw.children || [])) {
+            entries.push(...(child.standings?.entries || []));
+        }
+        if (!entries.length) entries = raw.standings?.entries || [];
+        const rows = entries.map(e => {
+            const team = e.team || {};
+            const s = {};
+            (e.stats || []).forEach(st => s[st.name] = st.value != null ? st.value : st.displayValue);
+            return {
+                pos: parseInt(s.rank || 0), team: team.shortDisplayName || team.displayName || '?',
+                crest: (team.logos || [{}])[0]?.href || '', played: parseInt(s.gamesPlayed || 0),
+                won: parseInt(s.wins || 0), drawn: parseInt(s.ties || 0), lost: parseInt(s.losses || 0),
+                gf: parseInt(s.pointsFor || 0), ga: parseInt(s.pointsAgainst || 0),
+                gd: parseInt(s.pointDifferential || 0), pts: parseInt(s.points || 0)
+            };
+        }).sort((a,b) => a.pos - b.pos);
+        if (!rows.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No standings data available.</div>'; return; }
         let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
         html += '<thead><tr style="border-bottom:2px solid var(--border);color:var(--text2);text-align:left">';
         html += '<th style="padding:8px 6px;width:30px">#</th>';
@@ -8403,20 +8435,47 @@ async function eplLoadStandings() {
     }
 }
 
+async function _eplFetchMatches(type) {
+    // Fetch from ESPN scoreboard — browser-side, no API key
+    const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?limit=100');
+    const raw = await r.json();
+    const matches = [];
+    for (const event of (raw.events || [])) {
+        const comp = (event.competitions || [])[0] || {};
+        const competitors = comp.competitors || [];
+        const home = competitors.find(c => c.homeAway === 'home') || {};
+        const away = competitors.find(c => c.homeAway === 'away') || {};
+        const ht = home.team || {}, at = away.team || {};
+        const statusName = comp.status?.type?.name || '';
+        const isFinal = statusName === 'STATUS_FINAL';
+        const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
+        if (type === 'results' && !isFinal) continue;
+        if (type === 'upcoming' && isFinal) continue;
+        matches.push({
+            home: ht.shortDisplayName || ht.displayName || '?',
+            homeCrest: ht.logo || '', away: at.shortDisplayName || at.displayName || '?',
+            awayCrest: at.logo || '', date: event.date || '',
+            status: isLive ? 'IN_PLAY' : (isFinal ? 'FINISHED' : 'SCHEDULED'),
+            scoreH: (isFinal || isLive) ? parseInt(home.score || 0) : null,
+            scoreA: (isFinal || isLive) ? parseInt(away.score || 0) : null,
+            matchday: null
+        });
+    }
+    return matches;
+}
+
 async function eplLoadFixtures() {
     const el = document.getElementById('epl-fixtures-list');
     if (!el) return;
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading fixtures…</div>';
     try {
-        const r = await fetch('/api/epl/matches?type=upcoming');
-        const data = await r.json();
-        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">⚠ '+data.error+'</div>'; return; }
-        const matches = data.matches || [];
+        const matches = await _eplFetchMatches('upcoming');
         if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No upcoming fixtures found.</div>'; return; }
-        // Group by matchday
+        // Group by date
         const grouped = {};
         matches.forEach(m => {
-            const key = m.matchday ? 'Matchday ' + m.matchday : 'Upcoming';
+            const dt = m.date ? new Date(m.date) : null;
+            const key = dt ? dt.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'short'}) : 'Upcoming';
             if (!grouped[key]) grouped[key] = [];
             grouped[key].push(m);
         });
@@ -8453,10 +8512,7 @@ async function eplLoadResults() {
     if (!el) return;
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading results…</div>';
     try {
-        const r = await fetch('/api/epl/matches?type=results');
-        const data = await r.json();
-        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">⚠ '+data.error+'</div>'; return; }
-        const matches = (data.matches || []).reverse(); // Most recent first
+        const matches = (await _eplFetchMatches('results')).reverse(); // Most recent first
         if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No recent results.</div>'; return; }
         let html = '';
         let lastMD = '';
@@ -8497,10 +8553,27 @@ async function eplLoadHighlights() {
     if (!el) return;
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Loading highlights…</div>';
     try {
-        const r = await fetch('/api/epl/highlights');
-        const data = await r.json();
-        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center;grid-column:1/-1">⚠ '+data.error+'</div>'; return; }
-        const highlights = data.highlights || [];
+        // Try scorebat free API directly from browser
+        let highlights = [];
+        try {
+            const r = await fetch('https://www.scorebat.com/video-api/v3/feed/?token=free');
+            const allVids = await r.json();
+            const vids = Array.isArray(allVids) ? allVids : (allVids.response || []);
+            const eplKeys = ['premier league', 'english premier', 'epl'];
+            for (const v of vids) {
+                const comp = (v.competition || v.competitionName || '').toLowerCase();
+                if (!eplKeys.some(k => comp.includes(k))) continue;
+                let embed = '';
+                for (const e of (v.videos || [])) { if (e.embed) { embed = e.embed; break; } }
+                highlights.push({ title: v.title || '', thumb: v.thumbnail || '', embed, date: v.date || '' });
+                if (highlights.length >= 20) break;
+            }
+        } catch(e2) {
+            // Fallback to server proxy
+            const r2 = await fetch('/api/epl/highlights');
+            const data2 = await r2.json();
+            highlights = data2.highlights || [];
+        }
         if (!highlights.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">No Premier League highlights available right now.</div>'; return; }
         let html = '';
         highlights.forEach(h => {

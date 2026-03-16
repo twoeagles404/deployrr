@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.11 · Full deployment, update management, and real-time monitoring
+Version: 3.15.12 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.11",
+            "version": "3.15.12",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1311,7 +1311,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.11"})
+    return jsonify({"update_available": False, "version": "3.15.12"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1685,7 +1685,7 @@ def api_rss_fetch():
                     # 5. Fallback thumbnail
                     if not thumb:
                         tn = pd.get("thumbnail", "")
-                        if tn and tn.startswith("http") and tn not in ("self", "default", "nsfw", "spoiler"):
+                        if tn and tn.startswith("http") and tn not in ("self", "default", "spoiler"):
                             thumb = tn
 
                     # ── Video URL for direct-play embed ─────────────────────
@@ -3897,7 +3897,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.11</div>
+      <div class="sb-version">v3.15.12</div>
     </div>
   </div>
 
@@ -4730,7 +4730,7 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="field"><label>Plex Token</label><input type="password" id="svc-plex-token" placeholder="•••••••••••"><div class="field-hint">Settings → Troubleshooting → X-Plex-Token</div></div>
           <div class="field"><label>Seerr/Overseerr URL</label><input type="text" id="svc-seerr-url" placeholder="http://localhost:5055"></div>
           <div class="field"><label>Seerr API Key</label><input type="password" id="svc-seerr-key" placeholder="•••••••••••"></div>
-          <div style="margin-top:18px">
+          <div style="grid-column:1/-1;margin-top:4px">
             <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⬇️ Downloads</div>
             <div style="display:flex;flex-direction:column;gap:8px">
               <div>
@@ -4844,7 +4844,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.11</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.12</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -4864,7 +4864,11 @@ body.sse-disconnected #app{padding-top:38px;}
           <button class="view-btn active" id="iptv-view-channels" onclick="iptvSetView('channels')">📡 Channels</button>
           <button class="view-btn" id="iptv-view-schedule" onclick="iptvSetView('schedule')">📅 Schedule</button>
           <button class="view-btn" id="iptv-view-multiview" onclick="iptvSetView('multiview')">⊞ Multiview</button>
-          <button onclick="iptvBrowseChannels()" class="btn" style="padding:6px 14px;font-size:12px" title="Browse moviebite.cc channels in a panel">🔍 Browse</button>
+          <select id="iptv-source-select" onchange="iptvSetSource(this.value)" title="IPTV Source" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+            <option value="moviebite">MovieBite</option>
+            <option value="bintv">BinTV</option>
+          </select>
+          <button onclick="iptvBrowseChannels()" class="btn" style="padding:6px 14px;font-size:12px" title="Browse channels in a panel">🔍 Browse</button>
           <button onclick="iptvShowAddChannel()" class="btn-primary" style="padding:6px 14px;font-size:12px">＋ Channel</button>
           <button class="btn-primary" onclick="iptvReload()">↺ Refresh</button>
         </div>
@@ -4934,6 +4938,26 @@ body.sse-disconnected #app{padding-top:38px;}
               <video id="iptv-hls-player" controls muted playsinline
                 style="width:100%;max-height:280px;background:#000;border-radius:var(--r);margin-top:6px;display:none"></video>
             </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── REDDIT COMMENTS MODAL ── -->
+      <div id="feeds-reddit-comments-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:960;align-items:center;justify-content:center" onclick="if(event.target===this)feedsCloseComments()">
+        <div style="position:relative;width:min(780px,96vw);max-height:90vh;background:var(--bg2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.7)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);gap:10px;flex-shrink:0">
+            <div id="feeds-comments-title" style="font-size:14px;font-weight:600;color:var(--text);line-height:1.4"></div>
+            <button onclick="feedsCloseComments()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px;flex-shrink:0">✕</button>
+          </div>
+          <div style="padding:14px 16px 0;flex-shrink:0">
+            <div id="feeds-comments-post-body" style="font-size:13px;color:var(--text2);line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow-y:auto;padding-bottom:10px;border-bottom:1px solid var(--border)"></div>
+            <div id="feeds-comments-meta" style="font-size:11px;color:var(--text3);padding:8px 0;display:flex;gap:14px;border-bottom:1px solid var(--border)"></div>
+          </div>
+          <div id="feeds-comments-list" style="padding:12px 16px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px">
+            <div style="color:var(--text3);font-size:12px">Loading comments…</div>
+          </div>
+          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
+            <a id="feeds-comments-link" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ View on Reddit</a>
           </div>
         </div>
       </div>
@@ -5019,7 +5043,17 @@ body.sse-disconnected #app{padding-top:38px;}
         <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
           <button class="filter-pill active" id="iptv-sched-live" onclick="iptvLoadSchedule('live',this)">🔴 Live Now</button>
           <button class="filter-pill" id="iptv-sched-all" onclick="iptvLoadSchedule('all',this)">📅 All Events</button>
-          <span id="iptv-sched-status" style="font-size:11px;color:var(--text3);margin-left:auto"></span>
+          <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+            <label style="font-size:11px;color:var(--text3)">⏱ TZ offset:</label>
+            <select id="iptv-tz-offset" onchange="iptvSetTZOffset(this.value)" style="font-size:11px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="-6">-6h</option><option value="-5">-5h</option><option value="-4">-4h</option>
+              <option value="-3">-3h</option><option value="-2">-2h</option><option value="-1">-1h</option>
+              <option value="0" selected>+0h</option>
+              <option value="1">+1h</option><option value="2">+2h</option><option value="3">+3h</option>
+              <option value="4">+4h</option><option value="5">+5h</option><option value="6">+6h</option>
+            </select>
+          </div>
+          <span id="iptv-sched-status" style="font-size:11px;color:var(--text3)"></span>
         </div>
         <div id="iptv-schedule-list" style="display:flex;flex-direction:column;gap:6px">
           <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Click "Live Now" or "All Events" to load schedule</div>
@@ -5059,25 +5093,69 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <!-- ── RSS sub-page ─────────────────────────────────────────────── -->
       <div id="feeds-page-rss">
-        <div id="feeds-rss-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-rss-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <select id="feeds-rss-sort" onchange="feedsSortGrid('feeds-rss-grid',this.value)" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="default">Latest</option>
+              <option value="oldest">Oldest</option>
+              <option value="az">A–Z</option>
+            </select>
+            <button id="feeds-rss-view-btn" onclick="feedsToggleView('feeds-rss-grid','feeds-rss-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+          </div>
+        </div>
         <div id="feeds-rss-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-rss-more-btn" onclick="feedsLoadMore('rss')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
       </div>
 
       <!-- ── Reddit sub-page ──────────────────────────────────────────── -->
       <div id="feeds-page-reddit" style="display:none">
-        <div id="feeds-reddit-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-reddit-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <select id="feeds-reddit-sort" onchange="feedsRedditChangeSort(this.value)" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="hot">Hot</option>
+              <option value="new">New</option>
+              <option value="top">Top</option>
+              <option value="rising">Rising</option>
+            </select>
+            <button id="feeds-reddit-view-btn" onclick="feedsToggleView('feeds-reddit-grid','feeds-reddit-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+          </div>
+        </div>
         <div id="feeds-reddit-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-reddit-more-btn" onclick="feedsRedditLoadMore()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
       </div>
 
       <!-- ── YouTube sub-page ─────────────────────────────────────────── -->
       <div id="feeds-page-youtube" style="display:none">
-        <div id="feeds-yt-channel-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-yt-channel-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <select id="feeds-yt-sort" onchange="feedsSortGrid('feeds-yt-grid',this.value)" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="default">Latest</option>
+              <option value="oldest">Oldest</option>
+              <option value="az">A–Z</option>
+            </select>
+            <button id="feeds-yt-view-btn" onclick="feedsToggleView('feeds-yt-grid','feeds-yt-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+          </div>
+        </div>
         <div id="feeds-yt-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-yt-more-btn" onclick="feedsLoadMore('youtube')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
       </div>
 
       <!-- ── Hacker News sub-page ─────────────────────────────────────── -->
       <div id="feeds-page-hn" style="display:none">
-        <div id="feeds-hn-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="filter-pill active" id="hn-sort-frontpage" onclick="feedsHNChangeSort('frontpage',this)">🔥 Front Page</button>
+            <button class="filter-pill" id="hn-sort-newest" onclick="feedsHNChangeSort('newest',this)">New</button>
+            <button class="filter-pill" id="hn-sort-ask" onclick="feedsHNChangeSort('ask',this)">Ask HN</button>
+            <button class="filter-pill" id="hn-sort-show" onclick="feedsHNChangeSort('show',this)">Show HN</button>
+          </div>
+          <button id="feeds-hn-view-btn" onclick="feedsToggleView('feeds-hn-grid','feeds-hn-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+        </div>
+        <div id="feeds-hn-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-hn-more-btn" onclick="feedsHNLoadMore()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
       </div>
 
       <!-- Custom category pages are injected here by JS -->
@@ -6744,6 +6822,24 @@ let _feedsRssActive = null;   // currently selected RSS source id
 let _feedsRedditActive = null;
 let _feedsYTActive = null;
 let _feedsAddType  = 'rss';
+// Feed view/sort/pagination state
+let _feedsViewMode  = {};   // gridId → 'grid'|'list'
+let _feedsAllItems  = {};   // gridId → full item array
+let _feedsOffset    = {};   // gridId → current render offset
+const _FEEDS_PAGE_SIZE = 25;
+// Reddit pagination / sort state
+let _feedsRedditSort  = 'hot';
+let _feedsRedditAfter = null;
+// HN sort state
+let _hnSort = 'frontpage';
+let _hnAllItems = [];
+let _hnOffset = 0;
+const _hnFeedUrls = {
+    frontpage: 'https://hnrss.org/frontpage',
+    newest:    'https://hnrss.org/newest',
+    ask:       'https://hnrss.org/ask',
+    show:      'https://hnrss.org/show'
+};
 
 // All known category types (built-in + custom from _type_meta)
 let _feedsAllTypes = ['rss','reddit','youtube','hn']; // built-in order; custom appended
@@ -6779,7 +6875,7 @@ function feedsNav(page, el) {
     if (page === 'rss')     _feedsLoadRssPage();
     else if (page === 'reddit')  _feedsLoadRedditPage();
     else if (page === 'youtube') _feedsLoadYTPage();
-    else if (page === 'hn')      _feedsLoadHN();
+    else if (page === 'hn')      _feedsLoadHN(false);
     else if (page === 'manage')  _feedsRenderManage();
     else                         _feedsLoadCustomPage(page);
 }
@@ -6867,7 +6963,7 @@ function _feedsLoadRedditPage() {
     tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
     const activePill = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (sources.find(s=>s.id===_feedsRedditActive)?.name));
     if (activePill) activePill.classList.add('active');
-    _feedsFetchRedditDirect(sources.find(s => s.id === _feedsRedditActive)?.url, grid);
+    _feedsFetchRedditDirect(sources.find(s => s.id === _feedsRedditActive)?.url, grid, false);
 }
 
 function _feedsSelectReddit(id, el) {
@@ -6875,30 +6971,38 @@ function _feedsSelectReddit(id, el) {
     document.querySelectorAll('#feeds-reddit-source-tabs .filter-pill').forEach(p => p.classList.remove('active'));
     if (el) el.classList.add('active');
     const src = (_feedsSubs.reddit || []).find(s => s.id === id);
-    if (src) _feedsFetchRedditDirect(src.url, document.getElementById('feeds-reddit-grid'));
+    if (src) _feedsFetchRedditDirect(src.url, document.getElementById('feeds-reddit-grid'), false);
 }
 
 // ── Reddit: fetch directly from browser (bypasses server IP blocks) ──
-async function _feedsFetchRedditDirect(url, grid) {
+async function _feedsFetchRedditDirect(url, grid, appendMode) {
     if (!url || !grid) return;
-    grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+    const moreBtn = document.getElementById('feeds-reddit-more-btn');
+    if (!appendMode) {
+        grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+        _feedsRedditAfter = null;
+    }
     const m = (url||'').match(/reddit\.com\/r\/([A-Za-z0-9_]+)/);
     if (!m) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">Invalid Reddit URL</div></div>'; return; }
     const sub = m[1];
     const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const sort = _feedsRedditSort || 'hot';
     try {
-        const r = await fetch(`https://www.reddit.com/r/${sub}.json?limit=25&raw_json=1`, {
+        const r = await fetch(`https://www.reddit.com/r/${sub}/${sort}.json?limit=25&raw_json=1&include_over_18=1${_feedsRedditAfter?'&after='+_feedsRedditAfter:''}`, {
             headers: { 'Accept': 'application/json' },
+            credentials: 'include',
             cache: 'default'
         });
         if (!r.ok) throw new Error(`HTTP ${r.status} — Reddit may be blocking requests`);
         const data = await r.json();
-        const posts = (data?.data?.children || []).slice(0, 25);
-        if (!posts.length) {
+        _feedsRedditAfter = data?.data?.after || null;
+        const posts = (data?.data?.children || []).filter(p=>p.kind==='t3');
+        if (!posts.length && !appendMode) {
             grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">No posts found</div></div>';
+            if (moreBtn) moreBtn.style.display = 'none';
             return;
         }
-        grid.innerHTML = posts.map(post => {
+        const html = posts.map(post => {
             const pd = post.data || {};
             const title = pd.title || 'Untitled';
             const permalink = 'https://www.reddit.com' + (pd.permalink || '#');
@@ -6916,7 +7020,7 @@ async function _feedsFetchRedditDirect(url, grid) {
             let thumb = null;
             try { const imgs = pd.preview?.images; if (imgs?.length) thumb = imgs[0].source.url.replace(/&amp;/g,'&'); } catch(e){}
             if (!thumb && isGallery) { try { const k=Object.keys(pd.media_metadata)[0]; thumb=pd.media_metadata[k].s.u.replace(/&amp;/g,'&'); } catch(e){} }
-            if (!thumb) { const tn=pd.thumbnail||''; if(tn.startsWith('http')&&!['self','default','nsfw','spoiler'].includes(tn)) thumb=tn; }
+            if (!thumb) { const tn=pd.thumbnail||''; if(tn.startsWith('http')&&!['self','default','spoiler'].includes(tn)) thumb=tn; }
             const flair = pd.link_flair_text || '';
             const score = pd.score || 0;
             const numC  = pd.num_comments || 0;
@@ -6924,10 +7028,9 @@ async function _feedsFetchRedditDirect(url, grid) {
                             : ptype==='gif'     ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#ff6b6b;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">GIF</div>`
                             : ptype==='gallery' ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">🖼 Gallery</div>` : '';
             const icon = ptype==='video'?'▶':ptype==='gif'?'🎞':ptype==='gallery'?'🖼':ptype==='image'?'🖼':'🤖';
-            const hasText = ptype === 'text' && pd.selftext && pd.selftext.length > 20;
-            const encodedText = hasText ? encodeURIComponent((pd.selftext||'').slice(0,2000)) : '';
             const encodedTitle = encodeURIComponent(title.slice(0,200));
-            return `<a href="${permalink}" ${hasText ? `onclick="feedsOpenRedditPost(decodeURIComponent('${encodedTitle}'),decodeURIComponent('${encodedText}'),'${permalink}');return false;"` : 'target="_blank" rel="noopener"'} style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer" onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+            const encodedPermalink = encodeURIComponent(pd.permalink || permalink);
+            return `<a href="${permalink}" onclick="feedsOpenComments(decodeURIComponent('${encodedPermalink}'),decodeURIComponent('${encodedTitle}'));return false;" style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer" onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
               ${thumb
                 ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2);overflow:hidden"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${icon}</div>'">${typeBadge}</div>`
                 : ptype === 'text' && pd.selftext
@@ -6943,8 +7046,11 @@ async function _feedsFetchRedditDirect(url, grid) {
               </div>
             </a>`;
         }).join('');
+        if (appendMode) grid.insertAdjacentHTML('beforeend', html);
+        else grid.innerHTML = html;
+        if (moreBtn) moreBtn.style.display = _feedsRedditAfter ? '' : 'none';
     } catch(e) {
-        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">⚠️</div><div class="empty-text" style="color:var(--red)">Reddit error: ${e.message}</div></div>`;
+        if (!appendMode) grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">⚠️</div><div class="empty-text" style="color:var(--red)">Reddit error: ${e.message}</div></div>`;
     }
 }
 
@@ -6980,45 +7086,67 @@ function _feedsSelectYT(id, el) {
 }
 
 // ── Hacker News ──────────────────────────────────────────────────────
-async function _feedsLoadHN() {
-    const list = document.getElementById('feeds-hn-list');
-    if (!list) return;
-    list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:12px">Loading Hacker News…</div>';
+async function _feedsLoadHN(appendMode) {
+    const grid = document.getElementById('feeds-hn-grid');
+    const moreBtn = document.getElementById('feeds-hn-more-btn');
+    if (!grid) return;
+    const feedUrl = _hnFeedUrls[_hnSort] || _hnFeedUrls.frontpage;
+    if (!appendMode) {
+        grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+        _hnAllItems = [];
+        _hnOffset = 0;
+    }
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     try {
-        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent('https://hnrss.org/frontpage')}`);
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(feedUrl)}`);
         const d = await r.json();
-        const items = d.items || [];
-        if (!items.length) { list.innerHTML = '<div class="empty"><div class="empty-text">No HN stories</div></div>'; return; }
-        list.innerHTML = items.slice(0,30).map((item, i) => {
-            const domain = (() => { try { return new URL(item.link).hostname.replace('www.',''); } catch(e) { return ''; } })();
-            const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            return `
-            <a href="${item.link}" target="_blank" rel="noopener" style="
-              display:flex;align-items:center;gap:12px;text-decoration:none;
-              background:var(--surface);border:1px solid var(--border);border-radius:8px;
-              padding:10px 14px;transition:border-color .15s,background .15s"
-              onmouseover="this.style.borderColor='var(--yellow,#e3b341)';this.style.background='var(--bg3)'"
-              onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--surface)'">
-              <div style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text3);width:28px;text-align:right;flex-shrink:0">${i+1}</div>
-              <div style="width:3px;height:36px;background:var(--yellow,#e3b341);border-radius:2px;flex-shrink:0;opacity:.6"></div>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
-                <div style="font-size:10px;color:var(--text3);display:flex;gap:10px;align-items:center">
-                  ${domain ? `<span style="background:var(--surface2);padding:1px 6px;border-radius:3px">${safe(domain)}</span>` : ''}
-                  <span>${item.date || ''}</span>
+        const newItems = d.items || [];
+        if (!newItems.length && !appendMode) {
+            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-text">No HN stories</div></div>';
+            if (moreBtn) moreBtn.style.display = 'none';
+            return;
+        }
+        _hnAllItems = appendMode ? _hnAllItems.concat(newItems) : newItems;
+        const from = appendMode ? _hnOffset : 0;
+        const to   = from + _FEEDS_PAGE_SIZE;
+        _hnOffset  = to;
+        const slice = _hnAllItems.slice(from, to);
+        const html = slice.map((item, idx) => {
+            const domain = (() => { try { return new URL(item.link||'').hostname.replace('www.',''); } catch(e) { return ''; } })();
+            const thumb = item.thumb;
+            return `<a href="${item.link||'#'}" target="_blank" rel="noopener"
+              style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s"
+              onmouseover="this.style.borderColor='var(--yellow,#e3b341)';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              ${thumb
+                ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2);overflow:hidden"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:30px\\'>🟠</div>'"></div>`
+                : `<div style="width:100%;padding-top:52%;position:relative;background:var(--surface2)" ${item.link&&item.link.startsWith('http')?`data-og-url="${item.link}"`:''}>
+                     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px">🟠</div>
+                   </div>`}
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px;display:flex;align-items:center;gap:6px">
+                  ${domain?`<span style="background:var(--surface2);padding:1px 5px;border-radius:3px">${safe(domain)}</span>`:''}
+                  <span>${item.date||''}</span>
                 </div>
               </div>
-              <svg width="14" height="14" fill="none" stroke="var(--text3)" viewBox="0 0 24 24" style="flex-shrink:0"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
             </a>`;
         }).join('');
+        if (appendMode) grid.insertAdjacentHTML('beforeend', html);
+        else grid.innerHTML = html;
+        if (moreBtn) moreBtn.style.display = _hnOffset < _hnAllItems.length ? '' : (_hnAllItems.length >= _FEEDS_PAGE_SIZE ? '' : 'none');
+        // Lazy-load og:image
+        setTimeout(() => _feedsLazyLoadThumbs(grid), 100);
     } catch(e) {
-        list.innerHTML = '<div style="color:var(--red);font-size:12px;padding:8px">Failed to load Hacker News</div>';
+        if (!appendMode) grid.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load Hacker News: ${e.message}</div>`;
     }
 }
 
 // ── Generic card fetcher + renderer ─────────────────────────────────
 async function _feedsFetchAndRenderCards(url, grid, mode) {
     if (!url || !grid) return;
+    const gridId = grid.id;
+    const moreBtnId = gridId === 'feeds-rss-grid' ? 'feeds-rss-more-btn' : gridId === 'feeds-yt-grid' ? 'feeds-yt-more-btn' : null;
     grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
     try {
         const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}`);
@@ -7027,18 +7155,17 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
         if (!items.length) {
             const errMsg = d.error ? `Error: ${d.error}` : 'No items found';
             grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">${errMsg}</div></div>`;
+            if (moreBtnId) { const b=document.getElementById(moreBtnId); if(b) b.style.display='none'; }
             return;
         }
-        const limit = mode === 'youtube' ? 18 : 25;
         const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-        grid.innerHTML = items.slice(0, limit).map(item => {
+        // Store full item list with pre-rendered HTML for card mode
+        const enriched = items.map(item => {
             const isYT   = mode === 'youtube' || (item.link||'').includes('youtube.com');
             const isReddit = mode === 'reddit';
             const ptype  = item.post_type || (isYT ? 'youtube' : 'article');
             const thumb  = item.thumb;
-
-            // ── Media type badge ──────────────────────────────────────────
             const typeBadge = (() => {
                 if (ptype === 'video')   return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">▶ Video</div>`;
                 if (ptype === 'gif')     return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#ff6b6b;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">GIF</div>`;
@@ -7046,29 +7173,21 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
                 if (isYT)                return `<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:red;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">▶ YT</div>`;
                 return '';
             })();
-
-            // ── Placeholder icon per type ─────────────────────────────────
             const placeholderIcon = ptype === 'video' ? '▶' : ptype === 'gif' ? '🎞' : ptype === 'gallery' ? '🖼' : ptype === 'image' ? '🖼' : isYT ? '▶' : '📰';
-
-            // ── Reddit meta footer (score + comments) ─────────────────────
             const redditMeta = isReddit ? `
                 <div style="display:flex;align-items:center;gap:10px;font-size:10px;color:var(--text3);margin-top:3px">
                   ${item.flair ? `<span style="background:var(--surface2);padding:1px 5px;border-radius:3px;color:var(--text2);font-size:9px">${safe(item.flair)}</span>` : ''}
-                  <span style="display:flex;align-items:center;gap:3px">▲ ${(item.score||0).toLocaleString()}</span>
-                  <span style="display:flex;align-items:center;gap:3px">💬 ${(item.num_comments||0).toLocaleString()}</span>
+                  <span>▲ ${(item.score||0).toLocaleString()}</span>
+                  <span>💬 ${(item.num_comments||0).toLocaleString()}</span>
                 </div>` : '';
-
             const aspectRatio = isYT || ptype === 'video' ? '56.25%' : '52%';
-
-            // Extract YouTube video ID if applicable
             const ytIdMatch = isYT ? (item.link||'').match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/) : null;
             const ytId = ytIdMatch ? ytIdMatch[1] : null;
             const cardStyle = `display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer`;
-            return `
+            item._html = `
             <a href="${item.link}" ${ytId ? `data-yt-id="${ytId}" onclick="feedsOpenYT(this.dataset.ytId,this.dataset.ytTitle||'');return false;"` : 'target="_blank" rel="noopener"'} data-yt-title="${safe(item.title)}" style="${cardStyle}"
               onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
               onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
-              <!-- Thumbnail / Media -->
               ${thumb
                 ? `<div style="position:relative;width:100%;padding-top:${aspectRatio};background:var(--surface2);overflow:hidden">
                      <img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
@@ -7079,14 +7198,9 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
                      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${placeholderIcon}</div>
                      ${typeBadge}
                    </div>`}
-              <!-- Content -->
               <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
-                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;
-                     display:-webkit-box;-webkit-line-clamp:${isReddit?2:3};-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
-                ${(item.excerpt && !isYT)
-                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.4;margin-top:2px;
-                            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.excerpt)}</div>`
-                    : ''}
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:${isReddit?2:3};-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                ${(item.excerpt && !isYT) ? `<div style="font-size:11px;color:var(--text2);line-height:1.4;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.excerpt)}</div>` : ''}
                 ${redditMeta}
                 <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px;display:flex;align-items:center;gap:4px">
                   <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
@@ -7094,7 +7208,20 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
                 </div>
               </div>
             </a>`;
-        }).join('');
+            return item;
+        });
+
+        // Store for sort/pagination
+        _feedsAllItems[gridId] = enriched;
+        _feedsOffset[gridId] = _FEEDS_PAGE_SIZE;
+        const viewMode = _feedsViewMode[gridId] || 'grid';
+        _feedsRenderItems(grid, enriched, 0, _FEEDS_PAGE_SIZE, viewMode, false);
+
+        // Show/hide Load More
+        if (moreBtnId) {
+            const b = document.getElementById(moreBtnId);
+            if (b) b.style.display = enriched.length > _FEEDS_PAGE_SIZE ? '' : 'none';
+        }
         // Lazy-load og:image for cards without thumbnails
         setTimeout(() => _feedsLazyLoadThumbs(grid), 100);
     } catch(e) {
@@ -7137,6 +7264,179 @@ function feedsCloseRedditPost() {
     const modal = document.getElementById('feeds-reddit-modal');
     if (modal) modal.style.display = 'none';
     document.body.style.overflow = '';
+}
+
+// ── Reddit Comments Modal ─────────────────────────────────────────────
+async function feedsOpenComments(permalink, title) {
+    const modal   = document.getElementById('feeds-reddit-comments-modal');
+    const titleEl = document.getElementById('feeds-comments-title');
+    const bodyEl  = document.getElementById('feeds-comments-post-body');
+    const metaEl  = document.getElementById('feeds-comments-meta');
+    const listEl  = document.getElementById('feeds-comments-list');
+    const linkEl  = document.getElementById('feeds-comments-link');
+    if (!modal) return;
+    const fullLink = permalink.startsWith('http') ? permalink : 'https://www.reddit.com' + permalink;
+    if (titleEl) titleEl.textContent = title || 'Post';
+    if (bodyEl)  bodyEl.textContent  = '';
+    if (metaEl)  metaEl.innerHTML    = '';
+    if (listEl)  listEl.innerHTML    = '<div style="color:var(--text3);font-size:12px">Loading comments…</div>';
+    if (linkEl)  linkEl.href         = fullLink;
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    function renderComment(c, depth) {
+        const d = c.data || {};
+        if (!d.author || d.author === '[deleted]' && !d.body) return '';
+        const indent = depth * 14;
+        const body = (d.body || '').replace(/\n\n/g,'<br><br>').replace(/\n/g,'<br>');
+        const replies = (d.replies?.data?.children||[]).filter(r=>r.kind==='t1');
+        return `<div style="margin-left:${indent}px;border-left:${depth>0?'2px solid var(--border)':'none'};padding-left:${depth>0?'10px':'0'};margin-top:6px">
+          <div style="background:var(--surface);border-radius:6px;padding:8px 10px">
+            <div style="font-size:10px;color:var(--blue);font-weight:600;margin-bottom:4px">${safe(d.author||'?')} <span style="color:var(--text3);font-weight:400">· ▲ ${d.score||0}</span></div>
+            <div style="font-size:12px;color:var(--text2);line-height:1.6">${body}</div>
+          </div>
+          ${replies.slice(0,5).map(r=>renderComment(r,depth+1)).join('')}
+        </div>`;
+    }
+    try {
+        const apiUrl = fullLink.replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
+        const r = await fetch(apiUrl, { credentials:'include', headers:{'Accept':'application/json'} });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const post = data[0]?.data?.children?.[0]?.data || {};
+        const comments = data[1]?.data?.children || [];
+        if (bodyEl) bodyEl.textContent = post.selftext || (post.url && post.url !== fullLink ? post.url : '');
+        if (metaEl) metaEl.innerHTML = `
+          <span>▲ ${(post.score||0).toLocaleString()} points</span>
+          <span>💬 ${(post.num_comments||0).toLocaleString()} comments</span>
+          <span>📌 r/${safe(post.subreddit||'')}</span>
+          <span>👤 u/${safe(post.author||'')}</span>`;
+        if (listEl) {
+            const rendered = comments.filter(c=>c.kind==='t1').slice(0,30).map(c=>renderComment(c,0)).join('');
+            listEl.innerHTML = rendered || '<div style="color:var(--text3);font-size:12px;padding:8px">No comments yet</div>';
+        }
+    } catch(e) {
+        if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:12px">Failed to load comments: ${e.message}</div>`;
+    }
+}
+function feedsCloseComments() {
+    const modal = document.getElementById('feeds-reddit-comments-modal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+// ── Feed view / sort / pagination helpers ────────────────────────────
+function feedsToggleView(gridId, btnId) {
+    const grid = document.getElementById(gridId);
+    const btn  = document.getElementById(btnId);
+    if (!grid) return;
+    const current = _feedsViewMode[gridId] || 'grid';
+    const next = current === 'grid' ? 'list' : 'grid';
+    _feedsViewMode[gridId] = next;
+    if (btn) btn.textContent = next === 'grid' ? '☰' : '⊞';
+    const items = _feedsAllItems[gridId];
+    if (items && items.length) {
+        const offset = _feedsOffset[gridId] || _FEEDS_PAGE_SIZE;
+        _feedsRenderItems(grid, items, 0, offset, next, false);
+    }
+    // Apply list mode styles
+    if (next === 'list') {
+        grid.style.gridTemplateColumns = '1fr';
+        grid.style.gap = '6px';
+    } else {
+        grid.style.gridTemplateColumns = '';
+        grid.style.gap = '12px';
+    }
+}
+
+function feedsSortGrid(gridId, sortVal) {
+    const grid  = document.getElementById(gridId);
+    if (!grid) return;
+    let items = (_feedsAllItems[gridId] || []).slice();
+    if (sortVal === 'oldest') items.reverse();
+    else if (sortVal === 'az') items.sort((a,b) => (a.title||'').localeCompare(b.title||''));
+    _feedsAllItems[gridId] = items;
+    _feedsOffset[gridId] = _FEEDS_PAGE_SIZE;
+    const mode = _feedsViewMode[gridId] || 'grid';
+    _feedsRenderItems(grid, items, 0, _FEEDS_PAGE_SIZE, mode, false);
+    // Update Load More button
+    const moreId = gridId === 'feeds-rss-grid' ? 'feeds-rss-more-btn' : gridId === 'feeds-yt-grid' ? 'feeds-yt-more-btn' : null;
+    if (moreId) { const b = document.getElementById(moreId); if (b) b.style.display = items.length > _FEEDS_PAGE_SIZE ? '' : 'none'; }
+}
+
+function _feedsRenderItems(grid, items, from, to, mode, append) {
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const slice = items.slice(from, to);
+    const html = slice.map(item => {
+        const isYT = (item.link||'').includes('youtube.com') || (item.link||'').includes('youtu.be');
+        const thumb = item.thumb;
+        const ytId = isYT ? (()=>{ try { const u=new URL(item.link); return u.searchParams.get('v')||u.pathname.split('/').pop(); } catch(e){return null;} })() : null;
+        const domainStr = (() => { try { return new URL(item.link||'').hostname.replace('www.',''); } catch(e){return '';} })();
+        if (mode === 'list') {
+            return `<a href="${item.link||'#'}" ${ytId?`data-yt-id="${ytId}" onclick="feedsOpenYT(this.dataset.ytId,this.dataset.ytTitle||'');return false;" data-yt-title="${safe(item.title)}"`:' target="_blank" rel="noopener"'} style="display:flex;align-items:center;gap:10px;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;transition:border-color .15s" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+              ${thumb ? `<img src="${thumb}" loading="lazy" style="width:56px;height:40px;object-fit:cover;border-radius:4px;flex-shrink:0" onerror="this.style.display='none'">` : `<div style="width:56px;height:40px;background:var(--bg3);border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px">${isYT?'▶':'📰'}</div>`}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:2px">${domainStr ? `${domainStr} · ` : ''}${item.date||''}</div>
+              </div>
+            </a>`;
+        }
+        // Card mode — delegate to the card HTML the item already produced (passed as raw)
+        return item._html || `<a href="${item.link||'#'}" ${ytId?`data-yt-id="${ytId}" onclick="feedsOpenYT(this.dataset.ytId,this.dataset.ytTitle||'');return false;" data-yt-title="${safe(item.title)}"`:' target="_blank" rel="noopener"'} style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+          ${thumb ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2)"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${isYT?'▶':'📰'}</div>'"></div>` : `<div style="width:100%;padding-top:52%;background:var(--surface2);position:relative"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${isYT?'▶':'📰'}</div></div>`}
+          <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+            <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">${domainStr ? `${domainStr} · ` : ''}${item.date||''}</div>
+          </div>
+        </a>`;
+    }).join('');
+    if (append) grid.insertAdjacentHTML('beforeend', html);
+    else grid.innerHTML = html;
+}
+
+function feedsLoadMore(type) {
+    const gridId = type === 'rss' ? 'feeds-rss-grid' : type === 'youtube' ? 'feeds-yt-grid' : null;
+    if (!gridId) return;
+    const grid = document.getElementById(gridId);
+    const moreBtnId = type === 'rss' ? 'feeds-rss-more-btn' : 'feeds-yt-more-btn';
+    const moreBtn = document.getElementById(moreBtnId);
+    if (!grid) return;
+    const items = _feedsAllItems[gridId] || [];
+    const from = _feedsOffset[gridId] || _FEEDS_PAGE_SIZE;
+    const to = from + _FEEDS_PAGE_SIZE;
+    _feedsOffset[gridId] = to;
+    const mode = _feedsViewMode[gridId] || 'grid';
+    _feedsRenderItems(grid, items, from, to, mode, true);
+    if (moreBtn) moreBtn.style.display = to >= items.length ? 'none' : '';
+}
+
+function feedsRedditChangeSort(val) {
+    _feedsRedditSort = val;
+    _feedsRedditAfter = null;
+    const moreBtn = document.getElementById('feeds-reddit-more-btn');
+    if (moreBtn) moreBtn.style.display = 'none';
+    const grid = document.getElementById('feeds-reddit-grid');
+    const src = (_feedsSubs.reddit||[]).find(s => s.id === _feedsRedditActive);
+    if (src && grid) _feedsFetchRedditDirect(src.url, grid, false);
+}
+
+function feedsRedditLoadMore() {
+    const grid = document.getElementById('feeds-reddit-grid');
+    const src = (_feedsSubs.reddit||[]).find(s => s.id === _feedsRedditActive);
+    if (src && grid) _feedsFetchRedditDirect(src.url, grid, true);
+}
+
+function feedsHNChangeSort(sort, btnEl) {
+    _hnSort = sort;
+    _hnAllItems = [];
+    _hnOffset = 0;
+    document.querySelectorAll('[id^="hn-sort-"]').forEach(b=>b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    _feedsLoadHN(false);
+}
+
+function feedsHNLoadMore() {
+    _feedsLoadHN(true);
 }
 
 // ── Media player modal (YouTube embed) ───────────────────────────────
@@ -7673,6 +7973,60 @@ let _iptvView        = 'channels';
 let _iptvMVCells     = [];   // multiview channel IDs per cell
 let _iptvMVCols      = 2, _iptvMVRows = 2;
 let _iptvInited      = false;
+let _iptvSource      = localStorage.getItem('iptv_source') || 'moviebite';
+let _iptvTZOffset    = parseInt(localStorage.getItem('iptv_tz_offset') || '0', 10);
+
+// BinTV channel list (https://www.bintv.net/)
+const _BINTV_CHANNELS = [
+    {id:'bein-sport-1',    name:'beIN Sport 1',     group:'Sports'},
+    {id:'bein-sport-2',    name:'beIN Sport 2',     group:'Sports'},
+    {id:'bein-sport-3',    name:'beIN Sport 3',     group:'Sports'},
+    {id:'sky-sports-main', name:'Sky Sports Main',  group:'Sports'},
+    {id:'sky-sports-pl',   name:'Sky Sports PL',    group:'Sports'},
+    {id:'sky-sports-f1',   name:'Sky Sports F1',    group:'Sports'},
+    {id:'espn',            name:'ESPN',             group:'Sports'},
+    {id:'nfl-network',     name:'NFL Network',      group:'Sports'},
+    {id:'bbc-one',         name:'BBC One',          group:'News'},
+    {id:'bbc-news',        name:'BBC News',         group:'News'},
+    {id:'cnn',             name:'CNN',              group:'News'},
+    {id:'fox-news',        name:'Fox News',         group:'News'},
+    {id:'al-jazeera',      name:'Al Jazeera',       group:'News'},
+    {id:'euronews',        name:'Euronews',         group:'News'},
+    {id:'itv',             name:'ITV',              group:'Entertainment'},
+    {id:'channel-4',       name:'Channel 4',        group:'Entertainment'},
+    {id:'comedy-central',  name:'Comedy Central',   group:'Entertainment'},
+    {id:'nat-geo',         name:'Nat Geo',          group:'Entertainment'},
+    {id:'discovery',       name:'Discovery',        group:'Entertainment'},
+    {id:'history',         name:'History Channel',  group:'Entertainment'},
+];
+
+function iptvSetSource(src) {
+    _iptvSource = src;
+    localStorage.setItem('iptv_source', src);
+    const sel = document.getElementById('iptv-source-select');
+    if (sel) sel.value = src;
+    // Reload channels from new source
+    if (src === 'bintv') {
+        _iptvChannels = _BINTV_CHANNELS.map(c => ({...c, custom: false}));
+    } else {
+        // Will reload from server on next iptvReload
+        _iptvChannels = [];
+    }
+    iptvReload();
+}
+
+function iptvSetTZOffset(val) {
+    _iptvTZOffset = parseInt(val, 10);
+    localStorage.setItem('iptv_tz_offset', val);
+}
+
+function _iptvInitUI() {
+    // Restore saved source/TZ
+    const srcSel = document.getElementById('iptv-source-select');
+    if (srcSel) srcSel.value = _iptvSource;
+    const tzSel = document.getElementById('iptv-tz-offset');
+    if (tzSel) tzSel.value = String(_iptvTZOffset);
+}
 
 function iptvSetView(v) {
     _iptvView = v;
@@ -7690,7 +8044,13 @@ function iptvSetView(v) {
 async function iptvInit() {
     if (_iptvInited && _iptvChannels.length) return;
     _iptvInited = true;
-    await iptvFetchChannels();
+    _iptvInitUI();
+    if (_iptvSource === 'bintv') {
+        _iptvChannels = _BINTV_CHANNELS.map(c => ({...c, custom: false}));
+        iptvRenderList();
+    } else {
+        await iptvFetchChannels();
+    }
 }
 
 async function iptvFetchChannels() {
@@ -7778,17 +8138,20 @@ function iptvPlayChannel(id, name, rowEl) {
     const nowSource   = document.getElementById('iptv-now-source');
 
     if (frame) {
-        // MovieBite: channels at live.moviebite.cc/channels/{slug}
-        // Parent container has overflow:hidden; iframe has top:-55px to hide site header.
-        frame.src = `https://live.moviebite.cc/channels/${id}`;
+        const streamUrl = _iptvSource === 'bintv'
+            ? `https://www.bintv.net/channel/${id}`
+            : `https://live.moviebite.cc/channels/${id}`;
+        frame.src = streamUrl;
         frame.style.display = '';
     }
     if (placeholder) placeholder.style.display = 'none';
     if (nowPlaying)  nowPlaying.textContent = name;
-    if (nowSource)   nowSource.textContent  = `MovieBite · ${name}`;
+    const sourceName = _iptvSource === 'bintv' ? 'BinTV' : 'MovieBite';
+    if (nowSource)   nowSource.textContent  = `${sourceName} · ${name}`;
 
     const popoutBtn = document.getElementById('iptv-popout-btn');
-    if (popoutBtn) popoutBtn.dataset.url = `https://live.moviebite.cc/channels/${id}`;
+    const popUrl = _iptvSource === 'bintv' ? `https://www.bintv.net/channel/${id}` : `https://live.moviebite.cc/channels/${id}`;
+    if (popoutBtn) popoutBtn.dataset.url = popUrl;
 }
 
 function iptvPopout() {
@@ -7833,9 +8196,11 @@ async function iptvLoadSchedule(type, btnEl) {
         }
         if (statusEl) statusEl.textContent = `${list.length} event${list.length!==1?'s':''}`;
         listEl.innerHTML = list.slice(0,60).map(m => {
-            const ts    = m.time || m.date || 0;
-            const dt    = ts ? new Date(ts*1000).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'TBD';
-            const isLive= (Date.now()/1000 - ts) < 7200 && ts < Date.now()/1000 + 300;
+            const ts      = m.time || m.date || 0;
+            const adjTs   = ts ? ts + (_iptvTZOffset * 3600) : 0;
+            const dt      = adjTs ? new Date(adjTs*1000).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'TBD';
+            const nowSecs = Date.now()/1000;
+            const isLive  = ts && (nowSecs - ts) < 7200 && ts < nowSecs + 300;
             const srcs  = (m.sources||[]).map(s=>`<span style="font-size:9px;background:var(--surface2);padding:1px 5px;border-radius:3px">${s.source||s.id||'stream'}</span>`).join(' ');
             return `
             <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);transition:border-color .15s;cursor:default"
@@ -7873,7 +8238,7 @@ function iptvRenderMV() {
         return `
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
           ${ch
-            ? `<iframe src="https://live.moviebite.cc/channels/${ch.id}" style="position:absolute;top:-55px;left:0;width:100%;height:calc(100% + 55px);border:none" allow="autoplay;fullscreen" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
+            ? `<iframe src="${_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation allow-downloads"></iframe>`
             : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
                  <div style="font-size:28px">📺</div>
                  <div style="font-size:11px">Click to assign channel</div>

@@ -490,21 +490,105 @@ port_in_use() {
 }
 
 # Find next available port starting from $1, incrementing by 1
-find_free_port() {
+# ── PortMaster — intelligent port assignment ─────────────────────────────────
+# Knowledge base: ports that belong to well-known services and must NEVER be
+# reassigned even if currently unused (they own the port by convention).
+declare -A _PM_HARDCODED=(
+    [nginx]=80       [apache2]=80      [httpd]=80       [caddy]=80
+    [nginx-ssl]=443  [apache-ssl]=443  [haproxy]=443
+    [mysql]=3306     [mariadb]=3306    [mysqld]=3306
+    [postgres]=5432  [postgresql]=5432 [pg]=5432
+    [redis]=6379     [redis-server]=6379
+    [mongodb]=27017  [mongod]=27017
+    [elasticsearch]=9200
+    [rabbitmq]=5672  [rabbitmq-server]=5672
+    [smtp]=25        [postfix]=25      [sendmail]=25
+    [dns]=53         [named]=53        [bind]=53       [dnsmasq]=53
+    [ssh]=22         [sshd]=22
+    [ftp]=21         [vsftpd]=21
+    [imap]=143       [imaps]=993
+    [pop3]=110       [pop3s]=995
+)
+
+# Check if a port is owned by a hardcoded/system service
+_pm_is_hardcoded_port() {
     local port="$1"
-    local max_tries="${2:-50}"
-    local i=0
-    while (( i < max_tries )); do
-        if ! port_in_use "${port}"; then
-            echo "${port}"
+    for svc in "${!_PM_HARDCODED[@]}"; do
+        if [[ "${_PM_HARDCODED[$svc]}" == "$port" ]]; then
+            return 0  # yes, hardcoded
+        fi
+    done
+    return 1  # not hardcoded
+}
+
+# Check who owns a port (returns process name or empty)
+_pm_port_owner() {
+    local port="$1"
+    # Try ss first, fall back to netstat, then /proc
+    if command -v ss &>/dev/null; then
+        ss -tlnp 2>/dev/null | awk -v p=":$port " '$4 ~ p {match($0,/users:\(\("[^"]+"/); if(RSTART) {s=substr($0,RSTART+9); gsub(/".*/,"",s); print s; exit}}'
+    elif command -v netstat &>/dev/null; then
+        netstat -tlnp 2>/dev/null | awk -v p=":$port " '$4 ~ p {split($NF,a,"/"); print a[2]; exit}'
+    fi
+}
+
+# Core function: find a free port intelligently
+# Usage: find_free_port <desired_port> [range_start] [range_end]
+find_free_port() {
+    local desired="${1:-8080}"
+    local range_start="${2:-8000}"
+    local range_end="${3:-9900}"
+
+    # 1. If desired port is free → use it (always first choice)
+    if ! ss -tlnp 2>/dev/null | grep -q ":${desired} " && \
+       ! ss -tlnp 2>/dev/null | grep -q ":${desired}$"; then
+        echo "$desired"
+        return 0
+    fi
+
+    # 2. Port is taken — is it hardcoded?
+    if _pm_is_hardcoded_port "$desired"; then
+        # Cannot take this port — find alternative in range
+        log WARN "Port ${desired} belongs to a system service (hardcoded) — finding alternative in ${range_start}-${range_end}"
+        for p in $(seq "$range_start" "$range_end"); do
+            if _pm_is_hardcoded_port "$p"; then
+                continue  # skip known system ports
+            fi
+            if ! ss -tlnp 2>/dev/null | grep -q ":${p} " && \
+               ! ss -tlnp 2>/dev/null | grep -q ":${p}$"; then
+                echo "$p"
+                return 0
+            fi
+        done
+        log ERROR "No free ports found in range ${range_start}-${range_end}"
+        echo "$desired"  # return desired as fallback (will likely fail at runtime)
+        return 1
+    fi
+
+    # 3. Port is taken by a flexible (non-hardcoded) process
+    local owner; owner=$(_pm_port_owner "$desired")
+    if [[ -n "$owner" ]]; then
+        log WARN "Port ${desired} in use by '${owner}' — auto-assigning alternative"
+    else
+        log WARN "Port ${desired} in use — auto-assigning alternative"
+    fi
+
+    # Find next free port NOT in hardcoded list and NOT in use
+    for p in $(seq "$range_start" "$range_end"); do
+        if _pm_is_hardcoded_port "$p"; then
+            continue
+        fi
+        if ! ss -tlnp 2>/dev/null | grep -q ":${p} " && \
+           ! ss -tlnp 2>/dev/null | grep -q ":${p}$"; then
+            log INFO "Port ${desired} → auto-assigned ${p}"
+            echo "$p"
             return 0
         fi
-        (( port++ ))
-        (( i++ ))
     done
-    # Fallback: pick a random high port
-    local rnd=$(( RANDOM % 10000 + 20000 ))
-    echo "${rnd}"
+
+    log ERROR "PortMaster: No free ports in range ${range_start}-${range_end}"
+    echo "$desired"
+    return 1
 }
 
 # Resolve port conflicts in a port mapping string like "8080:80 9090:90"

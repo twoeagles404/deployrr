@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.17 · Full deployment, update management, and real-time monitoring
+Version: 3.15.18 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.17",
+            "version": "3.15.18",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1316,7 +1316,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.17"})
+    return jsonify({"update_available": False, "version": "3.15.18"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1633,9 +1633,10 @@ def api_rss_fetch():
     if not url:
         return jsonify({"error": "Missing url"}), 400
 
-    # Per-feed response cache to avoid hammering external servers
+    # Per-feed response cache — short TTL to keep content fresh
+    bust = request.args.get("bust", "0")  # ?bust=1 forces bypass
     cache_key = "rss_fetch_" + url
-    if cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 300:
+    if bust == "0" and cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 120:
         return jsonify(_rss_cache[cache_key]["data"])
 
     try:
@@ -1647,12 +1648,15 @@ def api_rss_fetch():
             m = _re.search(r'reddit\.com/r/([A-Za-z0-9_]+)', url)
             if m:
                 subreddit = m.group(1)
-                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25&raw_json=1"
+                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25&raw_json=1&include_over_18=1"
                 req_json = urllib.request.Request(json_url, headers={
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept": "application/json, text/javascript, */*; q=0.01",
                     "Accept-Language": "en-US,en;q=0.9",
                     "Referer": "https://www.reddit.com/",
+                    "Cookie": "over18=1; reddit_session=; redesign_optout=true",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
                     "DNT": "1",
                 })
                 with urllib.request.urlopen(req_json, timeout=15) as resp_j:
@@ -1750,8 +1754,12 @@ def api_rss_fetch():
 
         # ── Non-Reddit: standard RSS/Atom fetch ───────────────────────────
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; +https://github.com/twoeagles404/arrhub)",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
         }
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1914,7 +1922,10 @@ def api_rss_fetch():
 
         result = {"items": items}
         _rss_cache[cache_key] = {"data": result, "ts": time.time()}
-        return jsonify(result)
+        resp = jsonify(result)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
     except Exception as e:
         return jsonify({"error": str(e), "items": []}), 200
 
@@ -2465,9 +2476,13 @@ def api_reddit_feed():
         if after:
             url += f"&after={after}"
         req = _ur.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "over18=1; redesign_optout=true",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://www.reddit.com/",
         })
         with _ur.urlopen(req, timeout=15) as r:
             data = _jr.loads(r.read())
@@ -2486,8 +2501,12 @@ def api_reddit_comments():
         return jsonify({"error": "Missing url"}), 400
     try:
         req = _ur.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "over18=1; redesign_optout=true",
+            "Cache-Control": "no-cache",
+            "Referer": "https://www.reddit.com/",
         })
         with _ur.urlopen(req, timeout=15) as r:
             data = _jr.loads(r.read())
@@ -3256,6 +3275,11 @@ _HTML_SPA = r"""<!DOCTYPE html>
 [data-accent="pink"]{--blue:#f778ba;--blue2:rgba(247,120,186,.15);}
 [data-accent="cyan"]{--blue:#56d9e0;--blue2:rgba(86,217,224,.15);}
 
+/* ── Apple-smooth scrolling and selection ── */
+html { scroll-behavior: smooth; }
+* { box-sizing: border-box; }
+::selection { background: rgba(99,102,241,0.3); color: inherit; }
+
 /* ── Background image layer ─────────────────────────────────────────── */
 #bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
 #app{position:relative;z-index:1;}
@@ -3276,24 +3300,54 @@ _HTML_SPA = r"""<!DOCTYPE html>
   border-radius:var(--r);
   overflow:hidden;
 }
-/* Drag handle shown when in edit mode */
-.gs-editing .grid-stack-item>.grid-stack-item-content::before{
-  content:'⠿  drag to rearrange · resize from corner';
-  display:block;
-  padding:4px 10px;
-  font-size:10px;
-  color:var(--text3);
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  border-radius:var(--r) var(--r) 0 0;
-  cursor:grab;
-  user-select:none;
-  letter-spacing:.03em;
+/* ── Homarr-like edit mode: visible grid cells ── */
+.grid-stack.gs-editing {
+  background-image:
+    linear-gradient(to right, rgba(99,102,241,0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(99,102,241,0.08) 1px, transparent 1px);
+  background-size: calc(100% / 12 - 0px) 68px;
+  background-position: 0 0;
+  border-radius: 12px;
 }
-.gs-editing .grid-stack-item>.grid-stack-item-content .panel{
-  border-radius:0 0 var(--r) var(--r);
+.grid-stack.gs-editing .grid-stack-item {
+  outline: 2px solid rgba(99,102,241,0.35) !important;
+  outline-offset: -2px;
+  border-radius: var(--r);
+  transition: outline-color .15s, transform .15s;
 }
-.gs-editing .grid-stack-item{outline:1px dashed var(--border2);}
+.grid-stack.gs-editing .grid-stack-item:hover {
+  outline-color: rgba(99,102,241,0.7) !important;
+  transform: scale(1.003);
+}
+/* ── Drag handle ── */
+.gs-drag-handle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(99,102,241,0.05));
+  border-bottom: 1px solid rgba(99,102,241,0.2);
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(99,102,241,0.9);
+  cursor: grab;
+  user-select: none;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  border-radius: var(--r) var(--r) 0 0;
+}
+.gs-drag-handle:active { cursor: grabbing; }
+/* ── Widget resize handles — more visible ── */
+.gs-editing .ui-resizable-handle {
+  background: rgba(99,102,241,0.4) !important;
+  border-radius: 3px;
+}
+.gs-editing .ui-resizable-se {
+  width: 14px !important;
+  height: 14px !important;
+  right: 4px !important;
+  bottom: 4px !important;
+}
 /* Widget remove button (shown in edit mode) */
 .gs-editing .widget-remove-btn{display:flex!important;}
 .widget-remove-btn{
@@ -3623,8 +3677,9 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .btn svg{width:12px;height:12px;flex-shrink:0;}
 
 /* ── Generic panel ── */
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:16px;}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:16px;transition:box-shadow .25s cubic-bezier(.25,.46,.45,.94),transform .25s cubic-bezier(.25,.46,.45,.94),border-color .2s;}
 .panel-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;display:flex;align-items:center;gap:8px;}
+.panel:hover{box-shadow:0 8px 32px rgba(0,0,0,0.22);transform:translateY(-1px);}
 
 /* ── Tables ── */
 table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -4229,7 +4284,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.17</div>
+      <div class="sb-version">v3.15.18</div>
     </div>
   </div>
 
@@ -5192,7 +5247,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.17</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.18</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7634,7 +7689,7 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
     const moreBtnId = gridId.endsWith('-grid') ? gridId.replace(/-grid$/, '-more-btn') : null;
     grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
     try {
-        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}`);
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}&_t=${Date.now()}`);
         const d = await r.json();
         const items = d.items || [];
         if (!items.length) {
@@ -10174,7 +10229,7 @@ function _gsInit() {
     disableDrag: isMobile,
     disableResize: isMobile,
     resizable: { handles: 'e,se,s,sw,w' },  // resize from all sides
-    draggable: { handle: '.panel-title' },   // drag by title bar only
+    draggable: { handle: '.gs-drag-handle' },
   }, el);
   // When a widget is resized, tell Chart.js canvases inside to resize + toggle compact class
   _gs.on('resizestop', (event, element) => {
@@ -10188,13 +10243,14 @@ function _gsInit() {
   // Apply compact class to all widgets initially
   el.querySelectorAll('.grid-stack-item').forEach(item => _applyCompactClass(item));
   // Restore saved layout — invalidate if widget set changed (layout version bump)
-  const _GRID_VER = 2;  // bump when adding/removing widgets
+  const _GRID_VER = 3;  // bump when adding/removing widgets
   const saved = localStorage.getItem('arrhub_grid');
   const savedVer = parseInt(localStorage.getItem('arrhub_grid_ver') || '0');
   if (saved && savedVer === _GRID_VER) {
     try {
       const items = JSON.parse(saved);
       _gs.load(items, false);
+      _gs.compact();   // eliminates position conflicts
     } catch(e) { localStorage.removeItem('arrhub_grid'); }
   } else {
     localStorage.removeItem('arrhub_grid');
@@ -10399,6 +10455,14 @@ function toggleGridEdit() {
     btn.style.background = 'var(--blue2)';
     btn.style.color      = 'var(--blue)';
     grid.classList.add('gs-editing');
+    grid.querySelectorAll('.grid-stack-item').forEach(item => {
+      if (!item.querySelector('.gs-drag-handle')) {
+        const dh = document.createElement('div');
+        dh.className = 'gs-drag-handle';
+        dh.innerHTML = '⠿ drag';
+        item.querySelector('.grid-stack-item-content').prepend(dh);
+      }
+    });
     if (addBtn) addBtn.style.display = '';
     showToast('Drag by title bar · resize from edges · ✕ to hide widgets · click Save when done', 'info', 5000);
   } else {
@@ -10409,6 +10473,7 @@ function toggleGridEdit() {
     btn.style.background = '';
     btn.style.color      = '';
     grid.classList.remove('gs-editing');
+    document.querySelectorAll('.gs-drag-handle').forEach(h => h.remove());
     if (addBtn) addBtn.style.display = 'none';
     _saveWidgetConfig();  // persist to server
     showToast('Layout saved', 'success', 2000);

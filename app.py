@@ -4527,7 +4527,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.22</div>
+      <div class="sb-version">v3.15.23</div>
     </div>
   </div>
 
@@ -4955,7 +4955,6 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div id="seerr-card-body" class="svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
               </div>
             </div>
-          </div>
         </div>
 
         <!-- ④+⑤ Docker & Network I/O -->
@@ -5045,7 +5044,6 @@ body.sse-disconnected #app{padding-top:38px;}
 
               </div>
             </div>
-          </div>
         </div>
 
         <!-- ⑥ Recent Logs -->
@@ -5060,7 +5058,6 @@ body.sse-disconnected #app{padding-top:38px;}
               </div>
               <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
             </div>
-          </div>
         </div>
 
         <!-- ⑦ Containers Live -->
@@ -5078,7 +5075,6 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
               </div>
             </div>
-          </div>
         </div>
 
         <!-- ⑧ Service Launcher -->

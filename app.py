@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.13 · Full deployment, update management, and real-time monitoring
+Version: 3.15.14 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.13",
+            "version": "3.15.14",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -954,6 +954,7 @@ def api_settings_get():
             "plex_token":     _db_get("plex_token", ""),
             "seerr_url":      _db_get("seerr_url", ""),
             "seerr_api_key":  _db_get("seerr_api_key", ""),
+            "football_api_key": _db_get("football_api_key", ""),
         }
     })
 
@@ -972,6 +973,7 @@ def api_settings_set():
         "deluge_url", "deluge_pass",
         "plex_url", "plex_token",
         "seerr_url", "seerr_api_key",
+        "football_api_key",
     ]
     for key in allowed:
         if key in data:
@@ -1845,6 +1847,21 @@ def api_rss_fetch():
                             thumb = _u
                 except Exception:
                     pass
+            # 7. Try extracting from full item XML — broader namespace patterns
+            if not thumb:
+                import re as _re_thumb
+                _raw_item = ET.tostring(item, encoding='unicode', method='xml') if hasattr(item, 'tag') else ''
+                # Match any url= attribute in media-related tags
+                for _tp in [
+                    r'<media:thumbnail[^>]+url=["\']([^"\']{10,})["\']',
+                    r'<media:content[^>]+url=["\']([^"\']{10,})["\']',
+                    r'<enclosure[^>]+url=["\']([^"\']{10,})["\']',
+                    r'url=["\']([^"\']*(?:\.jpg|\.jpeg|\.png|\.webp)[^"\']*)["\']',
+                ]:
+                    _tm = _re_thumb.search(_tp, _raw_item, _re_thumb.I)
+                    if _tm and _tm.group(1).startswith('http'):
+                        thumb = _tm.group(1)
+                        break
 
             # Excerpt — from <description> or <content:encoded>
             excerpt = ""
@@ -2390,6 +2407,172 @@ def api_feeds_og():
         return jsonify(result)
     except Exception as e:
         return jsonify({"img": None, "error": str(e)[:80]})
+
+@app.route("/api/reddit/feed")
+def api_reddit_feed():
+    """Server-side Reddit proxy — bypasses CORS and NSFW restrictions."""
+    import urllib.request as _ur, json as _jr
+    sub = request.args.get("sub", "").strip()
+    sort = request.args.get("sort", "hot").strip()
+    after = request.args.get("after", "").strip()
+    limit = min(int(request.args.get("limit", "25")), 100)
+    if not sub:
+        return jsonify({"error": "Missing subreddit"}), 400
+    cache_key = f"reddit_{sub}_{sort}_{after}_{limit}"
+    if cache_key in _rss_cache and time.time() - _rss_cache[cache_key].get("ts", 0) < 120:
+        return jsonify(_rss_cache[cache_key]["data"])
+    try:
+        url = f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1"
+        if after:
+            url += f"&after={after}"
+        req = _ur.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        with _ur.urlopen(req, timeout=15) as r:
+            data = _jr.loads(r.read())
+        result = {"data": data.get("data", {}), "ok": True}
+        _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)[:120], "ok": False})
+
+@app.route("/api/reddit/comments")
+def api_reddit_comments():
+    """Server-side proxy for Reddit comment threads."""
+    import urllib.request as _ur, json as _jr
+    url = request.args.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "Missing url"}), 400
+    try:
+        req = _ur.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+        })
+        with _ur.urlopen(req, timeout=15) as r:
+            data = _jr.loads(r.read())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)[:120]})
+
+# ── Premier League API (uses free football-data.org or api-football) ────
+_epl_cache: dict = {}
+
+@app.route("/api/epl/standings")
+def api_epl_standings():
+    """Fetch Premier League standings."""
+    import urllib.request as _ur, json as _jr
+    cache_key = "epl_standings"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 900:
+        return jsonify(_epl_cache[cache_key]["data"])
+    try:
+        # Use football-data.org free tier (PL competition = 2021)
+        api_key = _get_setting("football_api_key", "")
+        headers = {"User-Agent": "ArrHub/3.15"}
+        if api_key:
+            headers["X-Auth-Token"] = api_key
+        req = _ur.Request("https://api.football-data.org/v4/competitions/PL/standings", headers=headers)
+        with _ur.urlopen(req, timeout=12) as r:
+            data = _jr.loads(r.read())
+        standings = []
+        for row in (data.get("standings", [{}])[0].get("table", [])):
+            standings.append({
+                "pos": row.get("position"),
+                "team": row.get("team", {}).get("shortName", row.get("team", {}).get("name", "?")),
+                "crest": row.get("team", {}).get("crest", ""),
+                "played": row.get("playedGames", 0),
+                "won": row.get("won", 0),
+                "drawn": row.get("draw", 0),
+                "lost": row.get("lost", 0),
+                "gf": row.get("goalsFor", 0),
+                "ga": row.get("goalsAgainst", 0),
+                "gd": row.get("goalDifference", 0),
+                "pts": row.get("points", 0),
+            })
+        result = {"standings": standings, "season": data.get("season", {}).get("id", "")}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"standings": [], "error": str(e)[:120]})
+
+@app.route("/api/epl/matches")
+def api_epl_matches():
+    """Fetch upcoming and recent PL matches."""
+    import urllib.request as _ur, json as _jr, datetime as _dt
+    mtype = request.args.get("type", "upcoming")  # upcoming | results
+    cache_key = f"epl_matches_{mtype}"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 600:
+        return jsonify(_epl_cache[cache_key]["data"])
+    try:
+        api_key = _get_setting("football_api_key", "")
+        headers = {"User-Agent": "ArrHub/3.15"}
+        if api_key:
+            headers["X-Auth-Token"] = api_key
+        today = _dt.date.today()
+        if mtype == "results":
+            url = f"https://api.football-data.org/v4/competitions/PL/matches?status=FINISHED&dateFrom={(today - _dt.timedelta(days=14)).isoformat()}&dateTo={today.isoformat()}"
+        else:
+            url = f"https://api.football-data.org/v4/competitions/PL/matches?status=SCHEDULED,TIMED,IN_PLAY,PAUSED&dateFrom={today.isoformat()}&dateTo={(today + _dt.timedelta(days=21)).isoformat()}"
+        req = _ur.Request(url, headers=headers)
+        with _ur.urlopen(req, timeout=12) as r:
+            data = _jr.loads(r.read())
+        matches = []
+        for m in data.get("matches", []):
+            matches.append({
+                "id": m.get("id"),
+                "home": m.get("homeTeam", {}).get("shortName", "?"),
+                "homeCrest": m.get("homeTeam", {}).get("crest", ""),
+                "away": m.get("awayTeam", {}).get("shortName", "?"),
+                "awayCrest": m.get("awayTeam", {}).get("crest", ""),
+                "date": m.get("utcDate", ""),
+                "status": m.get("status", ""),
+                "scoreH": m.get("score", {}).get("fullTime", {}).get("home"),
+                "scoreA": m.get("score", {}).get("fullTime", {}).get("away"),
+                "matchday": m.get("matchday"),
+            })
+        result = {"matches": matches}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"matches": [], "error": str(e)[:120]})
+
+@app.route("/api/epl/highlights")
+def api_epl_highlights():
+    """Fetch PL highlight videos from scorebat free API."""
+    import urllib.request as _ur, json as _jr
+    cache_key = "epl_highlights"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 1200:
+        return jsonify(_epl_cache[cache_key]["data"])
+    try:
+        req = _ur.Request("https://www.scorebat.com/video-api/v3/feed/?token=free", headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        with _ur.urlopen(req, timeout=12) as r:
+            all_vids = _jr.loads(r.read())
+        # Filter for Premier League
+        epl_keywords = ["premier league", "english premier", "epl"]
+        highlights = []
+        for v in (all_vids if isinstance(all_vids, list) else all_vids.get("response", [])):
+            comp = (v.get("competition", "") or v.get("competitionName", "")).lower()
+            if any(k in comp for k in epl_keywords):
+                embed = ""
+                for e in (v.get("videos", []) or []):
+                    if e.get("embed"):
+                        embed = e["embed"]
+                        break
+                highlights.append({
+                    "title": v.get("title", ""),
+                    "thumb": v.get("thumbnail", ""),
+                    "embed": embed,
+                    "date": v.get("date", ""),
+                    "competition": v.get("competition", v.get("competitionName", "")),
+                })
+        result = {"highlights": highlights[:20]}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"highlights": [], "error": str(e)[:120]})
 
 @app.route("/api/services/qbittorrent/torrents")  # legacy compat
 @app.route("/api/services/downloader/torrents")
@@ -3202,21 +3385,24 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 /* ── Sections ── */
 .section-header{
   display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:14px;
+  margin-bottom:20px;
+  padding-bottom:0;
+  border-bottom:none;
 }
-.section-title{font-size:15px;font-weight:600;color:var(--text);}
-.section-sub{font-size:12px;color:var(--text3);}
+.section-title{font-size:32px;font-weight:300;color:var(--text);letter-spacing:-.5px;}
+.section-sub{font-size:12px;color:var(--text3);margin-top:4px;font-weight:400;}
 
 /* ── Stat cards row ── */
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;}
 .stat-card{
-  background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--r);padding:14px 16px;
+  background:rgba(255,255,255,0.05);backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.08);
+  border-radius:12px;padding:16px 18px;
   display:flex;flex-direction:column;gap:6px;
-  transition:border-color var(--transition);
+  transition:border-color var(--transition),backdrop-filter var(--transition);
   container-type:inline-size;overflow:hidden;min-height:0;
 }
-.stat-card:hover{border-color:var(--border2);}
+.stat-card:hover{border-color:rgba(255,255,255,0.12);background:rgba(255,255,255,0.07);}
 .stat-card-icon{font-size:18px;margin-bottom:2px;}
 .stat-card-val{font-size:22px;font-weight:700;color:var(--text);font-family:var(--mono);}
 .stat-card-label{font-size:11px;color:var(--text2);}
@@ -3253,8 +3439,9 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 /* ── Overview metric row ── */
 .metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;}
 .metric-card{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
-  padding:12px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
+  background:rgba(255,255,255,0.06);backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.1);border-radius:14px;
+  padding:14px 16px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
 }
 /* When gauge widget is narrow, stack metric cards 2×2 */
 .grid-stack-item[gs-id="gauges"] .metric-grid{margin-bottom:0;}
@@ -3266,10 +3453,11 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 /* ── Container grid ── */
 .container-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--ctr-card-min,280px),1fr));gap:14px;}
 .ctr-card{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
-  overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition);
+  background:rgba(255,255,255,0.05);backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.08);border-radius:14px;
+  overflow:hidden;transition:border-color var(--transition),backdrop-filter var(--transition);
 }
-.ctr-card:hover{border-color:var(--border2);box-shadow:0 4px 20px rgba(0,0,0,.35);}
+.ctr-card:hover{border-color:rgba(255,255,255,0.12);background:rgba(255,255,255,0.07);}
 
 .ctr-header{padding:12px 14px;display:flex;align-items:flex-start;gap:10px;border-bottom:1px solid var(--border);}
 .ctr-icon{
@@ -3982,6 +4170,10 @@ body.sse-disconnected #app{padding-top:38px;}
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.868v6.264a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
       IPTV Player
     </div>
+    <div class="sb-item" onclick="showTab('epl',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4.5L6 21l1.5-7.5L2 9h7z"/></svg>
+      Premier League
+    </div>
   </div>
 
   <div class="sb-section">
@@ -4050,7 +4242,7 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
       <div class="section-header">
         <div>
-          <div class="section-title">System Overview</div>
+          <div class="section-title" id="ov-greeting">Good morning</div>
           <div class="section-sub" id="ov-hostname">Loading...</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
@@ -4736,6 +4928,7 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="field"><label>Plex Token</label><input type="password" id="svc-plex-token" placeholder="•••••••••••"><div class="field-hint">Settings → Troubleshooting → X-Plex-Token</div></div>
           <div class="field"><label>Seerr/Overseerr URL</label><input type="text" id="svc-seerr-url" placeholder="http://localhost:5055"></div>
           <div class="field"><label>Seerr API Key</label><input type="password" id="svc-seerr-key" placeholder="•••••••••••"></div>
+          <div class="field"><label>⚽ Football API Key</label><input type="password" id="svc-football-key" placeholder="football-data.org key"><div class="field-hint">Free at football-data.org — powers Premier League tab</div></div>
           <div style="grid-column:1/-1;margin-top:4px">
             <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⬇️ Downloads</div>
             <div style="display:flex;flex-direction:column;gap:8px">
@@ -4873,6 +5066,7 @@ body.sse-disconnected #app{padding-top:38px;}
           <select id="iptv-source-select" onchange="iptvSetSource(this.value)" title="IPTV Source" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
             <option value="moviebite">MovieBite</option>
             <option value="bintv">BinTV</option>
+            <option value="daddylive">DaddyLive</option>
           </select>
           <button onclick="iptvBrowseChannels()" class="btn" style="padding:6px 14px;font-size:12px" title="Browse channels in a panel">🔍 Browse</button>
           <button onclick="iptvShowAddChannel()" class="btn-primary" style="padding:6px 14px;font-size:12px">＋ Channel</button>
@@ -5002,13 +5196,13 @@ body.sse-disconnected #app{padding-top:38px;}
         <div style="position:relative;width:min(1100px,97vw);height:90vh;background:var(--bg2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
             <div>
-              <span style="font-size:13px;font-weight:600">📺 Browse MovieBite Channels</span>
-              <span style="font-size:11px;color:var(--text3);margin-left:10px">Find a channel → copy its URL slug → use ＋ Channel to add it</span>
+              <span id="iptv-browse-title" style="font-size:13px;font-weight:600">📺 Browse Channels</span>
+              <span style="font-size:11px;color:var(--text3);margin-left:10px">Find a channel → add it with ＋ Channel</span>
             </div>
             <button onclick="iptvHideBrowse()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:2px 6px">✕</button>
           </div>
           <div style="flex:1;overflow:hidden;position:relative">
-            <iframe id="iptv-browse-iframe" src="" frameborder="0" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-navigation-to-web-pages"></iframe>
+            <iframe id="iptv-browse-iframe" src="" frameborder="0" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen"></iframe>
           </div>
           <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;background:var(--surface)">
             <span style="font-size:11px;color:var(--text2)">Channel URL: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:10px">live.moviebite.cc/channels/<b>SLUG</b></code></span>
@@ -5178,6 +5372,56 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
 
     </div><!-- /tab-feeds -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         PREMIER LEAGUE TAB
+    ═══════════════════════════════════════════════════════════ -->
+    <div id="tab-epl" class="tab-panel">
+      <div class="section-header" style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:22px">⚽</span>
+          <div>
+            <span style="font-weight:600;font-size:15px">Premier League</span>
+            <div style="font-size:11px;color:var(--text3)">Tables · Fixtures · Highlights</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="view-btn active" id="epl-view-table" onclick="eplSetView('table')">📊 Table</button>
+          <button class="view-btn" id="epl-view-fixtures" onclick="eplSetView('fixtures')">📅 Fixtures</button>
+          <button class="view-btn" id="epl-view-results" onclick="eplSetView('results')">✅ Results</button>
+          <button class="view-btn" id="epl-view-highlights" onclick="eplSetView('highlights')">🎬 Highlights</button>
+          <button class="btn-primary" onclick="eplRefresh()">↺ Refresh</button>
+        </div>
+      </div>
+
+      <!-- Standings table -->
+      <div id="epl-table-view">
+        <div id="epl-standings" style="overflow-x:auto">
+          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading standings…</div>
+        </div>
+      </div>
+
+      <!-- Fixtures -->
+      <div id="epl-fixtures-view" style="display:none">
+        <div id="epl-fixtures-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px">
+          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading fixtures…</div>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div id="epl-results-view" style="display:none">
+        <div id="epl-results-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px">
+          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading results…</div>
+        </div>
+      </div>
+
+      <!-- Highlights -->
+      <div id="epl-highlights-view" style="display:none">
+        <div id="epl-highlights-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
+          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Loading highlights…</div>
+        </div>
+      </div>
+    </div><!-- /tab-epl -->
 
     <!-- New Category modal -->
     <div id="feeds-newcat-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;align-items:center;justify-content:center">
@@ -5464,7 +5708,7 @@ function showTab(name, el) {
     currentTab = name;
 
     // Lazy-load on first show
-    if (name === 'overview') loadServiceLauncher();
+    if (name === 'overview') { updateGreeting(); loadServiceLauncher(); }
     else if (name === 'containers') loadContainers();
     else if (name === 'stornet') { loadStorage(); loadNetwork(); loadHardware(); }
     else if (name === 'ports') loadPortMap();
@@ -5475,6 +5719,7 @@ function showTab(name, el) {
     else if (name === 'updates') checkUpdates();
     else if (name === 'settings') loadSettings();
     else if (name === 'feeds') loadFeedsTab();
+    else if (name === 'epl') eplInit();
     else if (name === 'iptv') iptvInit();
 }
 
@@ -6735,6 +6980,7 @@ async function loadSettings() {
         setInput('svc-plex-token',  s.plex_token);
         setInput('svc-seerr-url',   s.seerr_url);
         setInput('svc-seerr-key',   s.seerr_api_key);
+        setInput('svc-football-key', s.football_api_key);
         setInput('svc-qbit-url',    s.qbittorrent_url);
         setInput('svc-qbit-user',   s.qbittorrent_user);
         setInput('svc-qbit-pass',   s.qbittorrent_pass);
@@ -6993,12 +7239,13 @@ async function _feedsFetchRedditDirect(url, grid, appendMode) {
     const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const sort = _feedsRedditSort || 'hot';
     try {
-        const r = await fetch(`https://www.reddit.com/r/${sub}/${sort}.json?limit=25&raw_json=1&include_over_18=1${_feedsRedditAfter?'&after='+_feedsRedditAfter:''}`, {
-            headers: { 'Accept': 'application/json' },
-            cache: 'default'
+        const r = await fetch(API + `/api/reddit/feed?sub=${encodeURIComponent(sub)}&sort=${sort}&limit=25${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`, {
+            headers: { 'Accept': 'application/json' }
         });
-        if (!r.ok) throw new Error(`HTTP ${r.status} — Reddit may be blocking requests`);
-        const data = await r.json();
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const resp = await r.json();
+        if (!resp.ok) throw new Error(resp.error || 'Reddit fetch failed');
+        const data = {data: resp.data};
         _feedsRedditAfter = data?.data?.after || null;
         const posts = (data?.data?.children || []).filter(p=>p.kind==='t3');
         if (!posts.length && !appendMode) {
@@ -7309,9 +7556,8 @@ async function feedsOpenComments(permalink, title) {
         </div>`;
     }
     try {
-        const apiUrl = fullLink.replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
-        const r = await fetch(apiUrl, { headers:{'Accept':'application/json'} });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const commentUrl = fullLink.replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
+        const r = await fetch(API + `/api/reddit/comments?url=${encodeURIComponent(commentUrl)}`);
         const data = await r.json();
         const post = data[0]?.data?.children?.[0]?.data || {};
         const comments = data[1]?.data?.children || [];
@@ -7974,6 +8220,240 @@ async function submitAddFeed() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// 10a. PREMIER LEAGUE
+// ══════════════════════════════════════════════════════════════════════
+let _eplInited = false;
+let _eplCurrentView = 'table';
+
+function eplInit() {
+    if (!_eplInited) {
+        _eplInited = true;
+        eplLoadStandings();
+    }
+}
+
+function eplSetView(view) {
+    _eplCurrentView = view;
+    ['table','fixtures','results','highlights'].forEach(v => {
+        const el = document.getElementById('epl-'+v+'-view');
+        if (el) el.style.display = v === view ? '' : 'none';
+        const btn = document.getElementById('epl-view-'+v);
+        if (btn) btn.classList.toggle('active', v === view);
+    });
+    // Lazy-load data for the selected view
+    if (view === 'table') eplLoadStandings();
+    else if (view === 'fixtures') eplLoadFixtures();
+    else if (view === 'results') eplLoadResults();
+    else if (view === 'highlights') eplLoadHighlights();
+}
+
+function eplRefresh() {
+    _eplInited = false;
+    eplSetView(_eplCurrentView);
+}
+
+async function eplLoadStandings() {
+    const el = document.getElementById('epl-standings');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading standings…</div>';
+    try {
+        const r = await fetch('/api/epl/standings');
+        const data = await r.json();
+        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">⚠ '+data.error+'</div>'; return; }
+        const rows = data.standings || [];
+        if (!rows.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No standings data. Add a football-data.org API key in Settings.</div>'; return; }
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+        html += '<thead><tr style="border-bottom:2px solid var(--border);color:var(--text2);text-align:left">';
+        html += '<th style="padding:8px 6px;width:30px">#</th>';
+        html += '<th style="padding:8px 6px">Team</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">P</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">W</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">D</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">L</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px">GF</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px">GA</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px">GD</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px;font-weight:700">Pts</th>';
+        html += '</tr></thead><tbody>';
+        rows.forEach((t, i) => {
+            const bg = i < 4 ? 'rgba(56,142,60,.08)' : i >= 17 ? 'rgba(211,47,47,.08)' : 'transparent';
+            const border = i < 4 ? '3px solid #388e3c' : i >= 17 ? '3px solid #d32f2f' : '3px solid transparent';
+            html += '<tr style="border-bottom:1px solid var(--border);background:'+bg+'">';
+            html += '<td style="padding:8px 6px;border-left:'+border+';font-weight:600">'+t.pos+'</td>';
+            html += '<td style="padding:8px 6px;display:flex;align-items:center;gap:8px">';
+            if (t.crest) html += '<img src="'+t.crest+'" style="width:20px;height:20px;object-fit:contain" onerror="this.style.display=\'none\'">';
+            html += '<span style="font-weight:500">'+t.team+'</span></td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.played+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.won+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.drawn+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.lost+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.gf+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.ga+'</td>';
+            const gdColor = t.gd > 0 ? '#4caf50' : t.gd < 0 ? '#f44336' : 'var(--text2)';
+            html += '<td style="padding:8px 6px;text-align:center;color:'+gdColor+'">'+( t.gd > 0 ? '+' : '')+t.gd+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center;font-weight:700;font-size:13px">'+t.pts+'</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '<div style="display:flex;gap:14px;margin-top:10px;font-size:10px;color:var(--text3)">';
+        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#388e3c;border-radius:2px;display:inline-block"></span> Champions League</span>';
+        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#d32f2f;border-radius:2px;display:inline-block"></span> Relegation</span>';
+        html += '</div>';
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load standings: '+e.message+'</div>';
+    }
+}
+
+async function eplLoadFixtures() {
+    const el = document.getElementById('epl-fixtures-list');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading fixtures…</div>';
+    try {
+        const r = await fetch('/api/epl/matches?type=upcoming');
+        const data = await r.json();
+        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">⚠ '+data.error+'</div>'; return; }
+        const matches = data.matches || [];
+        if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No upcoming fixtures found.</div>'; return; }
+        // Group by matchday
+        const grouped = {};
+        matches.forEach(m => {
+            const key = m.matchday ? 'Matchday ' + m.matchday : 'Upcoming';
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(m);
+        });
+        let html = '';
+        Object.entries(grouped).forEach(([label, list]) => {
+            html += '<div style="font-size:12px;font-weight:600;color:var(--text2);margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)">'+label+'</div>';
+            list.forEach(m => {
+                const dt = m.date ? new Date(m.date) : null;
+                const dateStr = dt ? dt.toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'}) + ' · ' + dt.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}) : '';
+                const statusBadge = m.status === 'IN_PLAY' || m.status === 'PAUSED'
+                    ? '<span style="background:#f44336;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">LIVE</span>'
+                    : '<span style="font-size:10px;color:var(--text3)">'+dateStr+'</span>';
+                html += '<div style="display:flex;align-items:center;padding:10px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);gap:10px">';
+                html += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-align:right">';
+                html += '<span style="font-weight:500;font-size:13px">'+m.home+'</span>';
+                if (m.homeCrest) html += '<img src="'+m.homeCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+                html += '</div>';
+                html += '<div style="min-width:80px;text-align:center">'+statusBadge+'</div>';
+                html += '<div style="flex:1;display:flex;align-items:center;gap:6px">';
+                if (m.awayCrest) html += '<img src="'+m.awayCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+                html += '<span style="font-weight:500;font-size:13px">'+m.away+'</span>';
+                html += '</div>';
+                html += '</div>';
+            });
+        });
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load fixtures: '+e.message+'</div>';
+    }
+}
+
+async function eplLoadResults() {
+    const el = document.getElementById('epl-results-list');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading results…</div>';
+    try {
+        const r = await fetch('/api/epl/matches?type=results');
+        const data = await r.json();
+        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">⚠ '+data.error+'</div>'; return; }
+        const matches = (data.matches || []).reverse(); // Most recent first
+        if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No recent results.</div>'; return; }
+        let html = '';
+        let lastMD = '';
+        matches.forEach(m => {
+            const mdLabel = m.matchday ? 'Matchday ' + m.matchday : '';
+            if (mdLabel && mdLabel !== lastMD) {
+                html += '<div style="font-size:12px;font-weight:600;color:var(--text2);margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)">'+mdLabel+'</div>';
+                lastMD = mdLabel;
+            }
+            const dt = m.date ? new Date(m.date) : null;
+            const dateStr = dt ? dt.toLocaleDateString('en-GB', {day:'numeric', month:'short'}) : '';
+            const homeW = m.scoreH != null && m.scoreA != null && m.scoreH > m.scoreA;
+            const awayW = m.scoreH != null && m.scoreA != null && m.scoreA > m.scoreH;
+            const score = m.scoreH != null ? m.scoreH + ' - ' + m.scoreA : 'vs';
+            html += '<div style="display:flex;align-items:center;padding:10px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);gap:10px">';
+            html += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-align:right">';
+            html += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:13px;'+(homeW?'color:var(--text)':'color:var(--text2)')+'">'+m.home+'</span>';
+            if (m.homeCrest) html += '<img src="'+m.homeCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+            html += '</div>';
+            html += '<div style="min-width:80px;text-align:center">';
+            html += '<div style="font-weight:700;font-size:15px;letter-spacing:1px">'+score+'</div>';
+            html += '<div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>';
+            html += '</div>';
+            html += '<div style="flex:1;display:flex;align-items:center;gap:6px">';
+            if (m.awayCrest) html += '<img src="'+m.awayCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+            html += '<span style="font-weight:'+(awayW?'700':'500')+';font-size:13px;'+(awayW?'color:var(--text)':'color:var(--text2)')+'">'+m.away+'</span>';
+            html += '</div>';
+            html += '</div>';
+        });
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load results: '+e.message+'</div>';
+    }
+}
+
+async function eplLoadHighlights() {
+    const el = document.getElementById('epl-highlights-grid');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Loading highlights…</div>';
+    try {
+        const r = await fetch('/api/epl/highlights');
+        const data = await r.json();
+        if (data.error) { el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center;grid-column:1/-1">⚠ '+data.error+'</div>'; return; }
+        const highlights = data.highlights || [];
+        if (!highlights.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">No Premier League highlights available right now.</div>'; return; }
+        let html = '';
+        highlights.forEach(h => {
+            const dt = h.date ? new Date(h.date) : null;
+            const dateStr = dt ? dt.toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'}) : '';
+            html += '<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="eplPlayHighlight(this)">';
+            // Thumbnail or placeholder
+            if (h.thumb) {
+                html += '<div style="position:relative;padding-top:56.25%;background:#111">';
+                html += '<img src="'+h.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.parentNode.innerHTML=\'<div style=\\'display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px;background:#111\\'>⚽</div>\'">';
+                html += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(0,0,0,.7);border-radius:50%;display:flex;align-items:center;justify-content:center">';
+                html += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+                html += '</div></div>';
+            } else {
+                html += '<div style="position:relative;padding-top:56.25%;background:#111">';
+                html += '<div style="display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px">⚽</div>';
+                html += '</div>';
+            }
+            html += '<div style="padding:10px 12px">';
+            html += '<div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+h.title+'</div>';
+            html += '<div style="font-size:10px;color:var(--text3)">'+dateStr+'</div>';
+            html += '</div>';
+            // Hidden embed
+            if (h.embed) html += '<div class="epl-embed-data" style="display:none">'+h.embed.replace(/</g,'\\x3c').replace(/>/g,'\\x3e')+'</div>';
+            html += '</div>';
+        });
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Failed to load highlights: '+e.message+'</div>';
+    }
+}
+
+function eplPlayHighlight(card) {
+    const embedEl = card.querySelector('.epl-embed-data');
+    if (!embedEl) return;
+    const embedHtml = embedEl.textContent.replace(/\\x3c/g, '<').replace(/\\x3e/g, '>');
+    // Extract iframe src from embed HTML
+    const srcMatch = embedHtml.match(/src=["']([^"']+)["']/);
+    if (srcMatch) {
+        // Open in a modal-style overlay
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:950;display:flex;align-items:center;justify-content:center;cursor:pointer';
+        overlay.onclick = () => overlay.remove();
+        overlay.innerHTML = '<div style="width:90%;max-width:900px;aspect-ratio:16/9;position:relative" onclick="event.stopPropagation()">'
+            + '<iframe src="'+srcMatch[1]+'" style="width:100%;height:100%;border:none;border-radius:8px" allow="autoplay;fullscreen;encrypted-media" allowfullscreen></iframe>'
+            + '<button onclick="this.parentNode.parentNode.remove()" style="position:absolute;top:-36px;right:0;background:none;border:none;color:#fff;font-size:24px;cursor:pointer">✕</button>'
+            + '</div>';
+        document.body.appendChild(overlay);
+    }
+}
+
 // 10. IPTV PLAYER
 // ══════════════════════════════════════════════════════════════════════
 let _iptvChannels    = [];
@@ -7989,42 +8469,22 @@ let _iptvSource      = localStorage.getItem('iptv_source') || 'moviebite';
 let _iptvTZOffset    = parseInt(localStorage.getItem('iptv_tz_offset') || '0', 10);
 
 // BinTV channel list (https://www.bintv.net/)
-const _BINTV_CHANNELS = [
-    {id:'bein-sport-1',    name:'beIN Sport 1',     group:'Sports'},
-    {id:'bein-sport-2',    name:'beIN Sport 2',     group:'Sports'},
-    {id:'bein-sport-3',    name:'beIN Sport 3',     group:'Sports'},
-    {id:'sky-sports-main', name:'Sky Sports Main',  group:'Sports'},
-    {id:'sky-sports-pl',   name:'Sky Sports PL',    group:'Sports'},
-    {id:'sky-sports-f1',   name:'Sky Sports F1',    group:'Sports'},
-    {id:'espn',            name:'ESPN',             group:'Sports'},
-    {id:'nfl-network',     name:'NFL Network',      group:'Sports'},
-    {id:'bbc-one',         name:'BBC One',          group:'News'},
-    {id:'bbc-news',        name:'BBC News',         group:'News'},
-    {id:'cnn',             name:'CNN',              group:'News'},
-    {id:'fox-news',        name:'Fox News',         group:'News'},
-    {id:'al-jazeera',      name:'Al Jazeera',       group:'News'},
-    {id:'euronews',        name:'Euronews',         group:'News'},
-    {id:'itv',             name:'ITV',              group:'Entertainment'},
-    {id:'channel-4',       name:'Channel 4',        group:'Entertainment'},
-    {id:'comedy-central',  name:'Comedy Central',   group:'Entertainment'},
-    {id:'nat-geo',         name:'Nat Geo',          group:'Entertainment'},
-    {id:'discovery',       name:'Discovery',        group:'Entertainment'},
-    {id:'history',         name:'History Channel',  group:'Entertainment'},
-];
+const _BINTV_CHANNELS = [];
 
 function iptvSetSource(src) {
     _iptvSource = src;
     localStorage.setItem('iptv_source', src);
     const sel = document.getElementById('iptv-source-select');
     if (sel) sel.value = src;
-    // Reload channels from new source
-    if (src === 'bintv') {
-        _iptvChannels = _BINTV_CHANNELS.map(c => ({...c, custom: false}));
+    _iptvChannels = [];
+    if (src === 'bintv' || src === 'daddylive') {
+        iptvReload();
+        const label = src === 'bintv' ? 'BinTV' : 'DaddyLive';
+        showToast(`Browse ${label} to find channels, then add them with + Channel`, 'info');
+        iptvBrowseChannels();
     } else {
-        // Will reload from server on next iptvReload
-        _iptvChannels = [];
+        iptvReload();
     }
-    iptvReload();
 }
 
 function iptvSetTZOffset(val) {
@@ -8057,8 +8517,8 @@ async function iptvInit() {
     if (_iptvInited && _iptvChannels.length) return;
     _iptvInited = true;
     _iptvInitUI();
-    if (_iptvSource === 'bintv') {
-        _iptvChannels = _BINTV_CHANNELS.map(c => ({...c, custom: false}));
+    if (_iptvSource === 'bintv' || _iptvSource === 'daddylive') {
+        _iptvChannels = [];
         iptvRenderList();
     } else {
         await iptvFetchChannels();
@@ -8150,20 +8610,26 @@ function iptvPlayChannel(id, name, rowEl) {
     const nowSource   = document.getElementById('iptv-now-source');
 
     if (frame) {
-        const streamUrl = _iptvSource === 'bintv'
-            ? `https://www.bintv.net/channel/${id}`
-            : `https://live.moviebite.cc/channels/${id}`;
-        frame.src = streamUrl;
+        const streamUrls = {
+            moviebite: `https://live.moviebite.cc/channels/${id}`,
+            bintv: `https://www.bintv.net/channel/${id}`,
+            daddylive: `https://dlhd.sx/stream/stream-${id}.php`
+        };
+        frame.src = streamUrls[_iptvSource] || streamUrls.moviebite;
         frame.style.display = '';
     }
     if (placeholder) placeholder.style.display = 'none';
     if (nowPlaying)  nowPlaying.textContent = name;
-    const sourceName = _iptvSource === 'bintv' ? 'BinTV' : 'MovieBite';
-    if (nowSource)   nowSource.textContent  = `${sourceName} · ${name}`;
+    const sourceNames = { moviebite: 'MovieBite', bintv: 'BinTV', daddylive: 'DaddyLive' };
+    if (nowSource)   nowSource.textContent  = `${sourceNames[_iptvSource]||'Stream'} · ${name}`;
 
     const popoutBtn = document.getElementById('iptv-popout-btn');
-    const popUrl = _iptvSource === 'bintv' ? `https://www.bintv.net/channel/${id}` : `https://live.moviebite.cc/channels/${id}`;
-    if (popoutBtn) popoutBtn.dataset.url = popUrl;
+    const popUrls = {
+        moviebite: `https://live.moviebite.cc/channels/${id}`,
+        bintv: `https://www.bintv.net/channel/${id}`,
+        daddylive: `https://dlhd.sx/stream/stream-${id}.php`
+    };
+    if (popoutBtn) popoutBtn.dataset.url = popUrls[_iptvSource] || popUrls.moviebite;
 }
 
 function iptvPopout() {
@@ -8250,7 +8716,7 @@ function iptvRenderMV() {
         return `
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
           ${ch
-            ? `<iframe src="${_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation allow-downloads"></iframe>`
+            ? `<iframe src="${_iptvSource==='daddylive'?'https://dlhd.sx/stream/stream-'+ch.id+'.php':_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe>`
             : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
                  <div style="font-size:28px">📺</div>
                  <div style="font-size:11px">Click to assign channel</div>
@@ -8325,7 +8791,10 @@ function iptvBrowseChannels() {
     const modal = document.getElementById('iptv-browse-modal');
     const iframe = document.getElementById('iptv-browse-iframe');
     if (!modal) return;
-    if (iframe && !iframe.src) iframe.src = 'https://live.moviebite.cc/channels';
+    if (iframe) {
+        const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/', daddylive: 'https://dlhd.sx/24-7-channels.php' };
+        iframe.src = urls[_iptvSource] || urls.moviebite;
+    }
     modal.style.display = 'flex';
 }
 function iptvHideBrowse() {
@@ -8861,6 +9330,7 @@ async function saveSvcSettings() {
         sonarr_url: 'svc-sonarr-url', sonarr_api_key: 'svc-sonarr-key',
         plex_url:   'svc-plex-url',   plex_token:     'svc-plex-token',
         seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key',
+        football_api_key: 'svc-football-key',
         qbittorrent_url: 'svc-qbit-url', qbittorrent_user: 'svc-qbit-user', qbittorrent_pass: 'svc-qbit-pass',
         downloader_type: 'svc-dl-type',
         transmission_url: 'svc-transmission-url', transmission_user: 'svc-transmission-user', transmission_pass: 'svc-transmission-pass',
@@ -9315,6 +9785,25 @@ function _launcherIcon(name) {
     if (k.includes(key)) return icon;
   }
   return '📦';
+}
+
+function updateGreeting() {
+    const h = new Date().getHours();
+    let greeting = 'Good morning';
+    if (h >= 12 && h < 18) greeting = 'Good afternoon';
+    else if (h >= 18) greeting = 'Good evening';
+    
+    const greetEl = document.getElementById('ov-greeting');
+    if (greetEl) {
+        const dateStr = new Date().toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'});
+        greetEl.textContent = greeting;
+        const subEl = document.getElementById('ov-hostname');
+        if (subEl && subEl.textContent === 'Loading...') {
+            // Keep hostname, will be loaded separately
+        } else if (subEl) {
+            subEl.textContent = dateStr;
+        }
+    }
 }
 
 async function loadServiceLauncher() {

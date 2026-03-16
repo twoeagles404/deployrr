@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.14",
+            "version": "3.15.15",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -955,6 +955,8 @@ def api_settings_get():
             "seerr_url":      _db_get("seerr_url", ""),
             "seerr_api_key":  _db_get("seerr_api_key", ""),
             "football_api_key": _db_get("football_api_key", ""),
+            "weather_city":     _db_get("weather_city", ""),
+            "weather_country":  _db_get("weather_country", ""),
         }
     })
 
@@ -974,6 +976,7 @@ def api_settings_set():
         "plex_url", "plex_token",
         "seerr_url", "seerr_api_key",
         "football_api_key",
+        "weather_city", "weather_country",
     ]
     for key in allowed:
         if key in data:
@@ -1384,14 +1387,36 @@ def api_weather():
     global _weather_cache
 
     try:
-        # Check cache
-        if _weather_cache["data"] and (time.time() - _weather_cache["ts"]) < CACHE_WEATHER:
+        # Check cache (bust if location changed)
+        weather_city = _get_setting("weather_city", "").strip()
+        weather_country = _get_setting("weather_country", "").strip()
+        cache_key = f"{weather_city}|{weather_country}"
+        if _weather_cache["data"] and (time.time() - _weather_cache["ts"]) < CACHE_WEATHER and _weather_cache.get("loc_key") == cache_key:
             return jsonify(_weather_cache["data"])
 
-        # Get location from ipapi.co
-        geo_resp = requests.get("https://ipapi.co/json/", timeout=5)
-        geo = geo_resp.json()
-        lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
+        # Determine coordinates
+        if weather_city:
+            # Geocode city using open-meteo geocoding API
+            import urllib.request as _ur, json as _jr
+            q = weather_city + (f",{weather_country}" if weather_country else "")
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(q)}&count=1"
+            geo_resp = requests.get(geo_url, timeout=5)
+            geo_data = geo_resp.json()
+            results = geo_data.get("results", [])
+            if results:
+                lat = results[0].get("latitude", 0)
+                lon = results[0].get("longitude", 0)
+                location_name = results[0].get("name", weather_city)
+                country_name = results[0].get("country", weather_country)
+            else:
+                return jsonify({"error": f"Could not find location: {q}"}), 404
+        else:
+            # Fallback: Get location from ipapi.co
+            geo_resp = requests.get("https://ipapi.co/json/", timeout=5)
+            geo = geo_resp.json()
+            lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
+            location_name = geo.get("city", "Unknown")
+            country_name = geo.get("country_name", "")
 
         # Get weather from open-meteo.
         # current= gives real-time humidity/wind; daily= gives 5-day forecast.
@@ -1409,7 +1434,7 @@ def api_weather():
         # Extract current conditions (humidity, wind, feels-like)
         current = weather.get("current", {})
         result = {
-            "location": f"{geo.get('city', 'Unknown')}, {geo.get('country_name', '')}",
+            "location": f"{location_name}, {country_name}",
             "humidity": current.get("relative_humidity_2m"),
             "wind_mph": round(current.get("wind_speed_10m", 0), 1),
             "feels_like": current.get("apparent_temperature"),
@@ -1431,6 +1456,7 @@ def api_weather():
 
         _weather_cache["data"] = result
         _weather_cache["ts"] = time.time()
+        _weather_cache["loc_key"] = cache_key
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -4912,6 +4938,16 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSettings()">Save Settings</button>
       </div>
+      <!-- Weather Location -->
+      <div class="panel">
+        <div class="panel-title">🌤️ Weather Location</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Set your city and country for weather data. Leave blank to auto-detect from IP.</div>
+        <div class="settings-grid">
+          <div class="field"><label>City</label><input type="text" id="cfg-weather-city" placeholder="e.g. London"><div class="field-hint">City name for weather forecast</div></div>
+          <div class="field"><label>Country</label><input type="text" id="cfg-weather-country" placeholder="e.g. United Kingdom"><div class="field-hint">Country name (optional, helps accuracy)</div></div>
+        </div>
+        <button class="btn-primary" style="margin-top:12px" onclick="saveWeatherLocation()">Save & Refresh Weather</button>
+      </div>
       <!-- Service Integrations — API keys for Overview cards -->
       <div class="panel">
         <div class="panel-title">
@@ -5735,7 +5771,7 @@ let _cpuChart = null, _memChart = null;
 
 function _makeGaugeChart(canvasId, color) {
     const ctx = document.getElementById(canvasId);
-    if (!ctx) return null;
+    if (!ctx || typeof Chart === 'undefined') return null;
     return new Chart(ctx.getContext('2d'), {
         type: 'doughnut',
         data: {
@@ -6981,6 +7017,8 @@ async function loadSettings() {
         setInput('svc-seerr-url',   s.seerr_url);
         setInput('svc-seerr-key',   s.seerr_api_key);
         setInput('svc-football-key', s.football_api_key);
+        setInput('cfg-weather-city',    s.weather_city);
+        setInput('cfg-weather-country', s.weather_country);
         setInput('svc-qbit-url',    s.qbittorrent_url);
         setInput('svc-qbit-user',   s.qbittorrent_user);
         setInput('svc-qbit-pass',   s.qbittorrent_pass);
@@ -8412,7 +8450,7 @@ async function eplLoadHighlights() {
             // Thumbnail or placeholder
             if (h.thumb) {
                 html += '<div style="position:relative;padding-top:56.25%;background:#111">';
-                html += '<img src="'+h.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.parentNode.innerHTML=\'<div style=\\'display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px;background:#111\\'>⚽</div>\'">';
+                html += '<img src="'+h.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display=&quot;none&quot;">';
                 html += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(0,0,0,.7);border-radius:50%;display:flex;align-items:center;justify-content:center">';
                 html += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
                 html += '</div></div>';
@@ -9351,6 +9389,22 @@ async function saveSvcSettings() {
     } catch(e) { showToast('Save failed', 'error'); }
 }
 
+async function saveWeatherLocation() {
+    const city = (document.getElementById('cfg-weather-city')?.value || '').trim();
+    const country = (document.getElementById('cfg-weather-country')?.value || '').trim();
+    try {
+        const r = await fetch(API + '/api/settings', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ weather_city: city, weather_country: country })
+        });
+        const d = await r.json();
+        if (d.error) { showToast('Error: ' + d.error, 'error'); return; }
+        showToast(city ? `Weather set to ${city}${country ? ', ' + country : ''}` : 'Weather set to auto-detect (IP)', 'success');
+        // Refresh weather immediately
+        loadWeather();
+    } catch(e) { showToast('Save failed', 'error'); }
+}
+
 async function loadDashboardContainers() {
     try {
         const r = await fetch(API + '/api/containers');
@@ -9471,7 +9525,7 @@ setInterval(() => {
 }, 30000);
 
 // ── Boot ──────────────────────────────────────────────────────────────
-initGauges();
+try { initGauges(); } catch(e) { console.warn('Chart.js not ready, gauges disabled:', e); }
 loadOverview();
 loadContainers();   // also populates allContainers for alerts
 loadWeather();
@@ -9481,6 +9535,13 @@ setInterval(loadOverviewExtras, 15000);  // refresh logs + network every 15 s
 startSSE();
 // Initial alerts render (will be updated once containers load)
 setTimeout(refreshAlerts, 2000);
+// Fallback: if GridStack doesn't load, show widgets after 3s
+setTimeout(() => {
+    const grid = document.getElementById('ov-grid');
+    if (grid && !grid.classList.contains('gs-ready')) {
+        grid.querySelectorAll('.grid-stack-item').forEach(i => i.style.visibility = 'visible');
+    }
+}, 3000);
 
 // ── Theme & Appearance ────────────────────────────────────────────────────
 function applyTheme(t) {

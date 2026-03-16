@@ -4527,7 +4527,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.21</div>
+      <div class="sb-version">v3.15.22</div>
     </div>
   </div>
 
@@ -10552,6 +10552,10 @@ function _applyBg(url, blur, overlay) {
 })();
 
 // ── Dashboard uses CSS Grid — no drag-and-drop ────────────────────────────
+// _gs and _gsEditing stubs: dashboard is now CSS Grid, GridStack removed in v3.15.21
+// These prevent ReferenceErrors from legacy widget helper functions below.
+let _gs = null;
+let _gsEditing = false;
 (function() {
   const el = document.getElementById('ov-dashboard') || document.getElementById('ov-grid');
   if (el) el.classList.add('gs-ready');
@@ -10608,12 +10612,13 @@ const WIDGET_DEFS = {
 
 let _hiddenWidgets = new Set();
 
-// Save full widget config (hidden list + grid positions) to server
+// Save full widget config (hidden list) to server
+// CSS Grid layout — grid positions are fixed, only hidden state is persisted
 async function _saveWidgetConfig() {
   try {
     const config = {
       hidden: [..._hiddenWidgets],
-      grid: _gs ? _gs.save(false) : null
+      grid: null
     };
     await fetch('/api/widget_config', {
       method: 'POST',
@@ -10623,7 +10628,7 @@ async function _saveWidgetConfig() {
   } catch(e) {}
 }
 
-// Load widget config from server and apply hidden list
+// Load widget config from server and apply hidden list — CSS Grid version
 async function _loadWidgetConfig() {
   try {
     const r = await fetch('/api/widget_config');
@@ -10631,46 +10636,41 @@ async function _loadWidgetConfig() {
     if (Array.isArray(data.hidden) && data.hidden.length) {
       _hiddenWidgets = new Set(data.hidden);
       _hiddenWidgets.forEach(id => {
-        const el = document.querySelector(`.grid-stack-item[gs-id="${id}"]`);
-        if (el) el.style.display = 'none';
+        const cell = document.getElementById(`dash-${id}`);
+        if (cell) cell.style.display = 'none';
       });
-    }
-    // Grid positions from server take priority over localStorage
-    if (data.grid && Array.isArray(data.grid)) {
-      localStorage.setItem('arrhub_grid', JSON.stringify(data.grid));
+      const addBtn = document.getElementById('ov-add-btn');
+      if (addBtn && _hiddenWidgets.size > 0) addBtn.style.display = '';
     }
   } catch(e) {}
 }
 
-// Remove a widget during edit mode
+// Remove (hide) a widget — CSS Grid version, no GridStack needed
 function removeWidget(gsId) {
-  if (!_gsEditing || !_gs) return;
-  const el = document.querySelector(`.grid-stack-item[gs-id="${gsId}"]`);
-  if (!el) return;
+  const cell = document.getElementById(`dash-${gsId}`);
+  if (!cell) return;
   _hiddenWidgets.add(gsId);
-  _gs.removeWidget(el, false);       // remove from grid but keep DOM node
-  el.style.display = 'none';
-  document.getElementById('ov-grid').appendChild(el);  // keep in DOM so it can be restored
+  cell.style.display = 'none';
   const addBtn = document.getElementById('ov-add-btn');
   if (addBtn) addBtn.style.display = '';
+  _saveWidgetConfig();
   showToast(`"${WIDGET_DEFS[gsId]?.label || gsId}" hidden — use Add Widget to restore`, 'info', 3000);
 }
 
-// Restore a hidden widget
+// Restore a hidden widget — CSS Grid version
 function restoreWidget(gsId) {
   const def = WIDGET_DEFS[gsId];
-  if (!def || !_gs) return;
+  if (!def) return;
   _hiddenWidgets.delete(gsId);
-  const el = document.querySelector(`.grid-stack-item[gs-id="${gsId}"]`);
-  if (el) {
-    el.style.display = '';
-    _gs.makeWidget(el);
-  }
+  const cell = document.getElementById(`dash-${gsId}`);
+  if (cell) cell.style.display = '';
   if (_hiddenWidgets.size === 0) {
     const addBtn = document.getElementById('ov-add-btn');
     if (addBtn) addBtn.style.display = 'none';
   }
-  document.getElementById('widget-palette-modal').style.display = 'none';
+  const modal = document.getElementById('widget-palette-modal');
+  if (modal) modal.style.display = 'none';
+  _saveWidgetConfig();
   showToast(`"${def.label}" restored`, 'success', 2000);
 }
 

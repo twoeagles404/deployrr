@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.10 · Full deployment, update management, and real-time monitoring
+Version: 3.15.11 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.10",
+            "version": "3.15.11",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -944,6 +944,12 @@ def api_settings_get():
             "qbittorrent_url":   _db_get("qbittorrent_url", ""),
             "qbittorrent_user":  _db_get("qbittorrent_user", "admin"),
             "qbittorrent_pass":  _db_get("qbittorrent_pass", ""),
+            "downloader_type":   _db_get("downloader_type", "qbittorrent"),
+            "transmission_url":  _db_get("transmission_url", ""),
+            "transmission_user": _db_get("transmission_user", ""),
+            "transmission_pass": _db_get("transmission_pass", ""),
+            "deluge_url":        _db_get("deluge_url", ""),
+            "deluge_pass":       _db_get("deluge_pass", ""),
             "plex_url":       _db_get("plex_url", ""),
             "plex_token":     _db_get("plex_token", ""),
             "seerr_url":      _db_get("seerr_url", ""),
@@ -962,6 +968,8 @@ def api_settings_set():
         "radarr_url", "radarr_api_key",
         "sonarr_url", "sonarr_api_key",
         "qbittorrent_url", "qbittorrent_user", "qbittorrent_pass",
+        "downloader_type", "transmission_url", "transmission_user", "transmission_pass",
+        "deluge_url", "deluge_pass",
         "plex_url", "plex_token",
         "seerr_url", "seerr_api_key",
     ]
@@ -1303,7 +1311,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.10"})
+    return jsonify({"update_available": False, "version": "3.15.11"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1772,35 +1780,71 @@ def api_rss_fetch():
             date = (date_el.text or "")[:16] if date_el is not None else ""
 
             # Thumbnail — priority order:
-            # 1. <media:thumbnail url="...">
-            # 2. <media:content url="..." medium="image">
-            # 3. <enclosure url="..." type="image/...">
-            # 4. First <img> in <description> or <content:encoded>
-            # 5. YouTube video thumbnail via videoId
+            # 1. media:thumbnail (various namespace URIs)
+            # 2. media:content — try ALL, prefer one with image medium/type
+            # 3. enclosure with image MIME
+            # 4. First <img> in description / content:encoded (handles feeds that embed HTML)
+            # 5. YouTube thumbnail from videoId in link
+            # 6. Regex scan the raw XML string for any media thumbnail URL (last resort)
             thumb = None
-            mt = item.find("media:thumbnail", ns)
-            if mt is not None:
-                thumb = mt.get("url")
+            # 1. media:thumbnail (various namespace URIs)
+            for _mt_tag in [
+                "media:thumbnail",
+                "{http://search.yahoo.com/mrss/}thumbnail",
+                "{http://search.yahoo.com/mrss}thumbnail",
+            ]:
+                _mt = item.find(_mt_tag) if _mt_tag.startswith("{") else item.find(_mt_tag, ns)
+                if _mt is not None and _mt.get("url"):
+                    thumb = _mt.get("url"); break
+            # 2. media:content — try ALL, prefer one with image medium/type
             if not thumb:
-                mc = item.find("media:content", ns)
-                if mc is not None and ("image" in (mc.get("medium","") + mc.get("type",""))):
-                    thumb = mc.get("url")
+                for _mc_tag in [
+                    "media:content",
+                    "{http://search.yahoo.com/mrss/}content",
+                    "{http://search.yahoo.com/mrss}content",
+                ]:
+                    _mcs = item.findall(_mc_tag) if _mc_tag.startswith("{") else item.findall(_mc_tag, ns)
+                    # prefer explicitly-typed image, fall back to any with a URL
+                    _best = None
+                    for _mc in _mcs:
+                        _u = _mc.get("url","")
+                        if not _u: continue
+                        _med = _mc.get("medium","") + _mc.get("type","")
+                        if "image" in _med:
+                            _best = _u; break
+                        if _best is None:
+                            _best = _u
+                    if _best:
+                        thumb = _best; break
+            # 3. enclosure with image MIME
             if not thumb:
                 enc = item.find("enclosure")
                 if enc is not None and "image" in (enc.get("type","") or ""):
                     thumb = enc.get("url")
+            # 4. First <img> in description / content:encoded (handles feeds that embed HTML)
             if not thumb:
-                for tag in ["content:encoded", "description"]:
-                    raw_el = item.find(tag, ns) or item.find(tag)
-                    if raw_el is not None and raw_el.text:
-                        thumb = _first_img(raw_el.text)
-                        if thumb:
-                            break
+                for _tag in ["content:encoded", "description"]:
+                    _raw_el = item.find(_tag, ns) or item.find(_tag)
+                    if _raw_el is not None and _raw_el.text:
+                        _img = _first_img(_raw_el.text)
+                        if _img and _img.startswith("http"):
+                            thumb = _img; break
+            # 5. YouTube thumbnail from videoId in link
             if not thumb:
-                # YouTube fallback: extract videoId from link
                 yt_match = _re.search(r"[?&]v=([A-Za-z0-9_-]{11})", link)
                 if yt_match:
                     thumb = f"https://i.ytimg.com/vi/{yt_match.group(1)}/mqdefault.jpg"
+            # 6. Regex scan the raw XML string for any media thumbnail URL (last resort)
+            if not thumb:
+                try:
+                    _item_str = ET.tostring(item, encoding="unicode")
+                    _rm = _re.search(r'(?:thumbnail|media:content)[^>]+url=["\']([^"\']{10,})["\']', _item_str, _re.I)
+                    if _rm:
+                        _u = _rm.group(1)
+                        if _u.startswith("http"):
+                            thumb = _u
+                except Exception:
+                    pass
 
             # Excerpt — from <description> or <content:encoded>
             excerpt = ""
@@ -1977,7 +2021,7 @@ def _feeds_get_subs():
             "youtube": {"name": "YouTube", "icon": "▶"},
         },
         "rss": [
-            {"id": "selfhst",    "name": "selfh.st",       "url": "https://selfh.st/news/feed.xml"},
+            {"id": "selfhst",    "name": "selfh.st",       "url": "https://selfh.st/rss/"},
             {"id": "lsio",       "name": "linuxserver.io",  "url": "https://blog.linuxserver.io/feed/"},
             {"id": "theverge",   "name": "The Verge",       "url": "https://www.theverge.com/rss/index.xml"},
             {"id": "hn",         "name": "Hacker News",     "url": "https://hnrss.org/frontpage"},
@@ -2090,7 +2134,7 @@ def api_rss():
             "r/homelab": "https://www.reddit.com/r/homelab/.rss",
             "linuxserver.io": "https://blog.linuxserver.io/feed/",
             "noted.lol": "https://noted.lol/feed.xml",
-            "selfh.st": "https://selfh.st/news/feed.xml"
+            "selfh.st": "https://selfh.st/rss/"
         }
 
         result = {"sources": []}
@@ -2300,62 +2344,182 @@ def _svc_get(base_url, path, api_key, api_key_header="X-Api-Key", timeout=5):
     r.raise_for_status()
     return r.json()
 
-@app.route("/api/services/qbittorrent/torrents")
-def api_qbit_torrents():
-    """Fetch torrent list from qBittorrent Web API."""
-    import urllib.request, urllib.parse, http.cookiejar
-    url = _get_setting("qbittorrent_url", "").rstrip("/")
-    user = _get_setting("qbittorrent_user", "admin")
-    pwd  = _get_setting("qbittorrent_pass", "adminadmin")
-    if not url:
-        return jsonify({"error": "qBittorrent URL not configured", "torrents": []})
+_og_cache: dict = {}
+
+@app.route("/api/feeds/og")
+def api_feeds_og():
+    """Fetch og:image from an article URL for thumbnail enrichment."""
+    import urllib.request as _ur2, re as _re_og
+    url = request.args.get("url", "").strip()
+    if not url or not url.startswith("http"):
+        return jsonify({"img": None})
+    cache_key = "og_" + url
+    if cache_key in _og_cache and time.time() - _og_cache[cache_key].get("ts", 0) < 7200:
+        return jsonify(_og_cache[cache_key]["data"])
     try:
-        cj = http.cookiejar.CookieJar()
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-        # Login
-        login_data = urllib.parse.urlencode({"username": user, "password": pwd}).encode()
-        login_req = urllib.request.Request(f"{url}/api/v2/auth/login", data=login_data,
-                                           headers={"User-Agent": "ArrHub/3.15", "Referer": url})
-        with opener.open(login_req, timeout=8) as r:
-            body = r.read().decode()
-            if body.strip() != "Ok.":
-                return jsonify({"error": f"qBittorrent login failed: {body[:50]}", "torrents": []})
-        # Get torrents
-        torrents_req = urllib.request.Request(f"{url}/api/v2/torrents/info",
-                                              headers={"User-Agent": "ArrHub/3.15", "Referer": url})
-        with opener.open(torrents_req, timeout=8) as r:
-            torrents = json.loads(r.read())
-        # Get transfer info for speeds
-        try:
-            speed_req = urllib.request.Request(f"{url}/api/v2/transfer/info",
-                                               headers={"User-Agent": "ArrHub/3.15", "Referer": url})
-            with opener.open(speed_req, timeout=5) as r:
-                speed_info = json.loads(r.read())
-        except Exception:
-            speed_info = {}
-        def fmt_size(b):
-            for u in ["B","KB","MB","GB","TB"]:
-                if b < 1024: return f"{b:.1f} {u}"
-                b /= 1024
-            return f"{b:.1f} TB"
-        result = []
-        for t in torrents:
-            result.append({
-                "name":     t.get("name",""),
-                "state":    t.get("state",""),
-                "progress": round(t.get("progress",0)*100, 1),
-                "size":     fmt_size(t.get("size",0)),
-                "dlspeed":  fmt_size(t.get("dlspeed",0)) + "/s",
-                "upspeed":  fmt_size(t.get("upspeed",0)) + "/s",
-                "eta":      t.get("eta", 0),
-                "num_seeds":t.get("num_seeds",0),
-                "category": t.get("category",""),
-            })
-        dl_speed = fmt_size(speed_info.get("dl_info_speed", 0)) + "/s"
-        ul_speed = fmt_size(speed_info.get("up_info_speed", 0)) + "/s"
-        return jsonify({"torrents": result, "dl_speed": dl_speed, "ul_speed": ul_speed})
+        req = _ur2.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; Googlebot)",
+            "Accept": "text/html,application/xhtml+xml,*/*",
+        })
+        with _ur2.urlopen(req, timeout=8) as r:
+            # Only read first 60KB — og:image is always in <head>
+            html = r.read(60000).decode("utf-8", "ignore")
+        # Extract og:image (two attribute orders)
+        img = None
+        for pat in [
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']{10,})["\']',
+            r'<meta[^>]+content=["\']([^"\']{10,})["\'][^>]+property=["\']og:image["\']',
+            r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']{10,})["\']',
+            r'<meta[^>]+content=["\']([^"\']{10,})["\'][^>]+name=["\']twitter:image["\']',
+        ]:
+            m = _re_og.search(pat, html, _re_og.I)
+            if m:
+                img = m.group(1)
+                if not img.startswith("http"):
+                    img = None
+                else:
+                    break
+        result = {"img": img}
+        _og_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
     except Exception as e:
-        return jsonify({"error": str(e), "torrents": []})
+        return jsonify({"img": None, "error": str(e)[:80]})
+
+@app.route("/api/services/qbittorrent/torrents")  # legacy compat
+@app.route("/api/services/downloader/torrents")
+def api_downloader_torrents():
+    """Unified downloader API — dispatches to qBittorrent, Transmission, or Deluge."""
+    import urllib.request as _udl, urllib.parse as _uparse, http.cookiejar as _cj, json as _jdl
+    dtype = _get_setting("downloader_type", "qbittorrent")
+
+    def _fmt(b):
+        try: b = float(b)
+        except Exception: return "0 B"
+        for u in ["B","KB","MB","GB","TB"]:
+            if b < 1024: return f"{b:.1f} {u}"
+            b /= 1024
+        return f"{b:.1f} TB"
+
+    # ── qBittorrent ──────────────────────────────────────────────────────
+    if dtype == "qbittorrent":
+        url  = _get_setting("qbittorrent_url",  "").rstrip("/")
+        user = _get_setting("qbittorrent_user", "admin")
+        pwd  = _get_setting("qbittorrent_pass", "adminadmin")
+        if not url:
+            return jsonify({"error": "qBittorrent URL not configured", "torrents": []})
+        try:
+            jar = _cj.CookieJar()
+            opener = _udl.build_opener(_udl.HTTPCookieProcessor(jar))
+            login_data = _uparse.urlencode({"username": user, "password": pwd}).encode()
+            with opener.open(_udl.Request(f"{url}/api/v2/auth/login", data=login_data,
+                             headers={"Referer": url}), timeout=8) as r:
+                if r.read().decode().strip() != "Ok.":
+                    return jsonify({"error": "qBittorrent login failed", "torrents": []})
+            with opener.open(_udl.Request(f"{url}/api/v2/torrents/info",
+                             headers={"Referer": url}), timeout=8) as r:
+                torrents = _jdl.loads(r.read())
+            speed_info = {}
+            try:
+                with opener.open(_udl.Request(f"{url}/api/v2/transfer/info",
+                                 headers={"Referer": url}), timeout=5) as r:
+                    speed_info = _jdl.loads(r.read())
+            except Exception: pass
+            result = [{"name": t.get("name",""), "state": t.get("state",""),
+                       "progress": round(t.get("progress",0)*100, 1),
+                       "size": _fmt(t.get("size",0)), "dlspeed": _fmt(t.get("dlspeed",0))+"/s",
+                       "upspeed": _fmt(t.get("upspeed",0))+"/s", "eta": t.get("eta",0),
+                       "num_seeds": t.get("num_seeds",0), "category": t.get("category","")}
+                      for t in torrents]
+            return jsonify({"torrents": result,
+                            "dl_speed": _fmt(speed_info.get("dl_info_speed",0))+"/s",
+                            "ul_speed": _fmt(speed_info.get("up_info_speed",0))+"/s"})
+        except Exception as e:
+            return jsonify({"error": str(e), "torrents": []})
+
+    # ── Transmission ─────────────────────────────────────────────────────
+    elif dtype == "transmission":
+        url  = _get_setting("transmission_url",  "").rstrip("/")
+        user = _get_setting("transmission_user", "")
+        pwd  = _get_setting("transmission_pass", "")
+        if not url:
+            return jsonify({"error": "Transmission URL not configured", "torrents": []})
+        rpc_url = f"{url}/transmission/rpc"
+        if "/rpc" in url:
+            rpc_url = url
+        try:
+            import base64
+            headers = {"Content-Type": "application/json", "User-Agent": "ArrHub/3.15"}
+            if user:
+                creds = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+                headers["Authorization"] = f"Basic {creds}"
+            payload = _jdl.dumps({"method":"torrent-get","arguments":{"fields":[
+                "id","name","status","percentDone","totalSize","rateDownload","rateUpload","eta","labels"]}}).encode()
+            # Need CSRF token — first request gets 409 with X-Transmission-Session-Id
+            token = ""
+            try:
+                _udl.urlopen(_udl.Request(rpc_url, data=payload, headers={**headers, "X-Transmission-Session-Id": ""}), timeout=5)
+            except _udl.HTTPError as e:
+                token = e.headers.get("X-Transmission-Session-Id", "")
+            headers["X-Transmission-Session-Id"] = token
+            with _udl.urlopen(_udl.Request(rpc_url, data=payload, headers=headers), timeout=8) as r:
+                data = _jdl.loads(r.read())
+            state_map = {0:"stopped",1:"check_wait",2:"checking",3:"dl_wait",4:"downloading",5:"seed_wait",6:"seeding"}
+            result = [{"name": t.get("name",""),
+                       "state": state_map.get(t.get("status",0), str(t.get("status",0))),
+                       "progress": round(t.get("percentDone",0)*100, 1),
+                       "size": _fmt(t.get("totalSize",0)),
+                       "dlspeed": _fmt(t.get("rateDownload",0))+"/s",
+                       "upspeed": _fmt(t.get("rateUpload",0))+"/s",
+                       "eta": t.get("eta",-1), "num_seeds": 0,
+                       "category": (t.get("labels") or [""])[0]}
+                      for t in data.get("arguments",{}).get("torrents",[])]
+            total_dl = sum(t.get("rateDownload",0) for t in data.get("arguments",{}).get("torrents",[]))
+            total_ul = sum(t.get("rateUpload",0)   for t in data.get("arguments",{}).get("torrents",[]))
+            return jsonify({"torrents": result,
+                            "dl_speed": _fmt(total_dl)+"/s", "ul_speed": _fmt(total_ul)+"/s"})
+        except Exception as e:
+            return jsonify({"error": str(e), "torrents": []})
+
+    # ── Deluge ───────────────────────────────────────────────────────────
+    elif dtype == "deluge":
+        url  = _get_setting("deluge_url",  "").rstrip("/")
+        pwd  = _get_setting("deluge_pass", "deluge")
+        if not url:
+            return jsonify({"error": "Deluge URL not configured", "torrents": []})
+        json_url = f"{url}/json"
+        if url.endswith("/json"):
+            json_url = url
+        try:
+            jar = _cj.CookieJar()
+            opener = _udl.build_opener(_udl.HTTPCookieProcessor(jar))
+            hdrs = {"Content-Type": "application/json", "User-Agent": "ArrHub/3.15"}
+            def _rpc(method, params):
+                body = _jdl.dumps({"id":1,"method":method,"params":params}).encode()
+                with opener.open(_udl.Request(json_url, data=body, headers=hdrs), timeout=8) as r:
+                    return _jdl.loads(r.read())
+            # Login
+            _rpc("auth.login", [pwd])
+            # Get torrents
+            fields = ["name","state","progress","total_size","download_payload_rate","upload_payload_rate","eta","label"]
+            resp = _rpc("core.get_torrents_status", [{}, fields])
+            torrents_raw = resp.get("result", {})
+            state_map = {"Downloading":"downloading","Seeding":"seeding","Paused":"paused",
+                         "Error":"error","Queued":"queued","Checking":"checking","Moving":"moving"}
+            result = [{"name": v.get("name",""), "state": state_map.get(v.get("state",""), v.get("state","")),
+                       "progress": round(v.get("progress",0), 1),
+                       "size": _fmt(v.get("total_size",0)),
+                       "dlspeed": _fmt(v.get("download_payload_rate",0))+"/s",
+                       "upspeed": _fmt(v.get("upload_payload_rate",0))+"/s",
+                       "eta": v.get("eta",-1), "num_seeds": 0, "category": v.get("label","")}
+                      for v in torrents_raw.values()]
+            total_dl = sum(v.get("download_payload_rate",0) for v in torrents_raw.values())
+            total_ul = sum(v.get("upload_payload_rate",0)   for v in torrents_raw.values())
+            return jsonify({"torrents": result,
+                            "dl_speed": _fmt(total_dl)+"/s", "ul_speed": _fmt(total_ul)+"/s"})
+        except Exception as e:
+            return jsonify({"error": str(e), "torrents": []})
+
+    return jsonify({"error": f"Unknown downloader type: {dtype}", "torrents": []})
 
 @app.route("/api/services/radarr/calendar")
 def api_radarr_calendar():
@@ -3733,7 +3897,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.10</div>
+      <div class="sb-version">v3.15.11</div>
     </div>
   </div>
 
@@ -4567,20 +4731,59 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="field"><label>Seerr/Overseerr URL</label><input type="text" id="svc-seerr-url" placeholder="http://localhost:5055"></div>
           <div class="field"><label>Seerr API Key</label><input type="password" id="svc-seerr-key" placeholder="•••••••••••"></div>
           <div style="margin-top:18px">
-            <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⬇️ Downloads (qBittorrent)</div>
+            <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⬇️ Downloads</div>
             <div style="display:flex;flex-direction:column;gap:8px">
               <div>
-                <label style="font-size:11px;color:var(--text2)">qBittorrent URL</label>
-                <input id="svc-qbit-url" type="text" placeholder="http://10.0.0.33:8080" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                <label style="font-size:11px;color:var(--text2)">Client</label>
+                <select id="svc-dl-type" onchange="dlTypeChanged()" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  <option value="qbittorrent">qBittorrent</option>
+                  <option value="transmission">Transmission</option>
+                  <option value="deluge">Deluge</option>
+                </select>
               </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <!-- qBittorrent fields -->
+              <div id="dl-fields-qbittorrent" style="display:flex;flex-direction:column;gap:8px">
                 <div>
-                  <label style="font-size:11px;color:var(--text2)">Username</label>
-                  <input id="svc-qbit-user" type="text" placeholder="admin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  <label style="font-size:11px;color:var(--text2)">URL</label>
+                  <input id="svc-qbit-url" type="text" placeholder="http://10.0.0.33:8080" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Username</label>
+                    <input id="svc-qbit-user" type="text" placeholder="admin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Password</label>
+                    <input id="svc-qbit-pass" type="password" placeholder="adminadmin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                </div>
+              </div>
+              <!-- Transmission fields -->
+              <div id="dl-fields-transmission" style="display:none;flex-direction:column;gap:8px">
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">URL</label>
+                  <input id="svc-transmission-url" type="text" placeholder="http://10.0.0.33:9091" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Username (optional)</label>
+                    <input id="svc-transmission-user" type="text" placeholder="" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Password</label>
+                    <input id="svc-transmission-pass" type="password" placeholder="" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                </div>
+              </div>
+              <!-- Deluge fields -->
+              <div id="dl-fields-deluge" style="display:none;flex-direction:column;gap:8px">
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">URL</label>
+                  <input id="svc-deluge-url" type="text" placeholder="http://10.0.0.33:8112" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
                 </div>
                 <div>
                   <label style="font-size:11px;color:var(--text2)">Password</label>
-                  <input id="svc-qbit-pass" type="password" placeholder="adminadmin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  <input id="svc-deluge-pass" type="password" placeholder="deluge" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
                 </div>
               </div>
             </div>
@@ -4641,7 +4844,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.10</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.11</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -6452,6 +6655,13 @@ async function loadSettings() {
         setInput('svc-qbit-url',    s.qbittorrent_url);
         setInput('svc-qbit-user',   s.qbittorrent_user);
         setInput('svc-qbit-pass',   s.qbittorrent_pass);
+        // Downloader settings
+        if (document.getElementById('svc-dl-type')) { document.getElementById('svc-dl-type').value = s.downloader_type || 'qbittorrent'; dlTypeChanged(); }
+        if (document.getElementById('svc-transmission-url')) document.getElementById('svc-transmission-url').value = s.transmission_url || '';
+        if (document.getElementById('svc-transmission-user')) document.getElementById('svc-transmission-user').value = s.transmission_user || '';
+        if (document.getElementById('svc-transmission-pass')) document.getElementById('svc-transmission-pass').value = s.transmission_pass || '';
+        if (document.getElementById('svc-deluge-url')) document.getElementById('svc-deluge-url').value = s.deluge_url || '';
+        if (document.getElementById('svc-deluge-pass')) document.getElementById('svc-deluge-pass').value = s.deluge_pass || '';
     } catch(e) {}
 }
 
@@ -6865,7 +7075,7 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
                           onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${placeholderIcon}</div>'">
                      ${typeBadge}
                    </div>`
-                : `<div style="width:100%;padding-top:${aspectRatio};position:relative;background:var(--surface2)">
+                : `<div style="width:100%;padding-top:${aspectRatio};position:relative;background:var(--surface2)" ${!isYT && item.link && item.link.startsWith('http') ? `data-og-url="${item.link}"` : ''}>
                      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${placeholderIcon}</div>
                      ${typeBadge}
                    </div>`}
@@ -6873,8 +7083,8 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
               <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
                 <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;
                      display:-webkit-box;-webkit-line-clamp:${isReddit?2:3};-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
-                ${(item.excerpt && !isYT && ptype === 'text')
-                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.4;
+                ${(item.excerpt && !isYT)
+                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.4;margin-top:2px;
                             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.excerpt)}</div>`
                     : ''}
                 ${redditMeta}
@@ -6885,8 +7095,28 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
               </div>
             </a>`;
         }).join('');
+        // Lazy-load og:image for cards without thumbnails
+        setTimeout(() => _feedsLazyLoadThumbs(grid), 100);
     } catch(e) {
         grid.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load feed: ${e.message}</div>`;
+    }
+}
+
+// ── og:image lazy thumbnail loader ───────────────────────────────────
+async function _feedsLazyLoadThumbs(grid) {
+    if (!grid) return;
+    const placeholders = grid.querySelectorAll('[data-og-url]');
+    for (const ph of placeholders) {
+        const artUrl = ph.dataset.ogUrl;
+        if (!artUrl) continue;
+        try {
+            const r = await fetch(`/api/feeds/og?url=${encodeURIComponent(artUrl)}`);
+            const d = await r.json();
+            if (d.img) {
+                ph.innerHTML = `<img src="${d.img}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">`;
+                ph.removeAttribute('data-og-url');
+            }
+        } catch(e) { /* silently skip */ }
     }
 }
 
@@ -7923,6 +8153,15 @@ function _fmtSize(bytes) {
 // ── Tab switch handler ──
 const _svcActiveTab = { radarr: 'upcoming', sonarr: 'upcoming' };
 
+// ── Downloader type switcher ────────────────────────────────────────────
+function dlTypeChanged() {
+    const t = document.getElementById('svc-dl-type')?.value || 'qbittorrent';
+    ['qbittorrent','transmission','deluge'].forEach(dt => {
+        const el = document.getElementById(`dl-fields-${dt}`);
+        if (el) el.style.display = dt === t ? 'flex' : 'none';
+    });
+}
+
 // ── qBittorrent downloads card ────────────────────────────────────────
 async function loadQbitCard(filter) {
     const body = document.getElementById('qbit-card-body');
@@ -7930,7 +8169,7 @@ async function loadQbitCard(filter) {
     if (!body) return;
     body.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>';
     try {
-        const r = await fetch('/api/services/qbittorrent/torrents');
+        const r = await fetch('/api/services/downloader/torrents');
         const d = await r.json();
         if (speedEl) speedEl.textContent = `↓ ${d.dl_speed || '0 B/s'}  ↑ ${d.ul_speed || '0 B/s'}`;
         if (d.error) {
@@ -8245,7 +8484,10 @@ async function saveSvcSettings() {
         sonarr_url: 'svc-sonarr-url', sonarr_api_key: 'svc-sonarr-key',
         plex_url:   'svc-plex-url',   plex_token:     'svc-plex-token',
         seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key',
-        qbittorrent_url: 'svc-qbit-url', qbittorrent_user: 'svc-qbit-user', qbittorrent_pass: 'svc-qbit-pass'
+        qbittorrent_url: 'svc-qbit-url', qbittorrent_user: 'svc-qbit-user', qbittorrent_pass: 'svc-qbit-pass',
+        downloader_type: 'svc-dl-type',
+        transmission_url: 'svc-transmission-url', transmission_user: 'svc-transmission-user', transmission_pass: 'svc-transmission-pass',
+        deluge_url: 'svc-deluge-url', deluge_pass: 'svc-deluge-pass'
     };
     const payload = {};
     for (const [key, id] of Object.entries(fields)) {

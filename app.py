@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.19 · Full deployment, update management, and real-time monitoring
+Version: 3.15.20 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.19",
+            "version": "3.15.20",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -957,6 +957,8 @@ def api_settings_get():
             "football_api_key": _db_get("football_api_key", ""),
             "weather_city":     _db_get("weather_city", ""),
             "weather_country":  _db_get("weather_country", ""),
+            "reddit_client_id":     _db_get("reddit_client_id", ""),
+            "reddit_client_secret": _db_get("reddit_client_secret", ""),
         }
     })
 
@@ -977,6 +979,7 @@ def api_settings_set():
         "seerr_url", "seerr_api_key",
         "football_api_key",
         "weather_city", "weather_country",
+        "reddit_client_id", "reddit_client_secret",
     ]
     for key in allowed:
         if key in data:
@@ -1316,7 +1319,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.19"})
+    return jsonify({"update_available": False, "version": "3.15.20"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1620,6 +1623,37 @@ def api_rss_custom_delete(name):
         return jsonify({"status": "deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/twitter/webviewer")
+def api_twitter_webviewer():
+    """Proxy twitterwebviewer.com, stripping X-Frame-Options so we can embed it."""
+    handle = request.args.get("handle", "").strip().lstrip("@")
+    if not handle:
+        return "handle required", 400
+    import urllib.request as _ur
+    # twitterwebviewer.com URL format
+    target_url = f"https://twitterwebviewer.com/?user={handle}"
+    try:
+        req = _ur.Request(target_url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://twitterwebviewer.com/",
+        })
+        with _ur.urlopen(req, timeout=15) as r:
+            content = r.read()
+            content_type = r.headers.get("Content-Type", "text/html; charset=utf-8")
+        # Rewrite relative URLs and base href so resources load from twitterwebviewer.com
+        html = content.decode("utf-8", errors="replace")
+        if "<base " not in html.lower():
+            html = html.replace("<head>", '<head><base href="https://twitterwebviewer.com/">', 1)
+            html = html.replace("<HEAD>", '<HEAD><base href="https://twitterwebviewer.com/">', 1)
+        from flask import Response
+        resp = Response(html, status=200, mimetype="text/html")
+        # Do NOT set X-Frame-Options so our iframe can load it
+        return resp
+    except Exception as e:
+        return f"<html><body style='font-family:sans-serif;padding:20px;background:#111;color:#ccc'><p>Could not load twitterwebviewer.com: {str(e)}</p><p><a href='https://twitterwebviewer.com/?user={handle}' target='_blank' style='color:#1d9bf0'>Open directly ↗</a></p></body></html>", 200
 
 @app.route("/api/twitter/feed")
 def api_twitter_feed():
@@ -2521,10 +2555,10 @@ def api_feeds_og():
 
 @app.route("/api/reddit/feed")
 def api_reddit_feed():
-    """Server-side Reddit proxy — bypasses CORS and NSFW restrictions."""
-    import urllib.request as _ur, json as _jr
-    sub = request.args.get("sub", "").strip()
-    sort = request.args.get("sort", "hot").strip()
+    """Server-side Reddit proxy — uses OAuth when client credentials are configured."""
+    import urllib.request as _ur, urllib.parse as _up, json as _jr, base64 as _b64
+    sub   = request.args.get("sub",   "").strip()
+    sort  = request.args.get("sort",  "hot").strip()
     after = request.args.get("after", "").strip()
     limit = min(int(request.args.get("limit", "25")), 100)
     if not sub:
@@ -2532,8 +2566,47 @@ def api_reddit_feed():
     cache_key = f"reddit_{sub}_{sort}_{after}_{limit}"
     if cache_key in _rss_cache and time.time() - _rss_cache[cache_key].get("ts", 0) < 120:
         return jsonify(_rss_cache[cache_key]["data"])
-    ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    # Try old.reddit.com first (age-gate bypassed), then fall back to www.reddit.com
+
+    client_id     = _get_setting("reddit_client_id",     "").strip()
+    client_secret = _get_setting("reddit_client_secret", "").strip()
+    ua = "ArrHub/3.15.20 by homelab_user"
+
+    # --- OAuth app-only flow when credentials are configured ---
+    if client_id and client_secret:
+        try:
+            # Get access token (cache for 55 min)
+            token_cache_key = f"reddit_token_{client_id}"
+            token = None
+            if token_cache_key in _rss_cache and time.time() - _rss_cache[token_cache_key].get("ts", 0) < 3300:
+                token = _rss_cache[token_cache_key]["data"].get("access_token")
+            if not token:
+                creds = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+                tok_req = _ur.Request(
+                    "https://www.reddit.com/api/v1/access_token",
+                    data=b"grant_type=client_credentials",
+                    headers={"Authorization": f"Basic {creds}", "User-Agent": ua,
+                             "Content-Type": "application/x-www-form-urlencoded"}
+                )
+                with _ur.urlopen(tok_req, timeout=10) as tr:
+                    tok_data = _jr.loads(tr.read())
+                token = tok_data.get("access_token")
+                _rss_cache[token_cache_key] = {"data": tok_data, "ts": time.time()}
+            if token:
+                url = f"https://oauth.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1"
+                if after: url += f"&after={after}"
+                api_req = _ur.Request(url, headers={
+                    "Authorization": f"Bearer {token}", "User-Agent": ua
+                })
+                with _ur.urlopen(api_req, timeout=15) as r:
+                    data = _jr.loads(r.read())
+                if isinstance(data, dict) and data.get("data"):
+                    result = {"data": data["data"], "ok": True}
+                    _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                    return jsonify(result)
+        except Exception as oauth_err:
+            pass  # fall through to anonymous
+
+    # --- Anonymous fallback: try old.reddit.com first, then www.reddit.com ---
     base_urls = [
         f"https://old.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&over18=1",
         f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1",
@@ -2543,18 +2616,16 @@ def api_reddit_feed():
         url = base_url + (f"&after={after}" if after else "")
         try:
             req = _ur.Request(url, headers={
-                "User-Agent": ua,
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Cookie": "over18=1; _options=%7B%22pref_over_18%22%3A%20true%7D; redesign_optout=true",
                 "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
                 "Referer": "https://www.reddit.com/",
             })
             with _ur.urlopen(req, timeout=15) as r:
                 raw = r.read()
             data = _jr.loads(raw)
-            # Detect age-gate HTML returned as 200 (Reddit sometimes wraps in HTML)
             if isinstance(data, dict) and data.get("data"):
                 result = {"data": data["data"], "ok": True}
                 _rss_cache[cache_key] = {"data": result, "ts": time.time()}
@@ -2692,7 +2763,7 @@ def api_epl_matches():
 
 @app.route("/api/football/team_fixtures")
 def api_football_team_fixtures():
-    """Proxy ESPN team schedule server-side with correct season year."""
+    """Proxy ESPN team schedule server-side — tries multiple season/type combos for reliability."""
     import urllib.request as _ur, json as _jr, datetime as _dt
     team_id = request.args.get("team_id", "").strip()
     league  = request.args.get("league", "eng.1").strip()
@@ -2700,31 +2771,38 @@ def api_football_team_fixtures():
         return jsonify({"error": "team_id required"}), 400
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     today = _dt.date.today()
-    # ESPN uses END-year of the season (e.g. 2025-26 season = 2026)
-    season_year = today.year + 1 if today.month >= 8 else today.year
+    # ESPN uses END-year of season: 2025-26 = 2026. Try current year and adjacent years.
+    sy = today.year + 1 if today.month >= 8 else today.year
+    season_candidates = list(dict.fromkeys([sy, sy - 1, sy + 1]))  # deduplicated, primary first
+    # Candidate URLs in priority order: no seasontype (all), then type 2, then type 3
+    candidate_urls = []
+    for s in season_candidates:
+        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}")
+        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}&seasontype=2")
+        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}&seasontype=3")
     all_events = []
     seen_ids = set()
-    # Fetch regular season (type 2) plus cups/knockouts (type 3) to cover all competitions
-    for stype in (2, 3):
-        url = (f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
-               f"/teams/{team_id}/schedule?season={season_year}&seasontype={stype}")
+    for url in candidate_urls:
         try:
             req = _ur.Request(url, headers={"User-Agent": ua})
             with _ur.urlopen(req, timeout=10) as r:
                 data = _jr.loads(r.read())
-            for ev in data.get("events", []):
+            events = data.get("events", [])
+            new_events = 0
+            for ev in events:
                 eid = ev.get("id")
                 if eid and eid not in seen_ids:
                     seen_ids.add(eid)
                     all_events.append(ev)
+                    new_events += 1
+            # If this URL gave us events, skip remaining candidates for this season
+            if new_events > 0 and len(all_events) > 5:
+                break
         except Exception:
             pass
     # Sort by date
-    def _ev_date(ev):
-        try: return ev.get("date", "")
-        except: return ""
-    all_events.sort(key=_ev_date)
-    return jsonify({"events": all_events})
+    all_events.sort(key=lambda ev: ev.get("date", ""))
+    return jsonify({"events": all_events, "debug": {"total": len(all_events), "season_tried": sy}})
 
 @app.route("/api/football/team_news")
 def api_football_team_news():
@@ -4411,7 +4489,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.19</div>
+      <div class="sb-version">v3.15.20</div>
     </div>
   </div>
 
@@ -4776,19 +4854,21 @@ body.sse-disconnected #app{padding-top:38px;}
                 Weather
                 <span id="weather-location" style="margin-left:8px;font-weight:400;font-size:11px;color:var(--text3)"></span>
               </div>
-              <div id="weather-widget" style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:10px;align-items:center">
-                <div style="display:flex;align-items:center;gap:10px;padding:4px 12px 4px 0;border-right:1px solid var(--border)">
-                  <div id="weather-icon" style="font-size:36px;line-height:1">🌤️</div>
-                  <div>
-                    <div id="weather-temp" style="font-size:26px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
-                    <div id="weather-desc" style="font-size:11px;color:var(--text3);margin-top:2px">Loading…</div>
+              <div id="weather-widget">
+                <div style="display:flex;align-items:center;gap:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+                  <div id="weather-icon" style="font-size:42px;line-height:1">🌤️</div>
+                  <div style="flex:1">
+                    <div style="display:flex;align-items:baseline;gap:6px">
+                      <div id="weather-temp" style="font-size:30px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
+                      <div id="weather-desc" style="font-size:12px;color:var(--text2)">Loading…</div>
+                    </div>
+                    <div style="font-size:11px;color:var(--text3);margin-top:3px">
+                      Feels <span id="weather-feels">—</span>&ensp;·&ensp;Wind <span id="weather-wind">—</span>&ensp;·&ensp;Humidity <span id="weather-humidity">—</span>
+                    </div>
                   </div>
                 </div>
-                <div class="stat-card"><div class="stat-card-val" id="weather-humidity">—</div><div class="stat-card-label">Humidity</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="weather-wind">—</div><div class="stat-card-label">Wind</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="weather-feels">—</div><div class="stat-card-label">Feels Like</div></div>
+                <div id="weather-forecast" style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:10px"></div>
               </div>
-              <div id="weather-forecast" style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;padding-bottom:4px"></div>
             </div>
           </div>
         </div>
@@ -5233,6 +5313,21 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSettings()">Save Settings</button>
       </div>
+      <!-- Reddit API Access -->
+      <div class="panel">
+        <div class="panel-title">🤖 Reddit API Access</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
+          Required to access NSFW subreddits and avoid 403 blocks. Create a free app at
+          <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener" style="color:var(--blue)">reddit.com/prefs/apps</a>
+          — choose <strong>script</strong> type. Leave blank to use anonymous access.
+        </div>
+        <div class="settings-grid">
+          <div class="field"><label>Client ID</label><input type="text" id="cfg-reddit-client-id" placeholder="14-char app ID from Reddit"><div class="field-hint">Found under your app name on the apps page</div></div>
+          <div class="field"><label>Client Secret</label><input type="password" id="cfg-reddit-client-secret" placeholder="•••••••••••"><div class="field-hint">The "secret" field for your Reddit app</div></div>
+        </div>
+        <button class="btn-primary" style="margin-top:12px" onclick="saveRedditCredentials()">Save Reddit Credentials</button>
+        <span id="reddit-creds-status" style="font-size:11px;color:var(--green);margin-left:10px"></span>
+      </div>
       <!-- Weather Location -->
       <div class="panel">
         <div class="panel-title">🌤️ Weather Location</div>
@@ -5374,7 +5469,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.19</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.20</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -5690,17 +5785,28 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <!-- ── Twitter/X sub-page ─────────────────────────────────────── -->
       <div id="feeds-page-twitter" style="display:none">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <div id="feeds-twitter-handle-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
-          <div style="display:flex;align-items:center;gap:6px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <div id="feeds-twitter-handle-tabs" style="display:flex;gap:6px;flex-wrap:wrap;flex:1"></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button id="tw-mode-cards-btn" onclick="twitterSetMode('cards')" style="background:var(--accent,#2563eb);color:#fff;border:none;padding:4px 12px;border-radius:var(--r);font-size:11px;cursor:pointer">📋 Cards</button>
+            <button id="tw-mode-viewer-btn" onclick="twitterSetMode('viewer')" style="background:var(--bg3);color:var(--text2);border:1px solid var(--border);padding:4px 12px;border-radius:var(--r);font-size:11px;cursor:pointer">🌐 Web Viewer</button>
             <a id="feeds-twitter-open-link" href="#" target="_blank" rel="noopener"
-               style="font-size:11px;color:var(--blue);text-decoration:none;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r)">↗ Open in new tab</a>
+               style="font-size:11px;color:var(--blue);text-decoration:none;white-space:nowrap">↗ Open on X</a>
           </div>
         </div>
-        <div id="feeds-twitter-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
-        <div style="text-align:center;margin-top:14px"><button id="feeds-twitter-more-btn" onclick="feedsLoadMore('twitter')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
-        <div id="feeds-twitter-empty" style="display:none;padding:40px 20px;text-align:center;color:var(--text3);font-size:12px">
-          No Twitter handles added yet — go to <strong>Manage</strong> to add some.
+        <!-- Cards mode (nitter RSS) -->
+        <div id="feeds-twitter-cards-mode">
+          <div id="feeds-twitter-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+          <div style="text-align:center;margin-top:14px"><button id="feeds-twitter-more-btn" onclick="feedsLoadMore('twitter')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+          <div id="feeds-twitter-empty" style="display:none;padding:40px 20px;text-align:center;color:var(--text3);font-size:12px">
+            <div style="font-size:32px;margin-bottom:8px">𝕏</div>
+            <div>No Twitter/X handles added yet.</div>
+            <div style="margin-top:6px">Click <strong>Manage</strong> → add a handle like <code>@username</code></div>
+          </div>
+        </div>
+        <!-- Web viewer mode (twitterwebviewer.com via proxy) -->
+        <div id="feeds-twitter-viewer-mode" style="display:none">
+          <iframe id="feeds-twitter-webviewer-iframe" src="" style="width:100%;height:620px;border:none;border-radius:var(--r);background:var(--bg2)" allowfullscreen></iframe>
         </div>
       </div>
 
@@ -7392,6 +7498,8 @@ async function loadSettings() {
         setInput('svc-football-key', s.football_api_key);
         setInput('cfg-weather-city',    s.weather_city);
         setInput('cfg-weather-country', s.weather_country);
+        setInput('cfg-reddit-client-id',     s.reddit_client_id     || '');
+        setInput('cfg-reddit-client-secret', s.reddit_client_secret || '');
         setInput('svc-qbit-url',    s.qbittorrent_url);
         setInput('svc-qbit-user',   s.qbittorrent_user);
         setInput('svc-qbit-pass',   s.qbittorrent_pass);
@@ -7434,29 +7542,35 @@ async function loadWeather() {
         if (!d.daily || d.daily.length === 0) return;
         const w = d.daily[0];   // today
 
-        // Current conditions (from open-meteo /current)
-        const temp = w.temp_max !== undefined ? Math.round(w.temp_max) : '—';
+        // Current conditions
+        const temp = d.current_temp != null ? Math.round(d.current_temp) : (w.temp_max != null ? Math.round(w.temp_max) : '—');
         setEl('weather-temp', temp + '°C');
         setEl('weather-desc', w.desc || 'Clear');
         setEl('weather-location', d.location || '');
         setEl('weather-humidity', d.humidity != null ? d.humidity + '%' : '—');
-        setEl('weather-wind', d.wind_mph != null ? d.wind_mph + ' mph' : '—');
+        setEl('weather-wind', d.wind_mph != null ? Math.round(d.wind_mph) + ' mph' : '—');
         setEl('weather-feels', d.feels_like != null ? Math.round(d.feels_like) + '°C' : '—');
         const iconEl = document.getElementById('weather-icon');
         if (iconEl && w.icon) iconEl.textContent = w.icon;
 
-        // 5-day forecast strip
+        // Glance-style 7-day forecast grid
         const forecastEl = document.getElementById('weather-forecast');
         if (forecastEl && d.daily) {
-            forecastEl.innerHTML = d.daily.map((day, i) => {
-                const label = i === 0 ? 'Today' : new Date(day.date + 'T12:00').toLocaleDateString(undefined, {weekday:'short'});
-                const hi = day.temp_max != null ? Math.round(day.temp_max) + '°' : '—';
-                const lo = day.temp_min != null ? Math.round(day.temp_min) + '°' : '—';
-                return `<div style="flex:1;min-width:56px;text-align:center;background:var(--surface);border-radius:var(--r);padding:6px 4px;">
-                  <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${label}</div>
-                  <div style="font-size:20px;line-height:1.2">${day.icon || '🌤️'}</div>
-                  <div style="font-size:11px;font-weight:600;color:var(--text)">${hi}</div>
-                  <div style="font-size:10px;color:var(--text3)">${lo}</div>
+            const days = d.daily.slice(0, 7);
+            forecastEl.style.gridTemplateColumns = `repeat(${days.length}, 1fr)`;
+            forecastEl.innerHTML = days.map((day, i) => {
+                const dt = new Date(day.date + 'T12:00');
+                const dayLabel = i === 0 ? 'Today' : dt.toLocaleDateString(undefined, {weekday:'short'});
+                const dateNum  = dt.getDate();
+                const hi = day.temp_max != null ? Math.round(day.temp_max) : '—';
+                const lo = day.temp_min != null ? Math.round(day.temp_min) : '—';
+                const isToday = i === 0;
+                return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 2px;background:${isToday?'var(--bg3)':'transparent'};border-radius:var(--r);text-align:center">
+                  <div style="font-size:10px;font-weight:${isToday?'700':'400'};color:${isToday?'var(--blue)':'var(--text3)'}">${dayLabel}</div>
+                  <div style="font-size:10px;color:var(--text3)">${dateNum}</div>
+                  <div style="font-size:22px;line-height:1.3;margin:2px 0">${day.icon || '🌤️'}</div>
+                  <div style="font-size:12px;font-weight:600;color:var(--text)">${hi}°</div>
+                  <div style="font-size:10px;color:var(--text3)">${lo}°</div>
                 </div>`;
             }).join('');
         }
@@ -8118,6 +8232,28 @@ function feedsHNChangeSort(sort, btnEl) {
     _feedsLoadHN(false);
 }
 
+let _twitterViewMode = 'cards';
+function twitterSetMode(mode) {
+    _twitterViewMode = mode;
+    const cardsEl  = document.getElementById('feeds-twitter-cards-mode');
+    const viewerEl = document.getElementById('feeds-twitter-viewer-mode');
+    const cardBtn  = document.getElementById('tw-mode-cards-btn');
+    const viewBtn  = document.getElementById('tw-mode-viewer-btn');
+    if (cardsEl)  cardsEl.style.display  = mode === 'cards'  ? '' : 'none';
+    if (viewerEl) viewerEl.style.display = mode === 'viewer' ? '' : 'none';
+    if (cardBtn)  { cardBtn.style.background = mode==='cards'  ? 'var(--accent,#2563eb)' : 'var(--bg3)'; cardBtn.style.color = mode==='cards'  ? '#fff' : 'var(--text2)'; cardBtn.style.border = mode==='cards'  ? 'none' : '1px solid var(--border)'; }
+    if (viewBtn)  { viewBtn.style.background  = mode==='viewer' ? 'var(--accent,#2563eb)' : 'var(--bg3)'; viewBtn.style.color  = mode==='viewer' ? '#fff' : 'var(--text2)'; viewBtn.style.border  = mode==='viewer' ? 'none' : '1px solid var(--border)'; }
+    if (mode === 'viewer') {
+        // Load the active handle in the web viewer iframe
+        const activePill = document.querySelector('#feeds-twitter-handle-tabs .filter-pill.active');
+        if (activePill) {
+            const handle = (activePill.dataset.url || activePill.textContent || '').replace(/^@/, '');
+            const iframe = document.getElementById('feeds-twitter-webviewer-iframe');
+            if (iframe && handle) iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
+        }
+    }
+}
+
 function _feedsLoadTwitterPage() {
     const tabs    = document.getElementById('feeds-twitter-handle-tabs');
     const grid    = document.getElementById('feeds-twitter-grid');
@@ -8148,7 +8284,15 @@ function _feedsSelectTwitter(id, el) {
     if (el) el.classList.add('active');
     const h = (_feedsSubs.twitter || []).find(s => s.id === id);
     const grid = document.getElementById('feeds-twitter-grid');
+    const openLink = document.getElementById('feeds-twitter-open-link');
+    if (openLink) openLink.href = `https://x.com/${(h && h.url ? h.url : '').replace(/^@/,'')}`;
     if (h && grid) _feedsFetchTwitterCards(h.url, grid, false);
+    // Also update web viewer iframe if in viewer mode
+    if (_twitterViewMode === 'viewer' && h) {
+        const handle = (h.url || '').replace(/^@/, '');
+        const iframe = document.getElementById('feeds-twitter-webviewer-iframe');
+        if (iframe && handle) iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
+    }
 }
 
 async function _feedsFetchTwitterCards(handle, grid, appendMode) {
@@ -10139,6 +10283,19 @@ async function saveWeatherLocation() {
         // Refresh weather immediately
         loadWeather();
     } catch(e) { showToast('Save failed', 'error'); }
+}
+
+async function saveRedditCredentials() {
+    const st = document.getElementById('reddit-creds-status');
+    const clientId     = (document.getElementById('cfg-reddit-client-id')?.value     || '').trim();
+    const clientSecret = (document.getElementById('cfg-reddit-client-secret')?.value || '').trim();
+    try {
+        await fetch(API + '/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({reddit_client_id: clientId, reddit_client_secret: clientSecret})});
+        if (st) { st.textContent = '✓ Saved'; setTimeout(() => { if(st) st.textContent=''; }, 3000); }
+    } catch(e) {
+        if (st) st.textContent = 'Failed to save';
+    }
 }
 
 async function loadDashboardContainers() {

@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.16 · Full deployment, update management, and real-time monitoring
+Version: 3.15.17 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.16",
+            "version": "3.15.17",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1316,7 +1316,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.16"})
+    return jsonify({"update_available": False, "version": "3.15.17"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -2062,6 +2062,7 @@ def _feeds_get_subs():
             "rss":     {"name": "RSS",     "icon": "📰"},
             "reddit":  {"name": "Reddit",  "icon": "🤖"},
             "youtube": {"name": "YouTube", "icon": "▶"},
+            "twitter": {"name": "Twitter", "icon": "𝕏"},
         },
         "rss": [
             {"id": "selfhst",    "name": "selfh.st",       "url": "https://selfh.st/rss/"},
@@ -2071,15 +2072,21 @@ def _feeds_get_subs():
             {"id": "arstechnica","name": "Ars Technica",    "url": "https://feeds.arstechnica.com/arstechnica/index"},
         ] + _NEWS_DEFAULTS,
         "reddit": [
-            {"id": "homelab",    "name": "r/homelab",       "url": "https://old.reddit.com/r/homelab/.rss"},
-            {"id": "selfhosted", "name": "r/selfhosted",    "url": "https://old.reddit.com/r/selfhosted/.rss"},
-            {"id": "proxmox",    "name": "r/Proxmox",       "url": "https://old.reddit.com/r/Proxmox/.rss"},
-            {"id": "docker",     "name": "r/docker",        "url": "https://old.reddit.com/r/docker/.rss"},
+            {"id": "homelab",    "name": "r/homelab",       "url": "https://www.reddit.com/r/homelab/.rss"},
+            {"id": "selfhosted", "name": "r/selfhosted",    "url": "https://www.reddit.com/r/selfhosted/.rss"},
+            {"id": "proxmox",    "name": "r/Proxmox",       "url": "https://www.reddit.com/r/Proxmox/.rss"},
+            {"id": "docker",     "name": "r/docker",        "url": "https://www.reddit.com/r/docker/.rss"},
         ],
         "youtube": [
             {"id": "UCR-DXc1voovS8nhAvccRZhg", "name": "Jeff Geerling",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg"},
             {"id": "UCsBjURrPoezykLs9EqgamOA", "name": "Fireship",       "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA"},
             {"id": "UCVS-4mLrAKFNZWoZ4eHiYbA", "name": "NetworkChuck",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCVS-4mLrAKFNZWoZ4eHiYbA"},
+        ],
+        "twitter": [
+            {"id": "jeffgeerling",  "name": "@JeffGeerling",  "url": "JeffGeerling"},
+            {"id": "networkchuck",  "name": "@NetworkChuck",  "url": "NetworkChuck"},
+            {"id": "theprimagen",   "name": "@ThePrimeagen",  "url": "ThePrimeagen"},
+            {"id": "linustech",     "name": "@LinusTech",     "url": "LinusTech"},
         ]
     }
     raw = _db_get("feeds_subscriptions", None)
@@ -2094,6 +2101,12 @@ def _feeds_get_subs():
             if feed["id"] not in existing_ids:
                 subs.setdefault("rss", []).append(feed)
                 added = True
+        # Migrate: add twitter defaults if not present
+        if "twitter" not in subs:
+            subs["twitter"] = _DEFAULT["twitter"]
+            if "_type_meta" in subs:
+                subs["_type_meta"]["twitter"] = {"name": "Twitter", "icon": "𝕏"}
+            added = True
         if added:
             _db_set("feeds_subscriptions", json.dumps(subs))
         return subs
@@ -4216,7 +4229,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.16</div>
+      <div class="sb-version">v3.15.17</div>
     </div>
   </div>
 
@@ -5179,7 +5192,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.16</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.17</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -5491,6 +5504,23 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <div id="feeds-hn-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
         <div style="text-align:center;margin-top:14px"><button id="feeds-hn-more-btn" onclick="feedsHNLoadMore()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+      </div>
+
+      <!-- ── Twitter/X sub-page ─────────────────────────────────────── -->
+      <div id="feeds-page-twitter" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-twitter-handle-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <a id="feeds-twitter-open-link" href="#" target="_blank" rel="noopener"
+               style="font-size:11px;color:var(--blue);text-decoration:none;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r)">↗ Open in new tab</a>
+          </div>
+        </div>
+        <div id="feeds-twitter-frame-wrap" style="border-radius:var(--r);overflow:hidden;border:1px solid var(--border);background:var(--bg2)">
+          <iframe id="feeds-twitter-iframe" src="" style="width:100%;height:calc(100vh - 240px);min-height:500px;border:none;display:block" loading="lazy"></iframe>
+        </div>
+        <div id="feeds-twitter-empty" style="display:none;padding:40px 20px;text-align:center;color:var(--text3);font-size:12px">
+          No Twitter handles added yet — go to <strong>Manage</strong> to add some.
+        </div>
       </div>
 
       <!-- Custom category pages are injected here by JS -->
@@ -6694,9 +6724,9 @@ async function loadNetwork() {
             _netHistory.tx.shift(); _netHistory.rx.shift(); _netHistory.labels.shift();
         }
 
-        // Init charts on first call
-        if (!_netTxChart) _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)');
-        if (!_netRxChart) _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)');
+        // Init charts on first call (force resize to handle zero-dimension canvas on tab-open)
+        if (!_netTxChart) { _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)'); if (_netTxChart) setTimeout(() => _netTxChart.resize(), 50); }
+        if (!_netRxChart) { _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)'); if (_netRxChart) setTimeout(() => _netRxChart.resize(), 50); }
 
         if (_netTxChart) {
             _netTxChart.data.labels = [..._netHistory.labels];
@@ -6860,13 +6890,32 @@ async function loadHardware() {
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────
+function _colorLogLine(line) {
+    const esc = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const lo = line.toLowerCase();
+    let color = '';
+    if (/\b(emerg|emergency|crit|critical|alert|panic)\b/.test(lo))
+        color = 'color:#ff4444;font-weight:700';
+    else if (/\b(err|error|failed|failure|exception|traceback)\b/.test(lo))
+        color = 'color:var(--red,#f85149)';
+    else if (/\b(warn|warning|deprecated)\b/.test(lo))
+        color = 'color:var(--orange,#d29922)';
+    else if (/\b(info|started|starting|loaded|ready|success|ok)\b/.test(lo))
+        color = 'color:var(--green,#3fb950)';
+    else if (/\b(debug|trace|verbose)\b/.test(lo))
+        color = 'color:var(--text3,#6e7681)';
+    return color ? `<span style="${color}">${esc}</span>` : `<span>${esc}</span>`;
+}
+
 async function loadLogs() {
     const el = document.getElementById('log-output');
     el.textContent = 'Loading...';
     try {
         const r = await fetch(API + '/api/logs');
         const d = await r.json();
-        el.textContent = (d.lines || []).join('\n') || '(empty)';
+        const lines = d.lines || [];
+        if (!lines.length) { el.textContent = '(empty)'; return; }
+        el.innerHTML = lines.map(_colorLogLine).join('\n');
         el.scrollTop = el.scrollHeight;
     } catch(e) { el.textContent = 'Failed to load logs'; }
 }
@@ -7269,7 +7318,8 @@ const _hnFeedUrls = {
 };
 
 // All known category types (built-in + custom from _type_meta)
-let _feedsAllTypes = ['rss','reddit','youtube','hn']; // built-in order; custom appended
+let _feedsAllTypes = ['rss','reddit','youtube','hn','twitter']; // built-in order; custom appended
+let _feedsTwitterActive = null;
 
 function _feedsBuildNavPills() {
     const row = document.getElementById('feeds-pills-row');
@@ -7303,6 +7353,7 @@ function feedsNav(page, el) {
     else if (page === 'reddit')  _feedsLoadRedditPage();
     else if (page === 'youtube') _feedsLoadYTPage();
     else if (page === 'hn')      _feedsLoadHN(false);
+    else if (page === 'twitter') _feedsLoadTwitterPage();
     else if (page === 'manage')  _feedsRenderManage();
     else                         _feedsLoadCustomPage(page);
 }
@@ -7333,6 +7384,7 @@ function _feedsInjectCustomPageDivs() {
       <div id="feeds-page-${k}" style="display:none">
         <div id="feeds-${k}-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
         <div id="feeds-${k}-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-${k}-more-btn" onclick="feedsLoadMore('${k}')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
       </div>`).join('');
 }
 
@@ -7415,8 +7467,8 @@ async function _feedsFetchRedditDirect(url, grid, appendMode) {
     const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const sort = _feedsRedditSort || 'hot';
     try {
-        // Direct browser fetch — old.reddit.com JSON endpoint (no CORS issues, NSFW works)
-        const redditUrl = `https://old.reddit.com/r/${encodeURIComponent(sub)}/${sort}.json?limit=25&include_over_18=1&raw_json=1${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`;
+        // Direct browser fetch — www.reddit.com JSON API (CORS-friendly, NSFW-permissive)
+        const redditUrl = `https://www.reddit.com/r/${encodeURIComponent(sub)}/${sort}.json?limit=25&include_over_18=1&raw_json=1${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`;
         const r = await fetch(redditUrl);
         if (!r.ok) {
             // Fallback to server proxy if browser fetch fails
@@ -7579,7 +7631,7 @@ async function _feedsLoadHN(appendMode) {
 async function _feedsFetchAndRenderCards(url, grid, mode) {
     if (!url || !grid) return;
     const gridId = grid.id;
-    const moreBtnId = gridId === 'feeds-rss-grid' ? 'feeds-rss-more-btn' : gridId === 'feeds-yt-grid' ? 'feeds-yt-more-btn' : null;
+    const moreBtnId = gridId.endsWith('-grid') ? gridId.replace(/-grid$/, '-more-btn') : null;
     grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
     try {
         const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}`);
@@ -7738,8 +7790,8 @@ async function feedsOpenComments(permalink, title) {
         </div>`;
     }
     try {
-        // Direct browser fetch for comments (old.reddit.com for NSFW compat)
-        const commentUrl = fullLink.replace('www.reddit.com', 'old.reddit.com').replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
+        // Direct browser fetch for comments — www.reddit.com JSON API
+        const commentUrl = (fullLink.startsWith('http') ? fullLink : 'https://www.reddit.com'+fullLink).replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
         let data;
         try {
             const r = await fetch(commentUrl);
@@ -7807,7 +7859,7 @@ function feedsSortGrid(gridId, sortVal) {
     const mode = _feedsViewMode[gridId] || 'grid';
     _feedsRenderItems(grid, items, 0, _FEEDS_PAGE_SIZE, mode, false);
     // Update Load More button
-    const moreId = gridId === 'feeds-rss-grid' ? 'feeds-rss-more-btn' : gridId === 'feeds-yt-grid' ? 'feeds-yt-more-btn' : null;
+    const moreId = gridId.endsWith('-grid') ? gridId.replace(/-grid$/, '-more-btn') : null;
     if (moreId) { const b = document.getElementById(moreId); if (b) b.style.display = items.length > _FEEDS_PAGE_SIZE ? '' : 'none'; }
 }
 
@@ -7844,10 +7896,9 @@ function _feedsRenderItems(grid, items, from, to, mode, append) {
 }
 
 function feedsLoadMore(type) {
-    const gridId = type === 'rss' ? 'feeds-rss-grid' : type === 'youtube' ? 'feeds-yt-grid' : null;
-    if (!gridId) return;
+    const gridId = type === 'youtube' ? 'feeds-yt-grid' : `feeds-${type}-grid`;
+    const moreBtnId = type === 'youtube' ? 'feeds-yt-more-btn' : `feeds-${type}-more-btn`;
     const grid = document.getElementById(gridId);
-    const moreBtnId = type === 'rss' ? 'feeds-rss-more-btn' : 'feeds-yt-more-btn';
     const moreBtn = document.getElementById(moreBtnId);
     if (!grid) return;
     const items = _feedsAllItems[gridId] || [];
@@ -7882,6 +7933,45 @@ function feedsHNChangeSort(sort, btnEl) {
     document.querySelectorAll('[id^="hn-sort-"]').forEach(b=>b.classList.remove('active'));
     if (btnEl) btnEl.classList.add('active');
     _feedsLoadHN(false);
+}
+
+function _feedsLoadTwitterPage() {
+    const tabs = document.getElementById('feeds-twitter-handle-tabs');
+    const frameWrap = document.getElementById('feeds-twitter-frame-wrap');
+    const emptyEl = document.getElementById('feeds-twitter-empty');
+    if (!tabs) return;
+    const handles = _feedsSubs.twitter || [];
+    if (!handles.length) {
+        if (frameWrap) frameWrap.style.display = 'none';
+        if (emptyEl) emptyEl.style.display = '';
+        tabs.innerHTML = '';
+        return;
+    }
+    if (frameWrap) frameWrap.style.display = '';
+    if (emptyEl) emptyEl.style.display = 'none';
+    if (!_feedsTwitterActive || !handles.find(h => h.id === _feedsTwitterActive))
+        _feedsTwitterActive = handles[0].id;
+    tabs.innerHTML = handles.map(h =>
+        `<button class="filter-pill${h.id===_feedsTwitterActive?' active':''}" onclick="_feedsSelectTwitter('${h.id}',this)">𝕏 ${h.name}</button>`
+    ).join('');
+    const active = handles.find(h => h.id === _feedsTwitterActive);
+    if (active) _feedsSetTwitterHandle(active.url);
+}
+
+function _feedsSelectTwitter(id, el) {
+    _feedsTwitterActive = id;
+    document.querySelectorAll('#feeds-twitter-handle-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const h = (_feedsSubs.twitter || []).find(s => s.id === id);
+    if (h) _feedsSetTwitterHandle(h.url);
+}
+
+function _feedsSetTwitterHandle(handle) {
+    const iframe = document.getElementById('feeds-twitter-iframe');
+    const link = document.getElementById('feeds-twitter-open-link');
+    const url = `https://twitterwebviewer.com/${handle.replace(/^@/,'')}`;
+    if (iframe) iframe.src = url;
+    if (link) link.href = url;
 }
 
 function feedsHNLoadMore() {
@@ -7922,6 +8012,7 @@ document.addEventListener('keydown', e => {
 function _feedsLoadCustomPage(type) {
     const tabs = document.getElementById(`feeds-${type}-source-tabs`);
     const grid = document.getElementById(`feeds-${type}-grid`);
+    const moreBtn = document.getElementById(`feeds-${type}-more-btn`);
     if (!tabs || !grid) return;
     const meta = _feedsSubs._type_meta || {};
     const icon = meta[type]?.icon || '📡';
@@ -7929,6 +8020,7 @@ function _feedsLoadCustomPage(type) {
     if (!sources.length) {
         tabs.innerHTML = '';
         grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">${icon}</div><div class="empty-text">No feeds yet — add some in Manage</div></div>`;
+        if (moreBtn) moreBtn.style.display = 'none';
         return;
     }
     let activeId = sources[0].id;
@@ -7950,10 +8042,10 @@ function _feedsRenderManage() {
     const grid = document.getElementById('feeds-manage-grid');
     if (!grid) return;
     const meta = _feedsSubs._type_meta || {};
-    const builtIn = ['rss','reddit','youtube'];
+    const builtIn = ['rss','reddit','youtube','twitter'];
     const allTypes = [...builtIn, ...Object.keys(meta).filter(k => !builtIn.includes(k))];
-    const icons = {rss:'📰', reddit:'🤖', youtube:'▶'};
-    const names = {rss:'RSS Feeds', reddit:'Reddit', youtube:'YouTube'};
+    const icons = {rss:'📰', reddit:'🤖', youtube:'▶', twitter:'𝕏'};
+    const names = {rss:'RSS Feeds', reddit:'Reddit', youtube:'YouTube', twitter:'Twitter / X'};
 
     grid.innerHTML = allTypes.map(type => {
         const icon = icons[type] || meta[type]?.icon || '📡';
@@ -8795,37 +8887,52 @@ async function _footballTeamLoadFixtures() {
         const raw = await r.json();
         const events = raw.events || [];
         if (!events.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No schedule found.</div>'; return; }
-        let html = '';
+        const upcoming = [], past = [];
         for (const event of events) {
             const comp = (event.competitions || [])[0] || {};
+            const statusName = comp.status?.type?.name || '';
+            const isFinal = statusName === 'STATUS_FINAL';
+            const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
             const competitors = comp.competitors || [];
             const home = competitors.find(c => c.homeAway === 'home') || {};
             const away = competitors.find(c => c.homeAway === 'away') || {};
             const ht = home.team || {}, at = away.team || {};
-            const statusName = comp.status?.type?.name || '';
-            const isFinal = statusName === 'STATUS_FINAL';
-            const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
             const dt = event.date ? new Date(event.date) : null;
             const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
             const scoreH = (isFinal||isLive) ? parseInt(home.score||0) : null;
             const scoreA = (isFinal||isLive) ? parseInt(away.score||0) : null;
-            const score = scoreH != null ? scoreH+' - '+scoreA : 'vs';
             const homeW = isFinal && scoreH > scoreA, awayW = isFinal && scoreA > scoreH;
             const centerEl = isLive
                 ? '<span style="background:#f44336;color:#fff;padding:2px 5px;border-radius:3px;font-size:9px;font-weight:600">LIVE</span>'
                 : isFinal
-                    ? '<div style="font-weight:700;font-size:14px;letter-spacing:1px">'+score+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
+                    ? '<div style="font-weight:700;font-size:14px;letter-spacing:1px">'+scoreH+' - '+scoreA+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
                     : '<div style="font-size:10px;color:var(--text3);text-align:center;line-height:1.3">'+dateStr+'</div>';
-            html += '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);gap:8px;margin-bottom:6px">';
-            html += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:5px;text-align:right">';
-            if (ht.logo) html += '<img src="'+ht.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">';
-            html += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:12px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+( ht.shortDisplayName||ht.displayName||'?')+'</span></div>';
-            html += '<div style="min-width:72px;text-align:center">'+centerEl+'</div>';
-            html += '<div style="flex:1;display:flex;align-items:center;gap:5px">';
-            if (at.logo) html += '<img src="'+at.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">';
-            html += '<span style="font-weight:'+(awayW?'700':'500')+';font-size:12px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+( at.shortDisplayName||at.displayName||'?')+'</span></div>';
-            html += '</div>';
+            const row = '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);gap:8px;margin-bottom:6px">'
+                +'<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:5px;text-align:right">'
+                +(ht.logo?'<img src="'+ht.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
+                +'<span style="font-weight:'+(homeW?'700':'500')+';font-size:12px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+( ht.shortDisplayName||ht.displayName||'?')+'</span></div>'
+                +'<div style="min-width:72px;text-align:center">'+centerEl+'</div>'
+                +'<div style="flex:1;display:flex;align-items:center;gap:5px">'
+                +(at.logo?'<img src="'+at.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
+                +'<span style="font-weight:'+(awayW?'700':'500')+';font-size:12px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+( at.shortDisplayName||at.displayName||'?')+'</span></div>'
+                +'</div>';
+            const entry = {date: dt ? dt.getTime() : 0, row};
+            if (isFinal) past.push(entry);
+            else upcoming.push(entry);
         }
+        // Sort: upcoming ascending (soonest first), past descending (most recent first)
+        upcoming.sort((a,b) => a.date - b.date);
+        past.sort((a,b) => b.date - a.date);
+        let html = '';
+        if (upcoming.length) {
+            html += '<div style="font-size:11px;font-weight:600;color:var(--blue);margin:0 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">📅 Upcoming Fixtures ('+upcoming.length+')</div>';
+            html += upcoming.map(e => e.row).join('');
+        }
+        if (past.length) {
+            html += '<div style="font-size:11px;font-weight:600;color:var(--text2);margin:'+(upcoming.length?'14px':'0')+' 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">✅ Recent Results ('+past.length+')</div>';
+            html += past.map(e => e.row).join('');
+        }
+        if (!html) html = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No events found.</div>';
         el.innerHTML = html;
     } catch(e) {
         el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed: '+e.message+'</div>';
@@ -9884,7 +9991,7 @@ setInterval(() => {
 // Slower polls for other tabs
 setInterval(() => {
     if (currentTab === 'storage') loadStorage();
-    else if (currentTab === 'network') loadNetwork();
+    else if (currentTab === 'stornet') { loadStorage(); loadNetwork(); }
     else if (currentTab === 'overview') loadDashboardContainers();
 }, 10000);
 

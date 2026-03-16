@@ -4,7 +4,7 @@
 > One `curl | sudo bash` install. Pure Bash TUI + real-time Flask WebUI. **101 apps across 17 categories.** MIT licensed.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.12.0-blue)](https://github.com/twoeagles404/arrhub/releases)
+[![Version](https://img.shields.io/badge/version-3.15.17-blue)](https://github.com/twoeagles404/arrhub/releases)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-twoeagles404%2Farrhub-blue)](https://github.com/twoeagles404/arrhub/pkgs/container/arrhub)
 
 ---
@@ -22,6 +22,10 @@
 - **Updates tab** — check for image updates, pull latest with one click
 - **Backup tab** — one-click config backup and restore
 - **RSS & Live News** — CNN, BBC, Al Jazeera, Sky News, Sports, Tech, Science, YouTube feeds + 6 YouTube live news streams (BBC, Al Jazeera, Sky News, Bloomberg, DW, France 24); collapsible per-category in the All tab
+- **Football Hub** — full multi-league football dashboard (Premier League, La Liga, Bundesliga, Serie A, Ligue 1, MLS, Champions League, Europa League, World Cup, Euros, Copa América, AFCON); standings, live scores, highlights, news, team drill-down with upcoming fixtures and past results
+- **Twitter / X integration** — embed any Twitter/X handle in Feeds via twitterwebviewer.com iframe; add multiple handles with tab switching
+- **Load More on all feeds** — "Load More" button works across every feed type (RSS, YouTube, Reddit, HN, and all custom categories)
+- **Color-coded logs** — system journal lines are color-coded by severity (CRIT=red bold, ERR=red, WARN=orange/yellow, INFO=green, DEBUG=muted)
 - **Draggable dashboard** — Overview panels are drag-and-drop resizable widgets (GridStack); click "Edit Layout" to rearrange and resize; layout saved per-browser
 - **Themes & appearance** — 5 built-in themes (Dark, Light, Nord, Catppuccin, Dracula), 6 accent colors, custom background image with blur/overlay; persisted to localStorage
 - **Service cards** — Radarr upcoming movies, Sonarr upcoming episodes, Plex active streams, Seerr/Overseerr requests on the Overview page

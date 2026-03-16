@@ -178,6 +178,7 @@ load_catalog() {
     define_app qbittorrent  "qBittorrent"  "lscr.io/linuxserver/qbittorrent:latest"  "Downloaders"  "8090:8080 6881:6881 6881:6881/udp"
     APP_CUSTOM_SVC[qbittorrent]="yes"
     define_app transmission "Transmission" "lscr.io/linuxserver/transmission:latest" "Downloaders"  "9091:9091 51413:51413 51413:51413/udp"
+    APP_CUSTOM_SVC[transmission]="yes"
     define_app deluge       "Deluge"       "lscr.io/linuxserver/deluge:latest"       "Downloaders"  "8112:8112 6881:6881 6881:6881/udp"
     define_app sabnzbd      "SABnzbd"      "lscr.io/linuxserver/sabnzbd:latest"      "Downloaders"  "8090:8080"
     define_app nzbget       "NZBget"       "lscr.io/linuxserver/nzbget:latest"       "Downloaders"  "6789:6789"
@@ -1173,6 +1174,41 @@ add_service_qbittorrent() {
     } >> "${f}"
     log INFO "qBittorrent configured with downloads at ${MEDIA_DIR}/downloads (WebUI: port ${hp_8090})"
     printf '\n\033[1;33m  ▶ qBittorrent default credentials: admin / adminadmin\n  ▶ Change immediately after first login!\033[0m\n'
+}
+
+add_service_transmission() {
+    local id="${1:-transmission}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_9091; hp_9091=$(find_free_port 9091)
+    local hp_51413; hp_51413=$(find_free_port 51413)
+
+    if [[ "${hp_9091}" != "9091" ]]; then
+        log WARN "Port 9091 in use — ${id} reassigned to ${hp_9091}"
+    fi
+    if [[ "${hp_51413}" != "51413" ]]; then
+        log WARN "Port 51413 in use — ${id} reassigned to ${hp_51413}"
+    fi
+
+    {
+        echo ""
+        echo "  transmission:"
+        echo "    image: lscr.io/linuxserver/transmission:latest"
+        echo "    container_name: transmission"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - PUID=${PUID_VAL}"
+        echo "      - PGID=${PGID_VAL}"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/transmission:/config"
+        echo "      - ${MEDIA_DIR}/downloads:/downloads"
+        echo "    ports:"
+        echo "      - \"${hp_9091}:9091\""
+        echo "      - \"${hp_51413}:51413\""
+        echo "      - \"${hp_51413}:51413/udp\""
+    } >> "${f}"
+    log INFO "Transmission configured with downloads at ${MEDIA_DIR}/downloads (WebUI: port ${hp_9091})"
 }
 
 add_service_prometheus() {

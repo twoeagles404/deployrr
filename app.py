@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.16 · Full deployment, update management, and real-time monitoring
+Version: 3.15.18 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.16",
+            "version": "3.15.18",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1316,7 +1316,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.16"})
+    return jsonify({"update_available": False, "version": "3.15.18"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1633,9 +1633,10 @@ def api_rss_fetch():
     if not url:
         return jsonify({"error": "Missing url"}), 400
 
-    # Per-feed response cache to avoid hammering external servers
+    # Per-feed response cache — short TTL to keep content fresh
+    bust = request.args.get("bust", "0")  # ?bust=1 forces bypass
     cache_key = "rss_fetch_" + url
-    if cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 300:
+    if bust == "0" and cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 120:
         return jsonify(_rss_cache[cache_key]["data"])
 
     try:
@@ -1647,12 +1648,15 @@ def api_rss_fetch():
             m = _re.search(r'reddit\.com/r/([A-Za-z0-9_]+)', url)
             if m:
                 subreddit = m.group(1)
-                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25&raw_json=1"
+                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25&raw_json=1&include_over_18=1"
                 req_json = urllib.request.Request(json_url, headers={
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept": "application/json, text/javascript, */*; q=0.01",
                     "Accept-Language": "en-US,en;q=0.9",
                     "Referer": "https://www.reddit.com/",
+                    "Cookie": "over18=1; reddit_session=; redesign_optout=true",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
                     "DNT": "1",
                 })
                 with urllib.request.urlopen(req_json, timeout=15) as resp_j:
@@ -1750,8 +1754,12 @@ def api_rss_fetch():
 
         # ── Non-Reddit: standard RSS/Atom fetch ───────────────────────────
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15; +https://github.com/twoeagles404/arrhub)",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
         }
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1914,7 +1922,10 @@ def api_rss_fetch():
 
         result = {"items": items}
         _rss_cache[cache_key] = {"data": result, "ts": time.time()}
-        return jsonify(result)
+        resp = jsonify(result)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
     except Exception as e:
         return jsonify({"error": str(e), "items": []}), 200
 
@@ -2062,6 +2073,7 @@ def _feeds_get_subs():
             "rss":     {"name": "RSS",     "icon": "📰"},
             "reddit":  {"name": "Reddit",  "icon": "🤖"},
             "youtube": {"name": "YouTube", "icon": "▶"},
+            "twitter": {"name": "Twitter", "icon": "𝕏"},
         },
         "rss": [
             {"id": "selfhst",    "name": "selfh.st",       "url": "https://selfh.st/rss/"},
@@ -2071,15 +2083,21 @@ def _feeds_get_subs():
             {"id": "arstechnica","name": "Ars Technica",    "url": "https://feeds.arstechnica.com/arstechnica/index"},
         ] + _NEWS_DEFAULTS,
         "reddit": [
-            {"id": "homelab",    "name": "r/homelab",       "url": "https://old.reddit.com/r/homelab/.rss"},
-            {"id": "selfhosted", "name": "r/selfhosted",    "url": "https://old.reddit.com/r/selfhosted/.rss"},
-            {"id": "proxmox",    "name": "r/Proxmox",       "url": "https://old.reddit.com/r/Proxmox/.rss"},
-            {"id": "docker",     "name": "r/docker",        "url": "https://old.reddit.com/r/docker/.rss"},
+            {"id": "homelab",    "name": "r/homelab",       "url": "https://www.reddit.com/r/homelab/.rss"},
+            {"id": "selfhosted", "name": "r/selfhosted",    "url": "https://www.reddit.com/r/selfhosted/.rss"},
+            {"id": "proxmox",    "name": "r/Proxmox",       "url": "https://www.reddit.com/r/Proxmox/.rss"},
+            {"id": "docker",     "name": "r/docker",        "url": "https://www.reddit.com/r/docker/.rss"},
         ],
         "youtube": [
             {"id": "UCR-DXc1voovS8nhAvccRZhg", "name": "Jeff Geerling",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg"},
             {"id": "UCsBjURrPoezykLs9EqgamOA", "name": "Fireship",       "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA"},
             {"id": "UCVS-4mLrAKFNZWoZ4eHiYbA", "name": "NetworkChuck",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCVS-4mLrAKFNZWoZ4eHiYbA"},
+        ],
+        "twitter": [
+            {"id": "jeffgeerling",  "name": "@JeffGeerling",  "url": "JeffGeerling"},
+            {"id": "networkchuck",  "name": "@NetworkChuck",  "url": "NetworkChuck"},
+            {"id": "theprimagen",   "name": "@ThePrimeagen",  "url": "ThePrimeagen"},
+            {"id": "linustech",     "name": "@LinusTech",     "url": "LinusTech"},
         ]
     }
     raw = _db_get("feeds_subscriptions", None)
@@ -2094,6 +2112,12 @@ def _feeds_get_subs():
             if feed["id"] not in existing_ids:
                 subs.setdefault("rss", []).append(feed)
                 added = True
+        # Migrate: add twitter defaults if not present
+        if "twitter" not in subs:
+            subs["twitter"] = _DEFAULT["twitter"]
+            if "_type_meta" in subs:
+                subs["_type_meta"]["twitter"] = {"name": "Twitter", "icon": "𝕏"}
+            added = True
         if added:
             _db_set("feeds_subscriptions", json.dumps(subs))
         return subs
@@ -2452,9 +2476,13 @@ def api_reddit_feed():
         if after:
             url += f"&after={after}"
         req = _ur.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "over18=1; redesign_optout=true",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://www.reddit.com/",
         })
         with _ur.urlopen(req, timeout=15) as r:
             data = _jr.loads(r.read())
@@ -2473,8 +2501,12 @@ def api_reddit_comments():
         return jsonify({"error": "Missing url"}), 400
     try:
         req = _ur.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "over18=1; redesign_optout=true",
+            "Cache-Control": "no-cache",
+            "Referer": "https://www.reddit.com/",
         })
         with _ur.urlopen(req, timeout=15) as r:
             data = _jr.loads(r.read())
@@ -3243,6 +3275,11 @@ _HTML_SPA = r"""<!DOCTYPE html>
 [data-accent="pink"]{--blue:#f778ba;--blue2:rgba(247,120,186,.15);}
 [data-accent="cyan"]{--blue:#56d9e0;--blue2:rgba(86,217,224,.15);}
 
+/* ── Apple-smooth scrolling and selection ── */
+html { scroll-behavior: smooth; }
+* { box-sizing: border-box; }
+::selection { background: rgba(99,102,241,0.3); color: inherit; }
+
 /* ── Background image layer ─────────────────────────────────────────── */
 #bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
 #app{position:relative;z-index:1;}
@@ -3263,24 +3300,54 @@ _HTML_SPA = r"""<!DOCTYPE html>
   border-radius:var(--r);
   overflow:hidden;
 }
-/* Drag handle shown when in edit mode */
-.gs-editing .grid-stack-item>.grid-stack-item-content::before{
-  content:'⠿  drag to rearrange · resize from corner';
-  display:block;
-  padding:4px 10px;
-  font-size:10px;
-  color:var(--text3);
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  border-radius:var(--r) var(--r) 0 0;
-  cursor:grab;
-  user-select:none;
-  letter-spacing:.03em;
+/* ── Homarr-like edit mode: visible grid cells ── */
+.grid-stack.gs-editing {
+  background-image:
+    linear-gradient(to right, rgba(99,102,241,0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(99,102,241,0.08) 1px, transparent 1px);
+  background-size: calc(100% / 12 - 0px) 68px;
+  background-position: 0 0;
+  border-radius: 12px;
 }
-.gs-editing .grid-stack-item>.grid-stack-item-content .panel{
-  border-radius:0 0 var(--r) var(--r);
+.grid-stack.gs-editing .grid-stack-item {
+  outline: 2px solid rgba(99,102,241,0.35) !important;
+  outline-offset: -2px;
+  border-radius: var(--r);
+  transition: outline-color .15s, transform .15s;
 }
-.gs-editing .grid-stack-item{outline:1px dashed var(--border2);}
+.grid-stack.gs-editing .grid-stack-item:hover {
+  outline-color: rgba(99,102,241,0.7) !important;
+  transform: scale(1.003);
+}
+/* ── Drag handle ── */
+.gs-drag-handle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(99,102,241,0.05));
+  border-bottom: 1px solid rgba(99,102,241,0.2);
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(99,102,241,0.9);
+  cursor: grab;
+  user-select: none;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  border-radius: var(--r) var(--r) 0 0;
+}
+.gs-drag-handle:active { cursor: grabbing; }
+/* ── Widget resize handles — more visible ── */
+.gs-editing .ui-resizable-handle {
+  background: rgba(99,102,241,0.4) !important;
+  border-radius: 3px;
+}
+.gs-editing .ui-resizable-se {
+  width: 14px !important;
+  height: 14px !important;
+  right: 4px !important;
+  bottom: 4px !important;
+}
 /* Widget remove button (shown in edit mode) */
 .gs-editing .widget-remove-btn{display:flex!important;}
 .widget-remove-btn{
@@ -3610,8 +3677,9 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .btn svg{width:12px;height:12px;flex-shrink:0;}
 
 /* ── Generic panel ── */
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:16px;}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:16px;transition:box-shadow .25s cubic-bezier(.25,.46,.45,.94),transform .25s cubic-bezier(.25,.46,.45,.94),border-color .2s;}
 .panel-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;display:flex;align-items:center;gap:8px;}
+.panel:hover{box-shadow:0 8px 32px rgba(0,0,0,0.22);transform:translateY(-1px);}
 
 /* ── Tables ── */
 table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -4216,7 +4284,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.16</div>
+      <div class="sb-version">v3.15.18</div>
     </div>
   </div>
 
@@ -5179,7 +5247,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.16</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.18</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -5491,6 +5559,23 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <div id="feeds-hn-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
         <div style="text-align:center;margin-top:14px"><button id="feeds-hn-more-btn" onclick="feedsHNLoadMore()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+      </div>
+
+      <!-- ── Twitter/X sub-page ─────────────────────────────────────── -->
+      <div id="feeds-page-twitter" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-twitter-handle-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <a id="feeds-twitter-open-link" href="#" target="_blank" rel="noopener"
+               style="font-size:11px;color:var(--blue);text-decoration:none;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r)">↗ Open in new tab</a>
+          </div>
+        </div>
+        <div id="feeds-twitter-frame-wrap" style="border-radius:var(--r);overflow:hidden;border:1px solid var(--border);background:var(--bg2)">
+          <iframe id="feeds-twitter-iframe" src="" style="width:100%;height:calc(100vh - 240px);min-height:500px;border:none;display:block" loading="lazy"></iframe>
+        </div>
+        <div id="feeds-twitter-empty" style="display:none;padding:40px 20px;text-align:center;color:var(--text3);font-size:12px">
+          No Twitter handles added yet — go to <strong>Manage</strong> to add some.
+        </div>
       </div>
 
       <!-- Custom category pages are injected here by JS -->
@@ -6694,9 +6779,9 @@ async function loadNetwork() {
             _netHistory.tx.shift(); _netHistory.rx.shift(); _netHistory.labels.shift();
         }
 
-        // Init charts on first call
-        if (!_netTxChart) _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)');
-        if (!_netRxChart) _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)');
+        // Init charts on first call (force resize to handle zero-dimension canvas on tab-open)
+        if (!_netTxChart) { _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)'); if (_netTxChart) setTimeout(() => _netTxChart.resize(), 50); }
+        if (!_netRxChart) { _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)'); if (_netRxChart) setTimeout(() => _netRxChart.resize(), 50); }
 
         if (_netTxChart) {
             _netTxChart.data.labels = [..._netHistory.labels];
@@ -6860,13 +6945,32 @@ async function loadHardware() {
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────
+function _colorLogLine(line) {
+    const esc = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const lo = line.toLowerCase();
+    let color = '';
+    if (/\b(emerg|emergency|crit|critical|alert|panic)\b/.test(lo))
+        color = 'color:#ff4444;font-weight:700';
+    else if (/\b(err|error|failed|failure|exception|traceback)\b/.test(lo))
+        color = 'color:var(--red,#f85149)';
+    else if (/\b(warn|warning|deprecated)\b/.test(lo))
+        color = 'color:var(--orange,#d29922)';
+    else if (/\b(info|started|starting|loaded|ready|success|ok)\b/.test(lo))
+        color = 'color:var(--green,#3fb950)';
+    else if (/\b(debug|trace|verbose)\b/.test(lo))
+        color = 'color:var(--text3,#6e7681)';
+    return color ? `<span style="${color}">${esc}</span>` : `<span>${esc}</span>`;
+}
+
 async function loadLogs() {
     const el = document.getElementById('log-output');
     el.textContent = 'Loading...';
     try {
         const r = await fetch(API + '/api/logs');
         const d = await r.json();
-        el.textContent = (d.lines || []).join('\n') || '(empty)';
+        const lines = d.lines || [];
+        if (!lines.length) { el.textContent = '(empty)'; return; }
+        el.innerHTML = lines.map(_colorLogLine).join('\n');
         el.scrollTop = el.scrollHeight;
     } catch(e) { el.textContent = 'Failed to load logs'; }
 }
@@ -7269,7 +7373,8 @@ const _hnFeedUrls = {
 };
 
 // All known category types (built-in + custom from _type_meta)
-let _feedsAllTypes = ['rss','reddit','youtube','hn']; // built-in order; custom appended
+let _feedsAllTypes = ['rss','reddit','youtube','hn','twitter']; // built-in order; custom appended
+let _feedsTwitterActive = null;
 
 function _feedsBuildNavPills() {
     const row = document.getElementById('feeds-pills-row');
@@ -7303,6 +7408,7 @@ function feedsNav(page, el) {
     else if (page === 'reddit')  _feedsLoadRedditPage();
     else if (page === 'youtube') _feedsLoadYTPage();
     else if (page === 'hn')      _feedsLoadHN(false);
+    else if (page === 'twitter') _feedsLoadTwitterPage();
     else if (page === 'manage')  _feedsRenderManage();
     else                         _feedsLoadCustomPage(page);
 }
@@ -7333,6 +7439,7 @@ function _feedsInjectCustomPageDivs() {
       <div id="feeds-page-${k}" style="display:none">
         <div id="feeds-${k}-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
         <div id="feeds-${k}-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-${k}-more-btn" onclick="feedsLoadMore('${k}')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
       </div>`).join('');
 }
 
@@ -7415,8 +7522,8 @@ async function _feedsFetchRedditDirect(url, grid, appendMode) {
     const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const sort = _feedsRedditSort || 'hot';
     try {
-        // Direct browser fetch — old.reddit.com JSON endpoint (no CORS issues, NSFW works)
-        const redditUrl = `https://old.reddit.com/r/${encodeURIComponent(sub)}/${sort}.json?limit=25&include_over_18=1&raw_json=1${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`;
+        // Direct browser fetch — www.reddit.com JSON API (CORS-friendly, NSFW-permissive)
+        const redditUrl = `https://www.reddit.com/r/${encodeURIComponent(sub)}/${sort}.json?limit=25&include_over_18=1&raw_json=1${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`;
         const r = await fetch(redditUrl);
         if (!r.ok) {
             // Fallback to server proxy if browser fetch fails
@@ -7579,10 +7686,10 @@ async function _feedsLoadHN(appendMode) {
 async function _feedsFetchAndRenderCards(url, grid, mode) {
     if (!url || !grid) return;
     const gridId = grid.id;
-    const moreBtnId = gridId === 'feeds-rss-grid' ? 'feeds-rss-more-btn' : gridId === 'feeds-yt-grid' ? 'feeds-yt-more-btn' : null;
+    const moreBtnId = gridId.endsWith('-grid') ? gridId.replace(/-grid$/, '-more-btn') : null;
     grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
     try {
-        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}`);
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}&_t=${Date.now()}`);
         const d = await r.json();
         const items = d.items || [];
         if (!items.length) {
@@ -7738,8 +7845,8 @@ async function feedsOpenComments(permalink, title) {
         </div>`;
     }
     try {
-        // Direct browser fetch for comments (old.reddit.com for NSFW compat)
-        const commentUrl = fullLink.replace('www.reddit.com', 'old.reddit.com').replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
+        // Direct browser fetch for comments — www.reddit.com JSON API
+        const commentUrl = (fullLink.startsWith('http') ? fullLink : 'https://www.reddit.com'+fullLink).replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
         let data;
         try {
             const r = await fetch(commentUrl);
@@ -7807,7 +7914,7 @@ function feedsSortGrid(gridId, sortVal) {
     const mode = _feedsViewMode[gridId] || 'grid';
     _feedsRenderItems(grid, items, 0, _FEEDS_PAGE_SIZE, mode, false);
     // Update Load More button
-    const moreId = gridId === 'feeds-rss-grid' ? 'feeds-rss-more-btn' : gridId === 'feeds-yt-grid' ? 'feeds-yt-more-btn' : null;
+    const moreId = gridId.endsWith('-grid') ? gridId.replace(/-grid$/, '-more-btn') : null;
     if (moreId) { const b = document.getElementById(moreId); if (b) b.style.display = items.length > _FEEDS_PAGE_SIZE ? '' : 'none'; }
 }
 
@@ -7844,10 +7951,9 @@ function _feedsRenderItems(grid, items, from, to, mode, append) {
 }
 
 function feedsLoadMore(type) {
-    const gridId = type === 'rss' ? 'feeds-rss-grid' : type === 'youtube' ? 'feeds-yt-grid' : null;
-    if (!gridId) return;
+    const gridId = type === 'youtube' ? 'feeds-yt-grid' : `feeds-${type}-grid`;
+    const moreBtnId = type === 'youtube' ? 'feeds-yt-more-btn' : `feeds-${type}-more-btn`;
     const grid = document.getElementById(gridId);
-    const moreBtnId = type === 'rss' ? 'feeds-rss-more-btn' : 'feeds-yt-more-btn';
     const moreBtn = document.getElementById(moreBtnId);
     if (!grid) return;
     const items = _feedsAllItems[gridId] || [];
@@ -7882,6 +7988,45 @@ function feedsHNChangeSort(sort, btnEl) {
     document.querySelectorAll('[id^="hn-sort-"]').forEach(b=>b.classList.remove('active'));
     if (btnEl) btnEl.classList.add('active');
     _feedsLoadHN(false);
+}
+
+function _feedsLoadTwitterPage() {
+    const tabs = document.getElementById('feeds-twitter-handle-tabs');
+    const frameWrap = document.getElementById('feeds-twitter-frame-wrap');
+    const emptyEl = document.getElementById('feeds-twitter-empty');
+    if (!tabs) return;
+    const handles = _feedsSubs.twitter || [];
+    if (!handles.length) {
+        if (frameWrap) frameWrap.style.display = 'none';
+        if (emptyEl) emptyEl.style.display = '';
+        tabs.innerHTML = '';
+        return;
+    }
+    if (frameWrap) frameWrap.style.display = '';
+    if (emptyEl) emptyEl.style.display = 'none';
+    if (!_feedsTwitterActive || !handles.find(h => h.id === _feedsTwitterActive))
+        _feedsTwitterActive = handles[0].id;
+    tabs.innerHTML = handles.map(h =>
+        `<button class="filter-pill${h.id===_feedsTwitterActive?' active':''}" onclick="_feedsSelectTwitter('${h.id}',this)">𝕏 ${h.name}</button>`
+    ).join('');
+    const active = handles.find(h => h.id === _feedsTwitterActive);
+    if (active) _feedsSetTwitterHandle(active.url);
+}
+
+function _feedsSelectTwitter(id, el) {
+    _feedsTwitterActive = id;
+    document.querySelectorAll('#feeds-twitter-handle-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const h = (_feedsSubs.twitter || []).find(s => s.id === id);
+    if (h) _feedsSetTwitterHandle(h.url);
+}
+
+function _feedsSetTwitterHandle(handle) {
+    const iframe = document.getElementById('feeds-twitter-iframe');
+    const link = document.getElementById('feeds-twitter-open-link');
+    const url = `https://twitterwebviewer.com/${handle.replace(/^@/,'')}`;
+    if (iframe) iframe.src = url;
+    if (link) link.href = url;
 }
 
 function feedsHNLoadMore() {
@@ -7922,6 +8067,7 @@ document.addEventListener('keydown', e => {
 function _feedsLoadCustomPage(type) {
     const tabs = document.getElementById(`feeds-${type}-source-tabs`);
     const grid = document.getElementById(`feeds-${type}-grid`);
+    const moreBtn = document.getElementById(`feeds-${type}-more-btn`);
     if (!tabs || !grid) return;
     const meta = _feedsSubs._type_meta || {};
     const icon = meta[type]?.icon || '📡';
@@ -7929,6 +8075,7 @@ function _feedsLoadCustomPage(type) {
     if (!sources.length) {
         tabs.innerHTML = '';
         grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">${icon}</div><div class="empty-text">No feeds yet — add some in Manage</div></div>`;
+        if (moreBtn) moreBtn.style.display = 'none';
         return;
     }
     let activeId = sources[0].id;
@@ -7950,10 +8097,10 @@ function _feedsRenderManage() {
     const grid = document.getElementById('feeds-manage-grid');
     if (!grid) return;
     const meta = _feedsSubs._type_meta || {};
-    const builtIn = ['rss','reddit','youtube'];
+    const builtIn = ['rss','reddit','youtube','twitter'];
     const allTypes = [...builtIn, ...Object.keys(meta).filter(k => !builtIn.includes(k))];
-    const icons = {rss:'📰', reddit:'🤖', youtube:'▶'};
-    const names = {rss:'RSS Feeds', reddit:'Reddit', youtube:'YouTube'};
+    const icons = {rss:'📰', reddit:'🤖', youtube:'▶', twitter:'𝕏'};
+    const names = {rss:'RSS Feeds', reddit:'Reddit', youtube:'YouTube', twitter:'Twitter / X'};
 
     grid.innerHTML = allTypes.map(type => {
         const icon = icons[type] || meta[type]?.icon || '📡';
@@ -8795,37 +8942,52 @@ async function _footballTeamLoadFixtures() {
         const raw = await r.json();
         const events = raw.events || [];
         if (!events.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No schedule found.</div>'; return; }
-        let html = '';
+        const upcoming = [], past = [];
         for (const event of events) {
             const comp = (event.competitions || [])[0] || {};
+            const statusName = comp.status?.type?.name || '';
+            const isFinal = statusName === 'STATUS_FINAL';
+            const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
             const competitors = comp.competitors || [];
             const home = competitors.find(c => c.homeAway === 'home') || {};
             const away = competitors.find(c => c.homeAway === 'away') || {};
             const ht = home.team || {}, at = away.team || {};
-            const statusName = comp.status?.type?.name || '';
-            const isFinal = statusName === 'STATUS_FINAL';
-            const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
             const dt = event.date ? new Date(event.date) : null;
             const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
             const scoreH = (isFinal||isLive) ? parseInt(home.score||0) : null;
             const scoreA = (isFinal||isLive) ? parseInt(away.score||0) : null;
-            const score = scoreH != null ? scoreH+' - '+scoreA : 'vs';
             const homeW = isFinal && scoreH > scoreA, awayW = isFinal && scoreA > scoreH;
             const centerEl = isLive
                 ? '<span style="background:#f44336;color:#fff;padding:2px 5px;border-radius:3px;font-size:9px;font-weight:600">LIVE</span>'
                 : isFinal
-                    ? '<div style="font-weight:700;font-size:14px;letter-spacing:1px">'+score+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
+                    ? '<div style="font-weight:700;font-size:14px;letter-spacing:1px">'+scoreH+' - '+scoreA+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
                     : '<div style="font-size:10px;color:var(--text3);text-align:center;line-height:1.3">'+dateStr+'</div>';
-            html += '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);gap:8px;margin-bottom:6px">';
-            html += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:5px;text-align:right">';
-            if (ht.logo) html += '<img src="'+ht.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">';
-            html += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:12px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+( ht.shortDisplayName||ht.displayName||'?')+'</span></div>';
-            html += '<div style="min-width:72px;text-align:center">'+centerEl+'</div>';
-            html += '<div style="flex:1;display:flex;align-items:center;gap:5px">';
-            if (at.logo) html += '<img src="'+at.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">';
-            html += '<span style="font-weight:'+(awayW?'700':'500')+';font-size:12px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+( at.shortDisplayName||at.displayName||'?')+'</span></div>';
-            html += '</div>';
+            const row = '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);gap:8px;margin-bottom:6px">'
+                +'<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:5px;text-align:right">'
+                +(ht.logo?'<img src="'+ht.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
+                +'<span style="font-weight:'+(homeW?'700':'500')+';font-size:12px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+( ht.shortDisplayName||ht.displayName||'?')+'</span></div>'
+                +'<div style="min-width:72px;text-align:center">'+centerEl+'</div>'
+                +'<div style="flex:1;display:flex;align-items:center;gap:5px">'
+                +(at.logo?'<img src="'+at.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
+                +'<span style="font-weight:'+(awayW?'700':'500')+';font-size:12px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+( at.shortDisplayName||at.displayName||'?')+'</span></div>'
+                +'</div>';
+            const entry = {date: dt ? dt.getTime() : 0, row};
+            if (isFinal) past.push(entry);
+            else upcoming.push(entry);
         }
+        // Sort: upcoming ascending (soonest first), past descending (most recent first)
+        upcoming.sort((a,b) => a.date - b.date);
+        past.sort((a,b) => b.date - a.date);
+        let html = '';
+        if (upcoming.length) {
+            html += '<div style="font-size:11px;font-weight:600;color:var(--blue);margin:0 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">📅 Upcoming Fixtures ('+upcoming.length+')</div>';
+            html += upcoming.map(e => e.row).join('');
+        }
+        if (past.length) {
+            html += '<div style="font-size:11px;font-weight:600;color:var(--text2);margin:'+(upcoming.length?'14px':'0')+' 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">✅ Recent Results ('+past.length+')</div>';
+            html += past.map(e => e.row).join('');
+        }
+        if (!html) html = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No events found.</div>';
         el.innerHTML = html;
     } catch(e) {
         el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed: '+e.message+'</div>';
@@ -9884,7 +10046,7 @@ setInterval(() => {
 // Slower polls for other tabs
 setInterval(() => {
     if (currentTab === 'storage') loadStorage();
-    else if (currentTab === 'network') loadNetwork();
+    else if (currentTab === 'stornet') { loadStorage(); loadNetwork(); }
     else if (currentTab === 'overview') loadDashboardContainers();
 }, 10000);
 
@@ -10067,7 +10229,7 @@ function _gsInit() {
     disableDrag: isMobile,
     disableResize: isMobile,
     resizable: { handles: 'e,se,s,sw,w' },  // resize from all sides
-    draggable: { handle: '.panel-title' },   // drag by title bar only
+    draggable: { handle: '.gs-drag-handle' },
   }, el);
   // When a widget is resized, tell Chart.js canvases inside to resize + toggle compact class
   _gs.on('resizestop', (event, element) => {
@@ -10081,13 +10243,14 @@ function _gsInit() {
   // Apply compact class to all widgets initially
   el.querySelectorAll('.grid-stack-item').forEach(item => _applyCompactClass(item));
   // Restore saved layout — invalidate if widget set changed (layout version bump)
-  const _GRID_VER = 2;  // bump when adding/removing widgets
+  const _GRID_VER = 3;  // bump when adding/removing widgets
   const saved = localStorage.getItem('arrhub_grid');
   const savedVer = parseInt(localStorage.getItem('arrhub_grid_ver') || '0');
   if (saved && savedVer === _GRID_VER) {
     try {
       const items = JSON.parse(saved);
       _gs.load(items, false);
+      _gs.compact();   // eliminates position conflicts
     } catch(e) { localStorage.removeItem('arrhub_grid'); }
   } else {
     localStorage.removeItem('arrhub_grid');
@@ -10292,6 +10455,14 @@ function toggleGridEdit() {
     btn.style.background = 'var(--blue2)';
     btn.style.color      = 'var(--blue)';
     grid.classList.add('gs-editing');
+    grid.querySelectorAll('.grid-stack-item').forEach(item => {
+      if (!item.querySelector('.gs-drag-handle')) {
+        const dh = document.createElement('div');
+        dh.className = 'gs-drag-handle';
+        dh.innerHTML = '⠿ drag';
+        item.querySelector('.grid-stack-item-content').prepend(dh);
+      }
+    });
     if (addBtn) addBtn.style.display = '';
     showToast('Drag by title bar · resize from edges · ✕ to hide widgets · click Save when done', 'info', 5000);
   } else {
@@ -10302,6 +10473,7 @@ function toggleGridEdit() {
     btn.style.background = '';
     btn.style.color      = '';
     grid.classList.remove('gs-editing');
+    document.querySelectorAll('.gs-drag-handle').forEach(h => h.remove());
     if (addBtn) addBtn.style.display = 'none';
     _saveWidgetConfig();  // persist to server
     showToast('Layout saved', 'success', 2000);

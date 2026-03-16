@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.9 · Full deployment, update management, and real-time monitoring
+Version: 3.15.10 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,12 +935,15 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.9",
+            "version": "3.15.10",
             # Service integration keys — returned so the UI can re-populate fields on revisit
-            "radarr_url":     _db_get("radarr_url", ""),
-            "radarr_api_key": _db_get("radarr_api_key", ""),
-            "sonarr_url":     _db_get("sonarr_url", ""),
-            "sonarr_api_key": _db_get("sonarr_api_key", ""),
+            "radarr_url":        _db_get("radarr_url", ""),
+            "radarr_api_key":    _db_get("radarr_api_key", ""),
+            "sonarr_url":        _db_get("sonarr_url", ""),
+            "sonarr_api_key":    _db_get("sonarr_api_key", ""),
+            "qbittorrent_url":   _db_get("qbittorrent_url", ""),
+            "qbittorrent_user":  _db_get("qbittorrent_user", "admin"),
+            "qbittorrent_pass":  _db_get("qbittorrent_pass", ""),
             "plex_url":       _db_get("plex_url", ""),
             "plex_token":     _db_get("plex_token", ""),
             "seerr_url":      _db_get("seerr_url", ""),
@@ -958,6 +961,7 @@ def api_settings_set():
         # Service integration keys
         "radarr_url", "radarr_api_key",
         "sonarr_url", "sonarr_api_key",
+        "qbittorrent_url", "qbittorrent_user", "qbittorrent_pass",
         "plex_url", "plex_token",
         "seerr_url", "seerr_api_key",
     ]
@@ -1299,7 +1303,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.9"})
+    return jsonify({"update_available": False, "version": "3.15.10"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1958,14 +1962,15 @@ _IPTV_FALLBACK_CHANNELS = [
 
 # ── Feeds subscription store ────────────────────────────────────────────
 def _feeds_get_subs():
-    """Return saved feed subscriptions from DB, with sensible defaults."""
-    raw = _db_get("feeds_subscriptions", None)
-    if raw:
-        try:
-            return json.loads(raw)
-        except Exception:
-            pass
-    return {
+    """Return saved feed subscriptions from DB, with sensible defaults.
+    Also migrates existing saves to include news feeds if missing."""
+    _NEWS_DEFAULTS = [
+        {"id": "cnn",        "name": "CNN",         "url": "http://rss.cnn.com/rss/edition.rss"},
+        {"id": "wsj_world",  "name": "WSJ World",   "url": "https://feeds.a.dj.com/rss/RSSWorldNews.xml"},
+        {"id": "bbc_main",   "name": "BBC News",    "url": "https://feeds.bbci.co.uk/news/rss.xml"},
+        {"id": "aljazeera",  "name": "Al Jazeera",  "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+    ]
+    _DEFAULT = {
         "_type_meta": {
             "rss":     {"name": "RSS",     "icon": "📰"},
             "reddit":  {"name": "Reddit",  "icon": "🤖"},
@@ -1977,7 +1982,7 @@ def _feeds_get_subs():
             {"id": "theverge",   "name": "The Verge",       "url": "https://www.theverge.com/rss/index.xml"},
             {"id": "hn",         "name": "Hacker News",     "url": "https://hnrss.org/frontpage"},
             {"id": "arstechnica","name": "Ars Technica",    "url": "https://feeds.arstechnica.com/arstechnica/index"},
-        ],
+        ] + _NEWS_DEFAULTS,
         "reddit": [
             {"id": "homelab",    "name": "r/homelab",       "url": "https://old.reddit.com/r/homelab/.rss"},
             {"id": "selfhosted", "name": "r/selfhosted",    "url": "https://old.reddit.com/r/selfhosted/.rss"},
@@ -1990,6 +1995,23 @@ def _feeds_get_subs():
             {"id": "UCVS-4mLrAKFNZWoZ4eHiYbA", "name": "NetworkChuck",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCVS-4mLrAKFNZWoZ4eHiYbA"},
         ]
     }
+    raw = _db_get("feeds_subscriptions", None)
+    if not raw:
+        return _DEFAULT
+    try:
+        subs = json.loads(raw)
+        # Migrate: add news feeds if not already present
+        existing_ids = {s["id"] for s in subs.get("rss", [])}
+        added = False
+        for feed in _NEWS_DEFAULTS:
+            if feed["id"] not in existing_ids:
+                subs.setdefault("rss", []).append(feed)
+                added = True
+        if added:
+            _db_set("feeds_subscriptions", json.dumps(subs))
+        return subs
+    except Exception:
+        return _DEFAULT
 
 @app.route("/api/feeds/subscriptions", methods=["GET"])
 def api_feeds_get_subscriptions():
@@ -2277,6 +2299,63 @@ def _svc_get(base_url, path, api_key, api_key_header="X-Api-Key", timeout=5):
     r = requests.get(url, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.json()
+
+@app.route("/api/services/qbittorrent/torrents")
+def api_qbit_torrents():
+    """Fetch torrent list from qBittorrent Web API."""
+    import urllib.request, urllib.parse, http.cookiejar
+    url = _get_setting("qbittorrent_url", "").rstrip("/")
+    user = _get_setting("qbittorrent_user", "admin")
+    pwd  = _get_setting("qbittorrent_pass", "adminadmin")
+    if not url:
+        return jsonify({"error": "qBittorrent URL not configured", "torrents": []})
+    try:
+        cj = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        # Login
+        login_data = urllib.parse.urlencode({"username": user, "password": pwd}).encode()
+        login_req = urllib.request.Request(f"{url}/api/v2/auth/login", data=login_data,
+                                           headers={"User-Agent": "ArrHub/3.15", "Referer": url})
+        with opener.open(login_req, timeout=8) as r:
+            body = r.read().decode()
+            if body.strip() != "Ok.":
+                return jsonify({"error": f"qBittorrent login failed: {body[:50]}", "torrents": []})
+        # Get torrents
+        torrents_req = urllib.request.Request(f"{url}/api/v2/torrents/info",
+                                              headers={"User-Agent": "ArrHub/3.15", "Referer": url})
+        with opener.open(torrents_req, timeout=8) as r:
+            torrents = json.loads(r.read())
+        # Get transfer info for speeds
+        try:
+            speed_req = urllib.request.Request(f"{url}/api/v2/transfer/info",
+                                               headers={"User-Agent": "ArrHub/3.15", "Referer": url})
+            with opener.open(speed_req, timeout=5) as r:
+                speed_info = json.loads(r.read())
+        except Exception:
+            speed_info = {}
+        def fmt_size(b):
+            for u in ["B","KB","MB","GB","TB"]:
+                if b < 1024: return f"{b:.1f} {u}"
+                b /= 1024
+            return f"{b:.1f} TB"
+        result = []
+        for t in torrents:
+            result.append({
+                "name":     t.get("name",""),
+                "state":    t.get("state",""),
+                "progress": round(t.get("progress",0)*100, 1),
+                "size":     fmt_size(t.get("size",0)),
+                "dlspeed":  fmt_size(t.get("dlspeed",0)) + "/s",
+                "upspeed":  fmt_size(t.get("upspeed",0)) + "/s",
+                "eta":      t.get("eta", 0),
+                "num_seeds":t.get("num_seeds",0),
+                "category": t.get("category",""),
+            })
+        dl_speed = fmt_size(speed_info.get("dl_info_speed", 0)) + "/s"
+        ul_speed = fmt_size(speed_info.get("up_info_speed", 0)) + "/s"
+        return jsonify({"torrents": result, "dl_speed": dl_speed, "ul_speed": ul_speed})
+    except Exception as e:
+        return jsonify({"error": str(e), "torrents": []})
 
 @app.route("/api/services/radarr/calendar")
 def api_radarr_calendar():
@@ -2571,15 +2650,17 @@ def _calc_cpu_percent(stats):
         return 0
 
 def _extract_ports(container):
-    """Extract ports from container as simple strings."""
+    """Extract ports from container as hostPort:containerPort strings (only bound ports)."""
     ports = []
     try:
         port_info = container.ports or {}
         for key, val in port_info.items():
             if val:
-                host_port = val[0].get("HostPort")
-                container_port = key.split('/')[0] if key else ""
-                ports.append(f"{host_port}:{container_port}")
+                for binding in val:
+                    host_port = binding.get("HostPort")
+                    if host_port and host_port.isdigit():
+                        container_port = key.split('/')[0] if key else ""
+                        ports.append(f"{host_port}:{container_port}")
     except Exception:
         pass
     return ports
@@ -3652,7 +3733,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.9</div>
+      <div class="sb-version">v3.15.10</div>
     </div>
   </div>
 
@@ -4055,6 +4136,19 @@ body.sse-disconnected #app{padding-top:38px;}
                   </div>
                 </div>
                 <div id="sonarr-card-body" class="svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
+              </div>
+              <div class="panel svc-card" style="margin:0" id="qbit-card">
+                <div class="svc-card-hdr">
+                  <span class="svc-card-title">⬇️ Downloads</span>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span id="qbit-speed" style="font-size:10px;color:var(--text3);font-family:var(--mono)"></span>
+                    <div class="svc-tabs">
+                      <button class="svc-tab active" onclick="svcTabSwitch('qbit','active',this)">Active</button>
+                      <button class="svc-tab" onclick="svcTabSwitch('qbit','all',this)">All</button>
+                    </div>
+                  </div>
+                </div>
+                <div id="qbit-card-body" class="svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
               </div>
               <div class="panel svc-card" style="margin:0" id="plex-card">
                 <div class="svc-card-hdr">
@@ -4472,6 +4566,25 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="field"><label>Plex Token</label><input type="password" id="svc-plex-token" placeholder="•••••••••••"><div class="field-hint">Settings → Troubleshooting → X-Plex-Token</div></div>
           <div class="field"><label>Seerr/Overseerr URL</label><input type="text" id="svc-seerr-url" placeholder="http://localhost:5055"></div>
           <div class="field"><label>Seerr API Key</label><input type="password" id="svc-seerr-key" placeholder="•••••••••••"></div>
+          <div style="margin-top:18px">
+            <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⬇️ Downloads (qBittorrent)</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div>
+                <label style="font-size:11px;color:var(--text2)">qBittorrent URL</label>
+                <input id="svc-qbit-url" type="text" placeholder="http://10.0.0.33:8080" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">Username</label>
+                  <input id="svc-qbit-user" type="text" placeholder="admin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">Password</label>
+                  <input id="svc-qbit-pass" type="password" placeholder="adminadmin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSvcSettings()">Save Integrations</button>
       </div>
@@ -4528,7 +4641,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.9</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.10</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -4618,6 +4731,20 @@ body.sse-disconnected #app{padding-top:38px;}
               <video id="iptv-hls-player" controls muted playsinline
                 style="width:100%;max-height:280px;background:#000;border-radius:var(--r);margin-top:6px;display:none"></video>
             </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── REDDIT POST READER MODAL ── -->
+      <div id="feeds-reddit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:950;align-items:center;justify-content:center" onclick="if(event.target===this)feedsCloseRedditPost()">
+        <div style="position:relative;width:min(720px,95vw);max-height:85vh;background:var(--bg2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.7)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);gap:10px;flex-shrink:0">
+            <div id="feeds-reddit-modal-title" style="font-size:14px;font-weight:600;color:var(--text);line-height:1.4"></div>
+            <button onclick="feedsCloseRedditPost()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px;flex-shrink:0">✕</button>
+          </div>
+          <div id="feeds-reddit-modal-body" style="padding:16px;overflow-y:auto;flex:1;font-size:13px;color:var(--text2);line-height:1.8;white-space:pre-wrap;word-break:break-word"></div>
+          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
+            <a id="feeds-reddit-modal-link" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ View on Reddit</a>
           </div>
         </div>
       </div>
@@ -6322,6 +6449,9 @@ async function loadSettings() {
         setInput('svc-plex-token',  s.plex_token);
         setInput('svc-seerr-url',   s.seerr_url);
         setInput('svc-seerr-key',   s.seerr_api_key);
+        setInput('svc-qbit-url',    s.qbittorrent_url);
+        setInput('svc-qbit-user',   s.qbittorrent_user);
+        setInput('svc-qbit-pass',   s.qbittorrent_pass);
     } catch(e) {}
 }
 
@@ -6584,9 +6714,14 @@ async function _feedsFetchRedditDirect(url, grid) {
                             : ptype==='gif'     ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#ff6b6b;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">GIF</div>`
                             : ptype==='gallery' ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">🖼 Gallery</div>` : '';
             const icon = ptype==='video'?'▶':ptype==='gif'?'🎞':ptype==='gallery'?'🖼':ptype==='image'?'🖼':'🤖';
-            return `<a href="${permalink}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s" onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+            const hasText = ptype === 'text' && pd.selftext && pd.selftext.length > 20;
+            const encodedText = hasText ? encodeURIComponent((pd.selftext||'').slice(0,2000)) : '';
+            const encodedTitle = encodeURIComponent(title.slice(0,200));
+            return `<a href="${permalink}" ${hasText ? `onclick="feedsOpenRedditPost(decodeURIComponent('${encodedTitle}'),decodeURIComponent('${encodedText}'),'${permalink}');return false;"` : 'target="_blank" rel="noopener"'} style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer" onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
               ${thumb
                 ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2);overflow:hidden"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${icon}</div>'">${typeBadge}</div>`
+                : ptype === 'text' && pd.selftext
+                ? `<div style="width:100%;padding-top:52%;position:relative;background:var(--surface2)"><div style="position:absolute;inset:6px;overflow:hidden;font-size:11px;color:var(--text2);line-height:1.5;padding:4px">${safe((pd.selftext||'').slice(0,300))}</div></div>`
                 : `<div style="width:100%;padding-top:52%;position:relative;background:var(--surface2)"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${icon}</div>${typeBadge}</div>`}
               <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
                 <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(title)}</div>
@@ -6718,12 +6853,9 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
             // Extract YouTube video ID if applicable
             const ytIdMatch = isYT ? (item.link||'').match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/) : null;
             const ytId = ytIdMatch ? ytIdMatch[1] : null;
-            const cardOnClick = ytId
-                ? `onclick="feedsOpenYT('${ytId}',this.querySelector('div[data-title]')?.dataset.title||'');return false;"`
-                : '';
-            const cardStyle = `display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s`;
+            const cardStyle = `display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer`;
             return `
-            <a href="${item.link}" ${ytId ? 'onclick="feedsOpenYT(\''+ytId+'\',\''+safe(item.title).replace(/'/g,'\\\'') +'\');return false;"' : 'target="_blank" rel="noopener"'} style="${cardStyle}"
+            <a href="${item.link}" ${ytId ? `data-yt-id="${ytId}" onclick="feedsOpenYT(this.dataset.ytId,this.dataset.ytTitle||'');return false;"` : 'target="_blank" rel="noopener"'} data-yt-title="${safe(item.title)}" style="${cardStyle}"
               onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
               onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
               <!-- Thumbnail / Media -->
@@ -6758,6 +6890,25 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
     }
 }
 
+// ── Reddit post reader modal ──────────────────────────────────────────
+function feedsOpenRedditPost(title, text, url) {
+    const modal = document.getElementById('feeds-reddit-modal');
+    const titleEl = document.getElementById('feeds-reddit-modal-title');
+    const body = document.getElementById('feeds-reddit-modal-body');
+    const link = document.getElementById('feeds-reddit-modal-link');
+    if (!modal) return;
+    if (titleEl) titleEl.textContent = title || '';
+    if (body) body.textContent = text || '';
+    if (link) link.href = url || '#';
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function feedsCloseRedditPost() {
+    const modal = document.getElementById('feeds-reddit-modal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+
 // ── Media player modal (YouTube embed) ───────────────────────────────
 function feedsOpenYT(videoId, title) {
     const modal = document.getElementById('feeds-media-modal');
@@ -6778,8 +6929,14 @@ function feedsCloseMedia() {
     if (modal) modal.style.display = 'none';
     document.body.style.overflow = '';
 }
-// close on Escape key
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { feedsCloseMedia(); } });
+// close modals on Escape key
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        feedsCloseMedia();
+        feedsCloseRedditPost();
+        iptvHideBrowse();
+    }
+});
 
 // ── Manage sub-page ──────────────────────────────────────────────────
 // ── Custom type page loader ───────────────────────────────────────────
@@ -7729,6 +7886,7 @@ async function loadOverviewExtras() {
     loadSonarrCard();
     loadPlexCard();
     loadSeerrCard();
+    loadQbitCard('active');
 }
 
 // ── Service Card Loaders ───────────────────────────────────────────────
@@ -7765,6 +7923,49 @@ function _fmtSize(bytes) {
 // ── Tab switch handler ──
 const _svcActiveTab = { radarr: 'upcoming', sonarr: 'upcoming' };
 
+// ── qBittorrent downloads card ────────────────────────────────────────
+async function loadQbitCard(filter) {
+    const body = document.getElementById('qbit-card-body');
+    const speedEl = document.getElementById('qbit-speed');
+    if (!body) return;
+    body.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>';
+    try {
+        const r = await fetch('/api/services/qbittorrent/torrents');
+        const d = await r.json();
+        if (speedEl) speedEl.textContent = `↓ ${d.dl_speed || '0 B/s'}  ↑ ${d.ul_speed || '0 B/s'}`;
+        if (d.error) {
+            body.innerHTML = `<div style="color:var(--text3);font-size:11px;padding:8px;text-align:center">${d.error}</div>`;
+            return;
+        }
+        let torrents = d.torrents || [];
+        if (filter === 'active') torrents = torrents.filter(t => ['downloading','uploading','stalledDL','forcedDL','metaDL'].includes(t.state));
+        if (!torrents.length) {
+            body.innerHTML = `<div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">${filter==='active'?'No active downloads':'No torrents'}</div>`;
+            return;
+        }
+        const stateColor = s => ({'downloading':'var(--blue)','uploading':'var(--green)','seeding':'var(--green)','stalledDL':'var(--yellow)','error':'var(--red)','pausedDL':'var(--text3)','pausedUP':'var(--text3)'}[s] || 'var(--text3)');
+        const stateIcon  = s => ({'downloading':'↓','uploading':'↑','seeding':'↑','stalledDL':'⏸','error':'⚠','pausedDL':'⏸','pausedUP':'⏸','forcedDL':'↓','metaDL':'🔍'}[s] || '•');
+        body.innerHTML = torrents.map(t => `
+          <div style="padding:6px 8px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:3px">
+            <div style="font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(t.name||'').replace(/</g,'&lt;')}</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+                <div style="height:100%;width:${t.progress}%;background:${stateColor(t.state)};transition:width .3s"></div>
+              </div>
+              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);white-space:nowrap">${t.progress}%</span>
+            </div>
+            <div style="display:flex;gap:10px;font-size:10px;color:var(--text3)">
+              <span style="color:${stateColor(t.state)}">${stateIcon(t.state)} ${t.state}</span>
+              <span>${t.size}</span>
+              ${t.state==='downloading'?`<span style="color:var(--blue)">↓${t.dlspeed}</span>`:''}
+              ${t.category?`<span style="background:var(--surface2);padding:0 4px;border-radius:3px">${t.category}</span>`:''}
+            </div>
+          </div>`).join('');
+    } catch(e) {
+        body.innerHTML = `<div style="color:var(--red);font-size:11px;padding:8px">Error: ${e.message}</div>`;
+    }
+}
+
 function svcTabSwitch(svc, tab, btnEl) {
     _svcActiveTab[svc] = tab;
     // Update active tab button
@@ -7779,6 +7980,8 @@ function svcTabSwitch(svc, tab, btnEl) {
         if (tab === 'upcoming') loadSonarrCard();
         else if (tab === 'queue') loadSonarrQueue();
         else loadSonarrLibrary();
+    } else if (svc === 'qbit') {
+        loadQbitCard(tab);
     }
 }
 
@@ -8041,7 +8244,8 @@ async function saveSvcSettings() {
         radarr_url: 'svc-radarr-url', radarr_api_key: 'svc-radarr-key',
         sonarr_url: 'svc-sonarr-url', sonarr_api_key: 'svc-sonarr-key',
         plex_url:   'svc-plex-url',   plex_token:     'svc-plex-token',
-        seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key'
+        seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key',
+        qbittorrent_url: 'svc-qbit-url', qbittorrent_user: 'svc-qbit-user', qbittorrent_pass: 'svc-qbit-pass'
     };
     const payload = {};
     for (const [key, id] of Object.entries(fields)) {
@@ -8509,9 +8713,16 @@ async function loadServiceLauncher() {
       const name = (c.name || '').replace(/^\//, '');
       const ports = c.ports || [];
       // Pick first host port that looks like an HTTP port
-      const portEntry = ports.find(p => /^\\d+:\\d+/.test(p));
+      // Prefer web-ish ports (1024-65535, not known non-HTTP like 53,25,110,143,993,995)
+      const skipPorts = new Set(['53','25','110','143','993','995','22','21','5432','3306','6379','27017']);
+      const webPorts = ports.filter(p => {
+        const hp = p.split(':')[0];
+        return hp && /^\d+$/.test(hp) && !skipPorts.has(hp) && parseInt(hp) >= 1024;
+      });
+      const portEntry = webPorts[0] || ports.find(p => /^\d+:\d+/.test(p));
       const hostPort = portEntry ? portEntry.split(':')[0] : null;
-      const url = hostPort ? `http://${window.location.hostname}:${hostPort}` : null;
+      const scheme = hostPort && (hostPort === '443' || hostPort.endsWith('443')) ? 'https' : 'http';
+      const url = hostPort ? `${scheme}://${window.location.hostname}:${hostPort}` : null;
       const icon = _launcherIcon(name);
       const tileHtml = `<div class="launcher-tile-icon">${icon}</div>
         <div class="launcher-tile-name">${name}</div>

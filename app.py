@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.20 · Full deployment, update management, and real-time monitoring
+Version: 3.15.21 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.20",
+            "version": "3.15.21",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -959,6 +959,8 @@ def api_settings_get():
             "weather_country":  _db_get("weather_country", ""),
             "reddit_client_id":     _db_get("reddit_client_id", ""),
             "reddit_client_secret": _db_get("reddit_client_secret", ""),
+            "reddit_username":      _db_get("reddit_username", ""),
+            "reddit_password":      _db_get("reddit_password", ""),
         }
     })
 
@@ -979,7 +981,7 @@ def api_settings_set():
         "seerr_url", "seerr_api_key",
         "football_api_key",
         "weather_city", "weather_country",
-        "reddit_client_id", "reddit_client_secret",
+        "reddit_client_id", "reddit_client_secret", "reddit_username", "reddit_password",
     ]
     for key in allowed:
         if key in data:
@@ -1319,7 +1321,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.20"})
+    return jsonify({"update_available": False, "version": "3.15.21"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -2555,8 +2557,8 @@ def api_feeds_og():
 
 @app.route("/api/reddit/feed")
 def api_reddit_feed():
-    """Server-side Reddit proxy — uses OAuth when client credentials are configured."""
-    import urllib.request as _ur, urllib.parse as _up, json as _jr, base64 as _b64
+    """Server-side Reddit proxy — OAuth with username/password for script apps, with fallbacks."""
+    import urllib.request as _ur, json as _jr, base64 as _b64
     sub   = request.args.get("sub",   "").strip()
     sort  = request.args.get("sort",  "hot").strip()
     after = request.args.get("after", "").strip()
@@ -2569,13 +2571,54 @@ def api_reddit_feed():
 
     client_id     = _get_setting("reddit_client_id",     "").strip()
     client_secret = _get_setting("reddit_client_secret", "").strip()
-    ua = "ArrHub/3.15.20 by homelab_user"
+    reddit_user   = _get_setting("reddit_username",      "").strip()
+    reddit_pass   = _get_setting("reddit_password",      "").strip()
+    app_ua = f"ArrHub:v1 (by /u/{reddit_user or 'homelab_user'})"
 
-    # --- OAuth app-only flow when credentials are configured ---
-    if client_id and client_secret:
+    oauth_error = None
+
+    # --- Try 1: OAuth with username+password (script app) ---
+    if client_id and client_secret and reddit_user and reddit_pass:
         try:
-            # Get access token (cache for 55 min)
             token_cache_key = f"reddit_token_{client_id}"
+            token = None
+            if token_cache_key in _rss_cache and time.time() - _rss_cache[token_cache_key].get("ts", 0) < 3300:
+                token = _rss_cache[token_cache_key]["data"].get("access_token")
+            if not token:
+                creds = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+                post_data = f"grant_type=password&username={reddit_user}&password={reddit_pass}".encode()
+                tok_req = _ur.Request(
+                    "https://www.reddit.com/api/v1/access_token",
+                    data=post_data,
+                    headers={"Authorization": f"Basic {creds}", "User-Agent": app_ua,
+                             "Content-Type": "application/x-www-form-urlencoded"}
+                )
+                with _ur.urlopen(tok_req, timeout=10) as tr:
+                    tok_data = _jr.loads(tr.read())
+                if tok_data.get("error"):
+                    oauth_error = f"Reddit OAuth error: {tok_data.get('error')}"
+                else:
+                    token = tok_data.get("access_token")
+                    _rss_cache[token_cache_key] = {"data": tok_data, "ts": time.time()}
+            if token:
+                url = f"https://oauth.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1"
+                if after: url += f"&after={after}"
+                api_req = _ur.Request(url, headers={
+                    "Authorization": f"Bearer {token}", "User-Agent": app_ua
+                })
+                with _ur.urlopen(api_req, timeout=15) as r:
+                    data = _jr.loads(r.read())
+                if isinstance(data, dict) and data.get("data"):
+                    result = {"data": data["data"], "ok": True, "method": "oauth"}
+                    _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                    return jsonify(result)
+        except Exception as e:
+            oauth_error = f"OAuth failed: {str(e)[:100]}"
+
+    # --- Try 2: client_credentials (app-only, no username needed) ---
+    if client_id and client_secret and not (reddit_user and reddit_pass):
+        try:
+            token_cache_key = f"reddit_cc_token_{client_id}"
             token = None
             if token_cache_key in _rss_cache and time.time() - _rss_cache[token_cache_key].get("ts", 0) < 3300:
                 token = _rss_cache[token_cache_key]["data"].get("access_token")
@@ -2584,39 +2627,42 @@ def api_reddit_feed():
                 tok_req = _ur.Request(
                     "https://www.reddit.com/api/v1/access_token",
                     data=b"grant_type=client_credentials",
-                    headers={"Authorization": f"Basic {creds}", "User-Agent": ua,
+                    headers={"Authorization": f"Basic {creds}", "User-Agent": app_ua,
                              "Content-Type": "application/x-www-form-urlencoded"}
                 )
                 with _ur.urlopen(tok_req, timeout=10) as tr:
                     tok_data = _jr.loads(tr.read())
-                token = tok_data.get("access_token")
-                _rss_cache[token_cache_key] = {"data": tok_data, "ts": time.time()}
+                if not tok_data.get("error"):
+                    token = tok_data.get("access_token")
+                    _rss_cache[token_cache_key] = {"data": tok_data, "ts": time.time()}
             if token:
-                url = f"https://oauth.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1"
+                url = f"https://oauth.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1"
                 if after: url += f"&after={after}"
                 api_req = _ur.Request(url, headers={
-                    "Authorization": f"Bearer {token}", "User-Agent": ua
+                    "Authorization": f"Bearer {token}", "User-Agent": app_ua
                 })
                 with _ur.urlopen(api_req, timeout=15) as r:
                     data = _jr.loads(r.read())
                 if isinstance(data, dict) and data.get("data"):
-                    result = {"data": data["data"], "ok": True}
+                    result = {"data": data["data"], "ok": True, "method": "client_credentials"}
                     _rss_cache[cache_key] = {"data": result, "ts": time.time()}
                     return jsonify(result)
-        except Exception as oauth_err:
-            pass  # fall through to anonymous
+        except Exception as e:
+            if not oauth_error:
+                oauth_error = f"Client creds failed: {str(e)[:100]}"
 
-    # --- Anonymous fallback: try old.reddit.com first, then www.reddit.com ---
+    # --- Try 3: Anonymous JSON API (old.reddit.com, then www) ---
+    browser_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     base_urls = [
         f"https://old.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&over18=1",
         f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1",
     ]
-    last_err = "Unknown error"
+    anon_err = None
     for base_url in base_urls:
         url = base_url + (f"&after={after}" if after else "")
         try:
             req = _ur.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "User-Agent": browser_ua,
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Cookie": "over18=1; _options=%7B%22pref_over_18%22%3A%20true%7D; redesign_optout=true",
@@ -2627,13 +2673,62 @@ def api_reddit_feed():
                 raw = r.read()
             data = _jr.loads(raw)
             if isinstance(data, dict) and data.get("data"):
-                result = {"data": data["data"], "ok": True}
+                result = {"data": data["data"], "ok": True, "method": "anonymous"}
                 _rss_cache[cache_key] = {"data": result, "ts": time.time()}
                 return jsonify(result)
-            last_err = "Unexpected response structure"
         except Exception as exc:
-            last_err = str(exc)[:120]
-    return jsonify({"error": last_err, "ok": False})
+            anon_err = str(exc)[:120]
+
+    # --- Try 4: Reddit RSS feed as last resort ---
+    try:
+        import xml.etree.ElementTree as _et
+        rss_url = f"https://www.reddit.com/r/{sub}/{sort}/.rss?limit={limit}"
+        req = _ur.Request(rss_url, headers={"User-Agent": browser_ua, "Cookie": "over18=1"})
+        with _ur.urlopen(req, timeout=15) as r:
+            rss_content = r.read()
+        root = _et.fromstring(rss_content)
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+        entries = root.findall('.//atom:entry', ns) or root.findall('.//entry')
+        if entries:
+            children = []
+            for entry in entries[:limit]:
+                title_el = entry.find('atom:title', ns) or entry.find('title')
+                link_el = entry.find('atom:link', ns) or entry.find('link')
+                content_el = entry.find('atom:content', ns) or entry.find('content')
+                author_el = entry.find('atom:author/atom:name', ns)
+                updated_el = entry.find('atom:updated', ns) or entry.find('updated')
+                link_href = link_el.get('href', '') if link_el is not None else ''
+                permalink = link_href.replace('https://www.reddit.com', '')
+                # Try to extract thumbnail from content HTML
+                thumb = None
+                content_html = content_el.text if content_el is not None else ''
+                import re as _re_rss
+                img_m = _re_rss.search(r'<img[^>]+src=["\']([^"\']+)["\']', content_html or '')
+                if img_m:
+                    thumb = img_m.group(1)
+                children.append({"kind": "t3", "data": {
+                    "title": title_el.text if title_el is not None else "Untitled",
+                    "permalink": permalink,
+                    "url": link_href,
+                    "score": 0,
+                    "num_comments": 0,
+                    "created_utc": 0,
+                    "thumbnail": thumb or "self",
+                    "post_hint": "",
+                    "is_video": False,
+                    "is_gallery": False,
+                    "domain": "",
+                    "author": author_el.text if author_el is not None else "",
+                }})
+            result = {"data": {"children": children, "after": None}, "ok": True, "method": "rss"}
+            _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+            return jsonify(result)
+    except Exception:
+        pass
+
+    # All methods failed
+    error_msg = oauth_error or anon_err or "All Reddit access methods failed"
+    return jsonify({"error": error_msg, "ok": False})
 
 @app.route("/api/reddit/comments")
 def api_reddit_comments():
@@ -3489,97 +3584,41 @@ html { scroll-behavior: smooth; }
 #bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
 #app{position:relative;z-index:1;}
 
-/* ── GridStack Dashboard Widgets ────────────────────────────────────── */
-/* Hide widgets before GridStack positions them — prevents 600ms stacking flash */
-.grid-stack:not(.gs-ready) > .grid-stack-item { visibility:hidden; }
-.grid-stack{width:100%;}
-.grid-stack-item-content{
-  overflow:hidden;
-  height:100%;
-  border-radius:var(--r);
-  position:relative;
+/* ── Clean Dashboard Layout (CSS Grid) ────────────────────────────────── */
+.ov-dash{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  grid-template-areas:
+    "gauges   gauges"
+    "weather  sysinfo"
+    "services services"
+    "infra    infra"
+    "logs     ctrs"
+    "launcher launcher";
+  gap:14px;
+  padding:0;
 }
-.grid-stack-item-content .panel{
-  margin:0;
-  height:100%;
-  border-radius:var(--r);
-  overflow:hidden;
+#dash-gauges   { grid-area:gauges; }
+#dash-sysinfo  { grid-area:sysinfo; }
+#dash-weather  { grid-area:weather; }
+#dash-services { grid-area:services; }
+#dash-infra    { grid-area:infra; }
+#dash-logs     { grid-area:logs; }
+#dash-ctrs     { grid-area:ctrs; }
+#dash-launcher { grid-area:launcher; }
+.dash-cell > .panel,
+.dash-cell > .metric-grid,
+.dash-cell > div { margin:0; }
+.dash-cell .panel { height:auto; overflow:visible; }
+@media(max-width:768px){
+  .ov-dash{
+    grid-template-columns:1fr;
+    grid-template-areas:
+      "gauges" "weather" "sysinfo" "services"
+      "infra" "logs" "ctrs" "launcher";
+  }
 }
-/* ── Homarr-like edit mode: visible grid cells ── */
-.grid-stack.gs-editing {
-  background-image:
-    linear-gradient(to right, rgba(99,102,241,0.08) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(99,102,241,0.08) 1px, transparent 1px);
-  background-size: calc(100% / 12 - 0px) 68px;
-  background-position: 0 0;
-  border-radius: 12px;
-}
-.grid-stack.gs-editing .grid-stack-item {
-  outline: 2px solid rgba(99,102,241,0.35) !important;
-  outline-offset: -2px;
-  border-radius: var(--r);
-  transition: outline-color .15s, transform .15s;
-}
-.grid-stack.gs-editing .grid-stack-item:hover {
-  outline-color: rgba(99,102,241,0.7) !important;
-  transform: scale(1.003);
-}
-/* ── Drag handle ── */
-.gs-drag-handle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(99,102,241,0.05));
-  border-bottom: 1px solid rgba(99,102,241,0.2);
-  font-size: 10px;
-  font-weight: 600;
-  color: rgba(99,102,241,0.9);
-  cursor: grab;
-  user-select: none;
-  letter-spacing: .05em;
-  text-transform: uppercase;
-  border-radius: var(--r) var(--r) 0 0;
-}
-.gs-drag-handle:active { cursor: grabbing; }
-/* ── Widget resize handles — more visible ── */
-.gs-editing .ui-resizable-handle {
-  background: rgba(99,102,241,0.4) !important;
-  border-radius: 3px;
-}
-.gs-editing .ui-resizable-se {
-  width: 14px !important;
-  height: 14px !important;
-  right: 4px !important;
-  bottom: 4px !important;
-}
-/* Widget remove button (shown in edit mode) */
-.gs-editing .widget-remove-btn{display:flex!important;}
-.widget-remove-btn{
-  display:none;position:absolute;top:4px;right:4px;z-index:10;
-  width:20px;height:20px;border-radius:50%;border:none;
-  background:var(--red2);color:var(--red);cursor:pointer;
-  font-size:12px;line-height:1;align-items:center;justify-content:center;
-  transition:background .15s;
-}
-.widget-remove-btn:hover{background:var(--red)!important;color:#fff!important;}
-/* ── Compact widget content — auto-shrink text, hide overflow, tighten padding ── */
-.grid-stack-item-content .panel{container-type:inline-size;}
-.grid-stack-item-content .panel-title{font-size:clamp(11px,1.6vw,13px);padding:8px 12px;}
-.grid-stack-item .stat-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-bottom:8px;}
-.grid-stack-item .stat-card{padding:8px 10px;gap:4px;}
-.grid-stack-item .stat-card-val{font-size:clamp(12px,2vw,15px);}
-.grid-stack-item .stat-card-label{font-size:10px;}
-/* Ultra-compact mode — applied via JS when widget is resized small */
-.widget-compact .panel{padding:6px 8px;}
-.widget-compact .panel-title{font-size:11px;padding:4px 8px;gap:4px;}
-.widget-compact .stat-grid{grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:4px;}
-.widget-compact .gauge-wrap canvas{width:60px!important;height:60px!important;}
-.widget-compact .metric-card{padding:6px 8px;gap:2px;}
-.widget-compact .metric-name{font-size:10px;}
-.widget-compact .ctr-row{font-size:11px;}
-.widget-compact #service-cards-row{grid-template-columns:1fr!important;gap:6px!important;}
-/* ── Service card tabs ── */
+/* Service card tabs ── */
 .svc-card{display:flex;flex-direction:column;overflow:hidden;}
 .svc-card-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);gap:6px;flex-shrink:0;}
 .svc-card-title{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;}
@@ -3814,7 +3853,6 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 }
 .metric-card:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,0,0,0.18);}
 /* When gauge widget is narrow, stack metric cards 2×2 */
-.grid-stack-item[gs-id="gauges"] .metric-grid{margin-bottom:0;}
 @container (max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr);}}
 .metric-top{display:flex;align-items:center;justify-content:space-between;}
 .metric-name{font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;}
@@ -4489,7 +4527,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.20</div>
+      <div class="sb-version">v3.15.21</div>
     </div>
   </div>
 
@@ -4653,23 +4691,21 @@ body.sse-disconnected #app{padding-top:38px;}
             <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Reset
           </button>
-          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px">
+          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px;display:none">
             <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
             Edit Layout
           </button>
         </div>
       </div>
 
-      <!-- ── Overview GridStack Dashboard ─────────────────────────────────
-           Click "Edit Layout" in the header to enter drag-and-drop mode.
-           Positions are saved to localStorage (key: arrhub_grid).        -->
-      <div class="grid-stack" id="ov-grid">
+      <!-- ── Overview CSS Grid Dashboard ─────────────────────────────────
+           Clean, fixed CSS Grid layout with Glance-style design.
+           No drag-and-drop or localStorage positioning.        -->
+      <div id="ov-dashboard" class="ov-dash">
 
-        <!-- ⓪ System Gauges widget  (default: full width, row 0) -->
-        <div class="grid-stack-item" gs-id="gauges" gs-x="0" gs-y="0" gs-w="12" gs-h="4" gs-min-w="4" gs-min-h="3">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('gauges')" title="Remove widget">✕</button>
-            <div class="metric-grid" id="gauge-row" style="margin:0;padding:12px 14px;height:100%;box-sizing:border-box;align-content:center">
+        <!-- ⓪ System Gauges widget -->
+        <div class="dash-cell" id="dash-gauges">
+            <div class="metric-grid" id="gauge-row" style="margin:0;padding:10px 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
 
               <!-- ── CPU ── -->
               <div class="metric-card" style="align-items:center;text-align:center;padding:16px 12px;gap:8px">
@@ -4757,14 +4793,11 @@ body.sse-disconnected #app{padding-top:38px;}
               </div>
 
             </div>
-          </div>
         </div>
 
-        <!-- ① System Info widget  (default: left half, row 3) -->
-        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="3" gs-w="6" gs-h="5" gs-min-w="3" gs-min-h="3">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+        <!-- ① System Info widget -->
+        <div class="dash-cell" id="dash-sysinfo">
+            <div class="panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 System Info
@@ -4841,14 +4874,11 @@ body.sse-disconnected #app{padding-top:38px;}
 
               </div>
             </div>
-          </div>
         </div>
 
-        <!-- ② Weather widget  (default: right half, row 3) -->
-        <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="3" gs-w="6" gs-h="4" gs-min-w="3" gs-min-h="2">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('weather')" title="Remove widget">✕</button>
-            <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:hidden">
+        <!-- ② Weather widget -->
+        <div class="dash-cell" id="dash-weather">
+            <div class="panel" id="weather-panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
                 Weather
@@ -4870,14 +4900,11 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div id="weather-forecast" style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:10px"></div>
               </div>
             </div>
-          </div>
         </div>
 
-        <!-- ③ Service Cards row  (default: full width, row 7) -->
-        <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="7" gs-w="12" gs-h="5" gs-min-w="4" gs-min-h="3">
-          <div class="grid-stack-item-content" style="overflow:hidden">
-            <button class="widget-remove-btn" onclick="removeWidget('services')" title="Remove widget">✕</button>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box;overflow:auto" id="service-cards-row">
+        <!-- ③ Service Cards row -->
+        <div class="dash-cell" id="dash-services">
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;box-sizing:border-box" id="service-cards-row">
               <div class="panel svc-card" style="margin:0" id="radarr-card">
                 <div class="svc-card-hdr">
                   <span class="svc-card-title">🎥 Radarr</span>
@@ -4931,11 +4958,9 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 12) -->
-        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="12" gs-w="12" gs-h="4" gs-min-w="4" gs-min-h="3">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+        <!-- ④+⑤ Docker & Network I/O -->
+        <div class="dash-cell" id="dash-infra">
+            <div class="panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                 Docker &amp; Network
@@ -5023,11 +5048,9 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ⑥ Recent Logs  (default: left 4 cols, row 15) -->
-        <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="15" gs-w="4" gs-h="4" gs-min-w="2" gs-min-h="2">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('logs')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+        <!-- ⑥ Recent Logs -->
+        <div class="dash-cell" id="dash-logs">
+            <div class="panel" style="margin:0">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span>
                   <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -5040,11 +5063,9 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ⑦ Containers Live  (default: right 8 cols, row 15) -->
-        <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="15" gs-w="8" gs-h="4" gs-min-w="3" gs-min-h="2">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('ctrs')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+        <!-- ⑦ Containers Live -->
+        <div class="dash-cell" id="dash-ctrs">
+            <div class="panel" style="margin:0">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span style="display:flex;align-items:center;gap:6px">
                   <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
@@ -5060,21 +5081,18 @@ body.sse-disconnected #app{padding-top:38px;}
           </div>
         </div>
 
-        <!-- ⑧ Service Launcher  (default: full width, row 19) -->
-        <div class="grid-stack-item" gs-id="launcher" gs-x="0" gs-y="19" gs-w="12" gs-h="3" gs-min-w="3" gs-min-h="2">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('launcher')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:auto">
+        <!-- ⑧ Service Launcher -->
+        <div class="dash-cell" id="dash-launcher">
+            <div class="panel" style="margin:0">
               <div class="panel-title">
                 🚀 Service Launcher
                 <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Click any tile to open</span>
               </div>
               <div id="launcher-tiles" style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 0"></div>
             </div>
-          </div>
         </div>
 
-      </div><!-- /ov-grid -->
+      </div><!-- /ov-dashboard -->
 
       <!-- Widget Palette Modal -->
       <div id="widget-palette-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
@@ -5324,6 +5342,8 @@ body.sse-disconnected #app{padding-top:38px;}
         <div class="settings-grid">
           <div class="field"><label>Client ID</label><input type="text" id="cfg-reddit-client-id" placeholder="14-char app ID from Reddit"><div class="field-hint">Found under your app name on the apps page</div></div>
           <div class="field"><label>Client Secret</label><input type="password" id="cfg-reddit-client-secret" placeholder="•••••••••••"><div class="field-hint">The "secret" field for your Reddit app</div></div>
+          <div class="field"><label>Reddit Username</label><input type="text" id="cfg-reddit-username" placeholder="your_reddit_username"><div class="field-hint">Your Reddit account username (needed for NSFW)</div></div>
+          <div class="field"><label>Reddit Password</label><input type="password" id="cfg-reddit-password" placeholder="•••••••••••"><div class="field-hint">Your Reddit account password (needed for NSFW)</div></div>
         </div>
         <button class="btn-primary" style="margin-top:12px" onclick="saveRedditCredentials()">Save Reddit Credentials</button>
         <span id="reddit-creds-status" style="font-size:11px;color:var(--green);margin-left:10px"></span>
@@ -5469,7 +5489,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.20</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.21</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7500,6 +7520,8 @@ async function loadSettings() {
         setInput('cfg-weather-country', s.weather_country);
         setInput('cfg-reddit-client-id',     s.reddit_client_id     || '');
         setInput('cfg-reddit-client-secret', s.reddit_client_secret || '');
+        setInput('cfg-reddit-username',      s.reddit_username      || '');
+        setInput('cfg-reddit-password',      s.reddit_password      || '');
         setInput('svc-qbit-url',    s.qbittorrent_url);
         setInput('svc-qbit-user',   s.qbittorrent_user);
         setInput('svc-qbit-pass',   s.qbittorrent_pass);
@@ -10289,10 +10311,13 @@ async function saveRedditCredentials() {
     const st = document.getElementById('reddit-creds-status');
     const clientId     = (document.getElementById('cfg-reddit-client-id')?.value     || '').trim();
     const clientSecret = (document.getElementById('cfg-reddit-client-secret')?.value || '').trim();
+    const username     = (document.getElementById('cfg-reddit-username')?.value      || '').trim();
+    const password     = (document.getElementById('cfg-reddit-password')?.value      || '').trim();
     try {
         await fetch(API + '/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({reddit_client_id: clientId, reddit_client_secret: clientSecret})});
-        if (st) { st.textContent = '✓ Saved'; setTimeout(() => { if(st) st.textContent=''; }, 3000); }
+            body: JSON.stringify({reddit_client_id: clientId, reddit_client_secret: clientSecret,
+                                  reddit_username: username, reddit_password: password})});
+        if (st) { st.textContent = '✓ Saved — reload feeds to test'; setTimeout(() => { if(st) st.textContent=''; }, 5000); }
     } catch(e) {
         if (st) st.textContent = 'Failed to save';
     }
@@ -10526,8 +10551,12 @@ function _applyBg(url, blur, overlay) {
   }
 })();
 
-// ── GridStack Drag-and-Drop Dashboard ─────────────────────────────────────
-// Requires gridstack@10 loaded below. Activated only when "Edit Layout" clicked.
+// ── Dashboard uses CSS Grid — no drag-and-drop ────────────────────────────
+(function() {
+  const el = document.getElementById('ov-dashboard') || document.getElementById('ov-grid');
+  if (el) el.classList.add('gs-ready');
+})();
+
 // ── HLS.js player helper ─────────────────────────────────────────────────────
 const _hlsInstances = {};  // track HLS instances keyed by videoId to avoid duplicates
 
@@ -10563,65 +10592,6 @@ function hlsPlay(videoId, url) {
     } else {
         showToast('HLS not supported in this browser', 'error');
     }
-}
-
-let _gs  = null;
-let _gsEditing = false;
-
-// Toggle .widget-compact class based on actual pixel width/height of the widget
-function _applyCompactClass(item) {
-  const rect = item.getBoundingClientRect();
-  item.classList.toggle('widget-compact', rect.width < 400 || rect.height < 200);
-}
-
-function _gsInit() {
-  if (_gs || typeof GridStack === 'undefined') return false;
-  const el = document.getElementById('ov-grid');
-  if (!el) return false;
-  const isMobile = window.innerWidth < 900;
-  _gs = GridStack.init({
-    cellHeight: 60,           // smaller cells → finer positional control
-    column: isMobile ? 1 : 12,
-    margin: 8,
-    staticGrid: true,
-    animate: true,
-    float: false,
-    disableDrag: isMobile,
-    disableResize: isMobile,
-    resizable: { handles: 'e,se,s,sw,w' },  // resize from all sides
-    draggable: { handle: '.gs-drag-handle' },
-  }, el);
-  // When a widget is resized, tell Chart.js canvases inside to resize + toggle compact class
-  _gs.on('resizestop', (event, element) => {
-    element.querySelectorAll('canvas').forEach(canvas => {
-      const chart = (typeof Chart !== 'undefined' && Chart.getChart) ? Chart.getChart(canvas) : null;
-      if (chart) { chart.resize(); }
-    });
-    element.querySelectorAll('.panel,.stat-grid').forEach(el => { el.style.opacity = '0.99'; requestAnimationFrame(() => { el.style.opacity = ''; }); });
-    _applyCompactClass(element);
-  });
-  // Apply compact class to all widgets initially
-  el.querySelectorAll('.grid-stack-item').forEach(item => _applyCompactClass(item));
-  // Restore saved layout — invalidate if widget set changed (layout version bump)
-  const _GRID_VER = 3;  // bump when adding/removing widgets
-  const saved = localStorage.getItem('arrhub_grid');
-  const savedVer = parseInt(localStorage.getItem('arrhub_grid_ver') || '0');
-  if (saved && savedVer === _GRID_VER) {
-    try {
-      const items = JSON.parse(saved);
-      _gs.load(items, false);
-      _gs.compact();   // eliminates position conflicts
-    } catch(e) { localStorage.removeItem('arrhub_grid'); }
-  } else {
-    localStorage.removeItem('arrhub_grid');
-    localStorage.setItem('arrhub_grid_ver', String(_GRID_VER));
-  }
-  // Show Reset button if a saved layout exists
-  const resetBtn = document.getElementById('ov-reset-btn');
-  if (resetBtn && localStorage.getItem('arrhub_grid')) resetBtn.style.display = '';
-  // Mark grid as ready — removes the visibility:hidden that prevents stacking flash
-  el.classList.add('gs-ready');
-  return true;
 }
 
 // ── Widget palette definitions ────────────────────────────────────────────────
@@ -10798,46 +10768,7 @@ async function loadServiceLauncher() {
 }
 
 function toggleGridEdit() {
-  _gsInit();
-  if (!_gs) { showToast('GridStack not loaded yet', 'error'); return; }
-  _gsEditing = !_gsEditing;
-  const btn      = document.getElementById('ov-edit-btn');
-  const resetBtn = document.getElementById('ov-reset-btn');
-  const addBtn   = document.getElementById('ov-add-btn');
-  const grid     = document.getElementById('ov-grid');
-  if (_gsEditing) {
-    _gs.setStatic(false);
-    _gs.on('change', () => {
-      localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false)));
-      if (resetBtn) resetBtn.style.display = '';
-    });
-    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg> Save Layout';
-    btn.style.background = 'var(--blue2)';
-    btn.style.color      = 'var(--blue)';
-    grid.classList.add('gs-editing');
-    grid.querySelectorAll('.grid-stack-item').forEach(item => {
-      if (!item.querySelector('.gs-drag-handle')) {
-        const dh = document.createElement('div');
-        dh.className = 'gs-drag-handle';
-        dh.innerHTML = '⠿ drag';
-        item.querySelector('.grid-stack-item-content').prepend(dh);
-      }
-    });
-    if (addBtn) addBtn.style.display = '';
-    showToast('Drag by title bar · resize from edges · ✕ to hide widgets · click Save when done', 'info', 5000);
-  } else {
-    _gs.setStatic(true);
-    const gridData = _gs.save(false);
-    localStorage.setItem('arrhub_grid', JSON.stringify(gridData));
-    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> Edit Layout';
-    btn.style.background = '';
-    btn.style.color      = '';
-    grid.classList.remove('gs-editing');
-    document.querySelectorAll('.gs-drag-handle').forEach(h => h.remove());
-    if (addBtn) addBtn.style.display = 'none';
-    _saveWidgetConfig();  // persist to server
-    showToast('Layout saved', 'success', 2000);
-  }
+    showToast('Dashboard uses a fixed layout — no edit mode needed', 'info');
 }
 
 function resetGridLayout() {
@@ -10852,8 +10783,6 @@ function resetGridLayout() {
 
 // Init GridStack in static mode on load to apply any saved positions
 window.addEventListener('load', async () => {
-  await _loadWidgetConfig();   // apply hidden widgets from server before init
-  _gsInit();                   // GridStack is available by window.load time
   loadServiceLauncher();       // populate launcher widget
 });
 </script>

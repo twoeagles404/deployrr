@@ -2943,7 +2943,7 @@ def api_plex_sessions():
 
 @app.route("/api/services/seerr/requests")
 def api_seerr_requests():
-    """Recent Seerr/Overseerr requests (latest 8)."""
+    """Recent Seerr/Overseerr requests (latest 8) with resolved titles."""
     url = _get_setting("seerr_url")
     key = _get_setting("seerr_api_key")
     if not url:
@@ -2953,14 +2953,30 @@ def api_seerr_requests():
         reqs = []
         for r in data.get("results", []):
             media = r.get("media", {})
+            media_type = media.get("mediaType", "")
+            tmdb_id = media.get("tmdbId", "")
+
+            # Resolve actual title from Overseerr media endpoint
+            title = ""
+            try:
+                if media_type == "movie" and tmdb_id:
+                    mdata = _svc_get(url, f"/api/v1/movie/{tmdb_id}", key)
+                    title = mdata.get("title", "") or mdata.get("originalTitle", "")
+                elif media_type == "tv" and tmdb_id:
+                    mdata = _svc_get(url, f"/api/v1/tv/{tmdb_id}", key)
+                    title = mdata.get("name", "") or mdata.get("originalName", "")
+            except Exception:
+                pass
+
             reqs.append({
                 "id": r.get("id"),
-                "type": media.get("mediaType",""),
-                "status": r.get("status"),          # 1=pending 2=approved 3=declined 4=available
-                "requestedBy": r.get("requestedBy",{}).get("displayName",""),
-                "title": media.get("tmdbId",""),     # resolved to title in frontend via cache
-                "poster": media.get("posterPath",""),
-                "createdAt": r.get("createdAt","")[:10]
+                "type": media_type,
+                "status": r.get("status"),  # 1=pending 2=approved 3=declined 4=available
+                "requestedBy": r.get("requestedBy", {}).get("displayName", ""),
+                "title": title or f"TMDB #{tmdb_id}",
+                "poster": media.get("posterPath", ""),
+                "createdAt": r.get("createdAt", "")[:10],
+                "tmdbId": tmdb_id,
             })
         return jsonify({"configured": True, "requests": reqs})
     except Exception as e:
@@ -9477,16 +9493,22 @@ async function loadSeerrCard() {
             const color = STATUS_COLORS[req.status] || 'var(--text3)';
             const typeIcon = req.type === 'movie' ? '🎬' : req.type === 'tv' ? '📺' : '❓';
             const did = 'sr-d-' + i;
-            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
-              <span style="font-size:16px;flex-shrink:0">${typeIcon}</span>
+            // Poster thumbnail — Overseerr serves via /imageproxy/ or TMDB directly
+            const posterUrl = req.poster ? `https://image.tmdb.org/t/p/w92${req.poster}` : '';
+            const thumbEl = posterUrl
+                ? `<img src="${posterUrl}" style="width:32px;height:48px;object-fit:cover;border-radius:3px;flex-shrink:0" onerror="this.style.display='none'">`
+                : `<span style="font-size:18px;flex-shrink:0;width:32px;text-align:center">${typeIcon}</span>`;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')" style="align-items:flex-start;gap:8px">
+              ${thumbEl}
               <div style="flex:1;min-width:0">
-                <div style="font-size:12px;font-weight:600;color:var(--text2)">TMDB #${req.title || req.id}</div>
-                <div style="font-size:10px;color:var(--text3)">by ${req.requestedBy || '?'} · ${req.createdAt}</div>
+                <div style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${req.title || ''}">${req.title || '?'}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:2px">${typeIcon} ${req.type || '?'} · ${req.createdAt}</div>
+                <div style="font-size:10px;color:var(--text3)">by ${req.requestedBy || '?'}</div>
               </div>
-              <span style="font-size:10px;font-weight:600;color:${color};flex-shrink:0">${lbl}</span>
+              <span style="font-size:10px;font-weight:600;color:${color};flex-shrink:0;padding:2px 6px;background:${color}22;border-radius:4px">${lbl}</span>
             </div>
             <div class="svc-detail" id="${did}">
-              Type: ${req.type || '?'} · Status: ${lbl}<br>
+              ${req.type === 'movie' ? '🎬 Movie' : '📺 TV Show'} · Status: <strong>${lbl}</strong><br>
               Requested by: ${req.requestedBy || '?'}<br>
               Date: ${req.createdAt}
             </div>`;

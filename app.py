@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.8 · Full deployment, update management, and real-time monitoring
+Version: 3.15.9 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.8",
+            "version": "3.15.9",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":     _db_get("radarr_url", ""),
             "radarr_api_key": _db_get("radarr_api_key", ""),
@@ -1299,7 +1299,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.8"})
+    return jsonify({"update_available": False, "version": "3.15.9"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -3652,7 +3652,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.8</div>
+      <div class="sb-version">v3.15.9</div>
     </div>
   </div>
 
@@ -4528,7 +4528,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.8</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.9</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -4548,7 +4548,8 @@ body.sse-disconnected #app{padding-top:38px;}
           <button class="view-btn active" id="iptv-view-channels" onclick="iptvSetView('channels')">📡 Channels</button>
           <button class="view-btn" id="iptv-view-schedule" onclick="iptvSetView('schedule')">📅 Schedule</button>
           <button class="view-btn" id="iptv-view-multiview" onclick="iptvSetView('multiview')">⊞ Multiview</button>
-          <button class="btn" style="font-size:11px;padding:4px 10px" onclick="iptvShowAddChannel()">＋ Channel</button>
+          <button onclick="iptvBrowseChannels()" class="btn" style="padding:6px 14px;font-size:12px" title="Browse moviebite.cc channels in a panel">🔍 Browse</button>
+          <button onclick="iptvShowAddChannel()" class="btn-primary" style="padding:6px 14px;font-size:12px">＋ Channel</button>
           <button class="btn-primary" onclick="iptvReload()">↺ Refresh</button>
         </div>
       </div>
@@ -4617,6 +4618,42 @@ body.sse-disconnected #app{padding-top:38px;}
               <video id="iptv-hls-player" controls muted playsinline
                 style="width:100%;max-height:280px;background:#000;border-radius:var(--r);margin-top:6px;display:none"></video>
             </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── FEEDS MEDIA PLAYER MODAL ── -->
+      <div id="feeds-media-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:950;align-items:center;justify-content:center" onclick="if(event.target===this)feedsCloseMedia()">
+        <div style="position:relative;width:min(860px,95vw);background:var(--bg2);border-radius:12px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.7)">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)">
+            <div id="feeds-media-title" style="font-size:13px;font-weight:600;color:var(--text);line-height:1.3;max-width:calc(100% - 40px)"></div>
+            <button onclick="feedsCloseMedia()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px" title="Close">✕</button>
+          </div>
+          <div id="feeds-media-body" style="position:relative;width:100%;padding-top:56.25%;background:#000">
+            <iframe id="feeds-media-iframe" src="" frameborder="0" allow="autoplay;fullscreen;picture-in-picture;encrypted-media" allowfullscreen style="position:absolute;inset:0;width:100%;height:100%;border:none"></iframe>
+          </div>
+          <div style="padding:10px 16px;display:flex;justify-content:flex-end">
+            <a id="feeds-media-extlink" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ Open on YouTube</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── IPTV BROWSE CHANNELS MODAL (embeds moviebite.cc for channel discovery) ── -->
+      <div id="iptv-browse-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:900;align-items:center;justify-content:center" onclick="if(event.target===this)iptvHideBrowse()">
+        <div style="position:relative;width:min(1100px,97vw);height:90vh;background:var(--bg2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+            <div>
+              <span style="font-size:13px;font-weight:600">📺 Browse MovieBite Channels</span>
+              <span style="font-size:11px;color:var(--text3);margin-left:10px">Find a channel → copy its URL slug → use ＋ Channel to add it</span>
+            </div>
+            <button onclick="iptvHideBrowse()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:2px 6px">✕</button>
+          </div>
+          <div style="flex:1;overflow:hidden;position:relative">
+            <iframe id="iptv-browse-iframe" src="" frameborder="0" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-navigation-to-web-pages"></iframe>
+          </div>
+          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;background:var(--surface)">
+            <span style="font-size:11px;color:var(--text2)">Channel URL: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:10px">live.moviebite.cc/channels/<b>SLUG</b></code></span>
+            <button onclick="iptvHideBrowse();iptvShowAddChannel()" class="btn-primary" style="padding:5px 14px;font-size:12px;margin-left:auto">＋ Add Channel</button>
           </div>
         </div>
       </div>
@@ -6490,7 +6527,7 @@ function _feedsLoadRedditPage() {
     tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
     const activePill = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (sources.find(s=>s.id===_feedsRedditActive)?.name));
     if (activePill) activePill.classList.add('active');
-    _feedsFetchAndRenderCards(sources.find(s => s.id === _feedsRedditActive)?.url, grid, 'reddit');
+    _feedsFetchRedditDirect(sources.find(s => s.id === _feedsRedditActive)?.url, grid);
 }
 
 function _feedsSelectReddit(id, el) {
@@ -6498,7 +6535,72 @@ function _feedsSelectReddit(id, el) {
     document.querySelectorAll('#feeds-reddit-source-tabs .filter-pill').forEach(p => p.classList.remove('active'));
     if (el) el.classList.add('active');
     const src = (_feedsSubs.reddit || []).find(s => s.id === id);
-    if (src) _feedsFetchAndRenderCards(src.url, document.getElementById('feeds-reddit-grid'), 'reddit');
+    if (src) _feedsFetchRedditDirect(src.url, document.getElementById('feeds-reddit-grid'));
+}
+
+// ── Reddit: fetch directly from browser (bypasses server IP blocks) ──
+async function _feedsFetchRedditDirect(url, grid) {
+    if (!url || !grid) return;
+    grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+    const m = (url||'').match(/reddit\.com\/r\/([A-Za-z0-9_]+)/);
+    if (!m) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">Invalid Reddit URL</div></div>'; return; }
+    const sub = m[1];
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    try {
+        const r = await fetch(`https://www.reddit.com/r/${sub}.json?limit=25&raw_json=1`, {
+            headers: { 'Accept': 'application/json' },
+            cache: 'default'
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status} — Reddit may be blocking requests`);
+        const data = await r.json();
+        const posts = (data?.data?.children || []).slice(0, 25);
+        if (!posts.length) {
+            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">No posts found</div></div>';
+            return;
+        }
+        grid.innerHTML = posts.map(post => {
+            const pd = post.data || {};
+            const title = pd.title || 'Untitled';
+            const permalink = 'https://www.reddit.com' + (pd.permalink || '#');
+            const created = pd.created_utc;
+            const dateStr = created ? new Date(created*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+            const postHint = pd.post_hint || '';
+            const isVideo = pd.is_video || false;
+            const isGallery = pd.is_gallery || false;
+            const domain = pd.domain || '';
+            const postUrl = pd.url || permalink;
+            const isVideoLink = isVideo || postHint==='rich:video' || domain.includes('v.redd.it') || domain.includes('youtube.com') || domain.includes('youtu.be');
+            const isGif = /\.(gif|gifv)$/i.test(postUrl) || domain.includes('i.imgur.com');
+            const isImage = postHint==='image' || /\.(jpg|jpeg|png|webp)$/i.test(postUrl);
+            const ptype = isVideoLink ? 'video' : isGif ? 'gif' : isGallery ? 'gallery' : isImage ? 'image' : 'text';
+            let thumb = null;
+            try { const imgs = pd.preview?.images; if (imgs?.length) thumb = imgs[0].source.url.replace(/&amp;/g,'&'); } catch(e){}
+            if (!thumb && isGallery) { try { const k=Object.keys(pd.media_metadata)[0]; thumb=pd.media_metadata[k].s.u.replace(/&amp;/g,'&'); } catch(e){} }
+            if (!thumb) { const tn=pd.thumbnail||''; if(tn.startsWith('http')&&!['self','default','nsfw','spoiler'].includes(tn)) thumb=tn; }
+            const flair = pd.link_flair_text || '';
+            const score = pd.score || 0;
+            const numC  = pd.num_comments || 0;
+            const typeBadge = ptype==='video'   ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">▶ Video</div>`
+                            : ptype==='gif'     ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#ff6b6b;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">GIF</div>`
+                            : ptype==='gallery' ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">🖼 Gallery</div>` : '';
+            const icon = ptype==='video'?'▶':ptype==='gif'?'🎞':ptype==='gallery'?'🖼':ptype==='image'?'🖼':'🤖';
+            return `<a href="${permalink}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s" onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              ${thumb
+                ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2);overflow:hidden"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${icon}</div>'">${typeBadge}</div>`
+                : `<div style="width:100%;padding-top:52%;position:relative;background:var(--surface2)"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${icon}</div>${typeBadge}</div>`}
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(title)}</div>
+                <div style="display:flex;align-items:center;gap:10px;font-size:10px;color:var(--text3);margin-top:3px">
+                  ${flair?`<span style="background:var(--surface2);padding:1px 5px;border-radius:3px;color:var(--text2);font-size:9px">${safe(flair)}</span>`:''}
+                  <span>▲ ${score.toLocaleString()}</span><span>💬 ${numC.toLocaleString()}</span>
+                </div>
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">${safe(dateStr)}</div>
+              </div>
+            </a>`;
+        }).join('');
+    } catch(e) {
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">⚠️</div><div class="empty-text" style="color:var(--red)">Reddit error: ${e.message}</div></div>`;
+    }
 }
 
 // ── YouTube sub-page ─────────────────────────────────────────────────
@@ -6613,11 +6715,15 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
 
             const aspectRatio = isYT || ptype === 'video' ? '56.25%' : '52%';
 
+            // Extract YouTube video ID if applicable
+            const ytIdMatch = isYT ? (item.link||'').match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/) : null;
+            const ytId = ytIdMatch ? ytIdMatch[1] : null;
+            const cardOnClick = ytId
+                ? `onclick="feedsOpenYT('${ytId}',this.querySelector('div[data-title]')?.dataset.title||'');return false;"`
+                : '';
+            const cardStyle = `display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s`;
             return `
-            <a href="${item.link}" target="_blank" rel="noopener" style="
-              display:flex;flex-direction:column;text-decoration:none;
-              background:var(--surface);border:1px solid var(--border);border-radius:10px;
-              overflow:hidden;transition:border-color .15s,transform .1s"
+            <a href="${item.link}" ${ytId ? 'onclick="feedsOpenYT(\''+ytId+'\',\''+safe(item.title).replace(/'/g,'\\\'') +'\');return false;"' : 'target="_blank" rel="noopener"'} style="${cardStyle}"
               onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
               onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
               <!-- Thumbnail / Media -->
@@ -6651,6 +6757,29 @@ async function _feedsFetchAndRenderCards(url, grid, mode) {
         grid.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load feed: ${e.message}</div>`;
     }
 }
+
+// ── Media player modal (YouTube embed) ───────────────────────────────
+function feedsOpenYT(videoId, title) {
+    const modal = document.getElementById('feeds-media-modal');
+    const iframe = document.getElementById('feeds-media-iframe');
+    const titleEl = document.getElementById('feeds-media-title');
+    const extLink = document.getElementById('feeds-media-extlink');
+    if (!modal || !iframe) return;
+    iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`;
+    if (titleEl) titleEl.textContent = title || '';
+    if (extLink) extLink.href = `https://www.youtube.com/watch?v=${videoId}`;
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function feedsCloseMedia() {
+    const modal = document.getElementById('feeds-media-modal');
+    const iframe = document.getElementById('feeds-media-iframe');
+    if (iframe) iframe.src = '';
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+// close on Escape key
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { feedsCloseMedia(); } });
 
 // ── Manage sub-page ──────────────────────────────────────────────────
 // ── Custom type page loader ───────────────────────────────────────────
@@ -7426,6 +7555,18 @@ function iptvAddToMultiview() {
 function iptvReload() {
     _iptvChannels = []; _iptvFiltered = []; _iptvInited = false;
     iptvInit();
+}
+
+function iptvBrowseChannels() {
+    const modal = document.getElementById('iptv-browse-modal');
+    const iframe = document.getElementById('iptv-browse-iframe');
+    if (!modal) return;
+    if (iframe && !iframe.src) iframe.src = 'https://live.moviebite.cc/channels';
+    modal.style.display = 'flex';
+}
+function iptvHideBrowse() {
+    const modal = document.getElementById('iptv-browse-modal');
+    if (modal) modal.style.display = 'none';
 }
 
 // ── Add / delete custom channels ────────────────────────────────────────────

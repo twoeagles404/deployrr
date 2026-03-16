@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# ArrHub — Master Installer v3.15.18
+# ArrHub — Master Installer v3.15.19
 # =============================================================================
 #
 # ONE-COMMAND INSTALL (dev branch — always uses latest dev code):
@@ -26,13 +26,13 @@ GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
 # CI validates this plain line — keep it matching the actual branch name.
-GITHUB_BRANCH="main"
+GITHUB_BRANCH="dev"
 # Allow env-var override for testing:  ARRHUB_BRANCH=main sudo bash install.sh
 GITHUB_BRANCH="${ARRHUB_BRANCH:-${GITHUB_BRANCH}}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="3.15.18"
+VERSION="3.15.19"
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Install paths ─────────────────────────────────────────────────────────────

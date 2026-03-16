@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.18 · Full deployment, update management, and real-time monitoring
+Version: 3.15.19 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -935,7 +935,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.18",
+            "version": "3.15.19",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1316,7 +1316,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.18"})
+    return jsonify({"update_available": False, "version": "3.15.19"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -1620,6 +1620,67 @@ def api_rss_custom_delete(name):
         return jsonify({"status": "deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/twitter/feed")
+def api_twitter_feed():
+    """Fetch a Twitter/X handle's recent posts via public nitter RSS instances."""
+    import urllib.request as _ur
+    handle = request.args.get("handle", "").strip().lstrip("@")
+    if not handle:
+        return jsonify({"error": "Missing handle", "items": []}), 400
+    cache_key = f"twitter_nitter_{handle}"
+    if cache_key in _rss_cache and time.time() - _rss_cache[cache_key].get("ts", 0) < 300:
+        return jsonify(_rss_cache[cache_key]["data"])
+    nitter_instances = [
+        "https://nitter.privacydev.net",
+        "https://nitter.poast.org",
+        "https://nitter.cz",
+        "https://nitter.1d4.us",
+        "https://nitter.lunar.icu",
+    ]
+    last_err = "All nitter instances failed"
+    for instance in nitter_instances:
+        try:
+            rss_url = f"{instance}/{handle}/rss"
+            req = _ur.Request(rss_url, headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
+                "Cache-Control": "no-cache",
+            })
+            with _ur.urlopen(req, timeout=8) as resp:
+                raw = resp.read()
+            import xml.etree.ElementTree as _ET2, html as _hm2, re as _re2
+            root = _ET2.fromstring(raw)
+            ns = {"atom": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
+            items = []
+            for item in root.findall(".//item")[:20]:
+                title_el = item.find("title")
+                link_el  = item.find("link")
+                date_el  = item.find("pubDate")
+                desc_el  = item.find("description")
+                title = (title_el.text or "").strip() if title_el is not None else ""
+                link  = (link_el.text  or "").strip() if link_el  is not None else "#"
+                # Fix nitter links to point to real twitter.com
+                link = link.replace(instance, "https://twitter.com").replace("//twitter.com/", "//x.com/")
+                date  = (date_el.text  or "")[:16]  if date_el  is not None else ""
+                desc  = ""
+                if desc_el is not None and desc_el.text:
+                    desc = _re2.sub(r"<[^>]+>", " ", _hm2.unescape(desc_el.text))
+                    desc = _re2.sub(r"\s+", " ", desc).strip()[:200]
+                # Strip html from title too
+                title = _re2.sub(r"<[^>]+>", " ", _hm2.unescape(title)).strip()
+                if not title:
+                    title = desc[:80] or "Tweet"
+                items.append({"title": title, "link": link, "date": date, "excerpt": desc})
+            result = {"items": items, "instance": instance}
+            _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+            resp_obj = jsonify(result)
+            resp_obj.headers["Cache-Control"] = "no-cache"
+            return resp_obj
+        except Exception as e:
+            last_err = str(e)
+            continue
+    return jsonify({"error": last_err, "items": []})
 
 @app.route("/api/rss/fetch")
 def api_rss_fetch():
@@ -2471,26 +2532,37 @@ def api_reddit_feed():
     cache_key = f"reddit_{sub}_{sort}_{after}_{limit}"
     if cache_key in _rss_cache and time.time() - _rss_cache[cache_key].get("ts", 0) < 120:
         return jsonify(_rss_cache[cache_key]["data"])
-    try:
-        url = f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1"
-        if after:
-            url += f"&after={after}"
-        req = _ur.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cookie": "over18=1; redesign_optout=true",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Referer": "https://www.reddit.com/",
-        })
-        with _ur.urlopen(req, timeout=15) as r:
-            data = _jr.loads(r.read())
-        result = {"data": data.get("data", {}), "ok": True}
-        _rss_cache[cache_key] = {"data": result, "ts": time.time()}
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)[:120], "ok": False})
+    ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    # Try old.reddit.com first (age-gate bypassed), then fall back to www.reddit.com
+    base_urls = [
+        f"https://old.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&over18=1",
+        f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1",
+    ]
+    last_err = "Unknown error"
+    for base_url in base_urls:
+        url = base_url + (f"&after={after}" if after else "")
+        try:
+            req = _ur.Request(url, headers={
+                "User-Agent": ua,
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cookie": "over18=1; _options=%7B%22pref_over_18%22%3A%20true%7D; redesign_optout=true",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Referer": "https://www.reddit.com/",
+            })
+            with _ur.urlopen(req, timeout=15) as r:
+                raw = r.read()
+            data = _jr.loads(raw)
+            # Detect age-gate HTML returned as 200 (Reddit sometimes wraps in HTML)
+            if isinstance(data, dict) and data.get("data"):
+                result = {"data": data["data"], "ok": True}
+                _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                return jsonify(result)
+            last_err = "Unexpected response structure"
+        except Exception as exc:
+            last_err = str(exc)[:120]
+    return jsonify({"error": last_err, "ok": False})
 
 @app.route("/api/reddit/comments")
 def api_reddit_comments():
@@ -2617,6 +2689,61 @@ def api_epl_matches():
         return jsonify(result)
     except Exception as e:
         return jsonify({"matches": [], "error": str(e)[:120]})
+
+@app.route("/api/football/team_fixtures")
+def api_football_team_fixtures():
+    """Proxy ESPN team schedule server-side with correct season year."""
+    import urllib.request as _ur, json as _jr, datetime as _dt
+    team_id = request.args.get("team_id", "").strip()
+    league  = request.args.get("league", "eng.1").strip()
+    if not team_id:
+        return jsonify({"error": "team_id required"}), 400
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    today = _dt.date.today()
+    # ESPN uses END-year of the season (e.g. 2025-26 season = 2026)
+    season_year = today.year + 1 if today.month >= 8 else today.year
+    all_events = []
+    seen_ids = set()
+    # Fetch regular season (type 2) plus cups/knockouts (type 3) to cover all competitions
+    for stype in (2, 3):
+        url = (f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
+               f"/teams/{team_id}/schedule?season={season_year}&seasontype={stype}")
+        try:
+            req = _ur.Request(url, headers={"User-Agent": ua})
+            with _ur.urlopen(req, timeout=10) as r:
+                data = _jr.loads(r.read())
+            for ev in data.get("events", []):
+                eid = ev.get("id")
+                if eid and eid not in seen_ids:
+                    seen_ids.add(eid)
+                    all_events.append(ev)
+        except Exception:
+            pass
+    # Sort by date
+    def _ev_date(ev):
+        try: return ev.get("date", "")
+        except: return ""
+    all_events.sort(key=_ev_date)
+    return jsonify({"events": all_events})
+
+@app.route("/api/football/team_news")
+def api_football_team_news():
+    """Proxy ESPN team news server-side to avoid browser CORS/rate-limit issues."""
+    import urllib.request as _ur, json as _jr
+    team_id = request.args.get("team_id", "").strip()
+    league  = request.args.get("league", "eng.1").strip()
+    if not team_id:
+        return jsonify({"error": "team_id required"}), 400
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    url = (f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
+           f"/teams/{team_id}/news?limit=20")
+    try:
+        req = _ur.Request(url, headers={"User-Agent": ua})
+        with _ur.urlopen(req, timeout=12) as r:
+            data = _jr.loads(r.read())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"articles": [], "error": str(e)[:200]}), 500
 
 @app.route("/api/epl/highlights")
 def api_epl_highlights():
@@ -4284,7 +4411,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.18</div>
+      <div class="sb-version">v3.15.19</div>
     </div>
   </div>
 
@@ -5247,7 +5374,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.18</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.19</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -5570,9 +5697,8 @@ body.sse-disconnected #app{padding-top:38px;}
                style="font-size:11px;color:var(--blue);text-decoration:none;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r)">↗ Open in new tab</a>
           </div>
         </div>
-        <div id="feeds-twitter-frame-wrap" style="border-radius:var(--r);overflow:hidden;border:1px solid var(--border);background:var(--bg2)">
-          <iframe id="feeds-twitter-iframe" src="" style="width:100%;height:calc(100vh - 240px);min-height:500px;border:none;display:block" loading="lazy"></iframe>
-        </div>
+        <div id="feeds-twitter-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-twitter-more-btn" onclick="feedsLoadMore('twitter')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
         <div id="feeds-twitter-empty" style="display:none;padding:40px 20px;text-align:center;color:var(--text3);font-size:12px">
           No Twitter handles added yet — go to <strong>Manage</strong> to add some.
         </div>
@@ -6642,7 +6768,12 @@ async function openLogs(name) {
         const r = await fetch(API + `/api/container/${name}/logs`);
         const d = await r.json();
         const el = document.getElementById('log-modal-body');
-        el.textContent = d.logs || '(empty)';
+        const lines = (d.logs || '').split('\n');
+        if (!lines.length || (lines.length === 1 && !lines[0])) {
+            el.textContent = '(empty)';
+        } else {
+            el.innerHTML = lines.map(_colorLogLine).join('\n');
+        }
         el.scrollTop = el.scrollHeight;
     } catch(e) { document.getElementById('log-modal-body').textContent = 'Failed to load logs'; }
 }
@@ -7357,7 +7488,7 @@ let _feedsAddType  = 'rss';
 let _feedsViewMode  = {};   // gridId → 'grid'|'list'
 let _feedsAllItems  = {};   // gridId → full item array
 let _feedsOffset    = {};   // gridId → current render offset
-const _FEEDS_PAGE_SIZE = 25;
+const _FEEDS_PAGE_SIZE = 12;
 // Reddit pagination / sort state
 let _feedsRedditSort  = 'hot';
 let _feedsRedditAfter = null;
@@ -7522,19 +7653,12 @@ async function _feedsFetchRedditDirect(url, grid, appendMode) {
     const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const sort = _feedsRedditSort || 'hot';
     try {
-        // Direct browser fetch — www.reddit.com JSON API (CORS-friendly, NSFW-permissive)
-        const redditUrl = `https://www.reddit.com/r/${encodeURIComponent(sub)}/${sort}.json?limit=25&include_over_18=1&raw_json=1${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`;
-        const r = await fetch(redditUrl);
-        if (!r.ok) {
-            // Fallback to server proxy if browser fetch fails
-            const r2 = await fetch(API + `/api/reddit/feed?sub=${encodeURIComponent(sub)}&sort=${sort}&limit=25${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`);
-            if (!r2.ok) throw new Error(`HTTP Error ${r2.status}: Blocked`);
-            const resp2 = await r2.json();
-            if (!resp2.ok) throw new Error(resp2.error || 'Reddit fetch failed');
-            var data = {data: resp2.data};
-        } else {
-            var data = await r.json();
-        }
+        // Always use server-side proxy — handles NSFW age-gate and CORS reliably
+        const r2 = await fetch(API + `/api/reddit/feed?sub=${encodeURIComponent(sub)}&sort=${sort}&limit=25${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`);
+        if (!r2.ok) throw new Error(`Server proxy error: HTTP ${r2.status}`);
+        const resp2 = await r2.json();
+        if (!resp2.ok) throw new Error(resp2.error || 'Reddit fetch failed');
+        var data = {data: resp2.data};
         _feedsRedditAfter = data?.data?.after || null;
         const posts = (data?.data?.children || []).filter(p=>p.kind==='t3');
         if (!posts.length && !appendMode) {
@@ -7803,6 +7927,8 @@ function feedsOpenRedditPost(title, text, url) {
     if (titleEl) titleEl.textContent = title || '';
     if (body) body.textContent = text || '';
     if (link) link.href = url || '#';
+    // Escape any hidden parent by moving modal to body level
+    if (modal.parentElement !== document.body) document.body.appendChild(modal);
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
 }
@@ -7827,6 +7953,8 @@ async function feedsOpenComments(permalink, title) {
     if (metaEl)  metaEl.innerHTML    = '';
     if (listEl)  listEl.innerHTML    = '<div style="color:var(--text3);font-size:12px">Loading comments…</div>';
     if (linkEl)  linkEl.href         = fullLink;
+    // Escape any hidden parent by moving modal to body level
+    if (modal.parentElement !== document.body) document.body.appendChild(modal);
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
     const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -7991,18 +8119,19 @@ function feedsHNChangeSort(sort, btnEl) {
 }
 
 function _feedsLoadTwitterPage() {
-    const tabs = document.getElementById('feeds-twitter-handle-tabs');
-    const frameWrap = document.getElementById('feeds-twitter-frame-wrap');
+    const tabs    = document.getElementById('feeds-twitter-handle-tabs');
+    const grid    = document.getElementById('feeds-twitter-grid');
     const emptyEl = document.getElementById('feeds-twitter-empty');
+    const moreBtn = document.getElementById('feeds-twitter-more-btn');
     if (!tabs) return;
     const handles = _feedsSubs.twitter || [];
     if (!handles.length) {
-        if (frameWrap) frameWrap.style.display = 'none';
+        if (grid) grid.innerHTML = '';
         if (emptyEl) emptyEl.style.display = '';
+        if (moreBtn) moreBtn.style.display = 'none';
         tabs.innerHTML = '';
         return;
     }
-    if (frameWrap) frameWrap.style.display = '';
     if (emptyEl) emptyEl.style.display = 'none';
     if (!_feedsTwitterActive || !handles.find(h => h.id === _feedsTwitterActive))
         _feedsTwitterActive = handles[0].id;
@@ -8010,7 +8139,7 @@ function _feedsLoadTwitterPage() {
         `<button class="filter-pill${h.id===_feedsTwitterActive?' active':''}" onclick="_feedsSelectTwitter('${h.id}',this)">𝕏 ${h.name}</button>`
     ).join('');
     const active = handles.find(h => h.id === _feedsTwitterActive);
-    if (active) _feedsSetTwitterHandle(active.url);
+    if (active && grid) _feedsFetchTwitterCards(active.url, grid, false);
 }
 
 function _feedsSelectTwitter(id, el) {
@@ -8018,15 +8147,54 @@ function _feedsSelectTwitter(id, el) {
     document.querySelectorAll('#feeds-twitter-handle-tabs .filter-pill').forEach(p => p.classList.remove('active'));
     if (el) el.classList.add('active');
     const h = (_feedsSubs.twitter || []).find(s => s.id === id);
-    if (h) _feedsSetTwitterHandle(h.url);
+    const grid = document.getElementById('feeds-twitter-grid');
+    if (h && grid) _feedsFetchTwitterCards(h.url, grid, false);
 }
 
-function _feedsSetTwitterHandle(handle) {
-    const iframe = document.getElementById('feeds-twitter-iframe');
-    const link = document.getElementById('feeds-twitter-open-link');
-    const url = `https://twitterwebviewer.com/${handle.replace(/^@/,'')}`;
-    if (iframe) iframe.src = url;
-    if (link) link.href = url;
+async function _feedsFetchTwitterCards(handle, grid, appendMode) {
+    if (!grid) return;
+    const moreBtn = document.getElementById('feeds-twitter-more-btn');
+    const cleanHandle = (handle || '').replace(/^@/, '');
+    if (!cleanHandle) return;
+    if (!appendMode) {
+        grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+        if (moreBtn) moreBtn.style.display = 'none';
+    }
+    try {
+        const r = await fetch(API + `/api/twitter/feed?handle=${encodeURIComponent(cleanHandle)}&_t=${Date.now()}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (!items.length) {
+            const msg = d.error ? `Could not load tweets: ${d.error}` : 'No tweets found';
+            grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">𝕏</div><div class="empty-text" style="color:var(--text3)">${msg}<br><br><a href="https://x.com/${cleanHandle}" target="_blank" rel="noopener" style="color:var(--blue)">↗ Open @${cleanHandle} on X</a></div></div>`;
+            return;
+        }
+        const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const gridId = grid.id;
+        const enriched = items.map(item => {
+            item._html = `
+            <a href="${item.link||'#'}" target="_blank" rel="noopener"
+              style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer"
+              onmouseover="this.style.borderColor='#1d9bf0';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              <div style="padding:14px;flex:1;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;color:#1d9bf0">
+                  <span style="font-size:15px">𝕏</span> @${safe(cleanHandle)}
+                </div>
+                <div style="font-size:13px;color:var(--text);line-height:1.5;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                ${item.excerpt && item.excerpt !== item.title ? `<div style="font-size:11px;color:var(--text2);line-height:1.4">${safe(item.excerpt.slice(0,120))}</div>` : ''}
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">${safe(item.date||'')}</div>
+              </div>
+            </a>`;
+            return item;
+        });
+        _feedsAllItems[gridId] = enriched;
+        _feedsOffset[gridId] = _FEEDS_PAGE_SIZE;
+        _feedsRenderItems(grid, enriched, 0, _FEEDS_PAGE_SIZE, 'grid', false);
+        if (moreBtn) moreBtn.style.display = enriched.length > _FEEDS_PAGE_SIZE ? '' : 'none';
+    } catch(e) {
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">𝕏</div><div class="empty-text" style="color:var(--red)">Failed: ${e.message}<br><br><a href="https://x.com/${cleanHandle}" target="_blank" rel="noopener" style="color:var(--blue)">↗ Open @${cleanHandle} on X</a></div></div>`;
+    }
 }
 
 function feedsHNLoadMore() {
@@ -8560,6 +8728,25 @@ async function submitAddFeed() {
 // ══════════════════════════════════════════════════════════════════════
 // 10a. FOOTBALL HUB (multi-league)
 // ══════════════════════════════════════════════════════════════════════
+// Utility: show loading indicator without wiping existing content (no flicker)
+function _fbSetLoading(el, msg) {
+    if (!el) return;
+    const isEmpty = !el.innerHTML.trim() || !!el.querySelector('.fb-loading-placeholder');
+    if (isEmpty) {
+        el.innerHTML = '<div class="fb-loading-placeholder" style="color:var(--text3);font-size:12px;padding:20px;text-align:center">'+msg+'</div>';
+    } else {
+        // Keep old content visible, just dim it
+        el.style.opacity = '0.45';
+        el.style.pointerEvents = 'none';
+        el.style.transition = 'opacity .15s';
+    }
+}
+function _fbClearLoading(el) {
+    if (!el) return;
+    el.style.opacity = '';
+    el.style.pointerEvents = '';
+    el.style.transition = '';
+}
 const FOOTBALL_LEAGUES = {
     'eng.1':            { name:'Premier League',    flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿', highlights:['premier league','english premier','epl'] },
     'esp.1':            { name:'La Liga',            flag:'🇪🇸', highlights:['la liga','laliga','spanish primera'] },
@@ -8633,7 +8820,7 @@ async function footballLoadStandings() {
     if (!el) return;
     const league = _footballLeague;
     const info = FOOTBALL_LEAGUES[league] || {};
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading standings…</div>';
+    _fbSetLoading(el, 'Loading standings…');
     try {
         const r = await fetch('https://site.api.espn.com/apis/v2/sports/soccer/'+league+'/standings');
         const raw = await r.json();
@@ -8706,9 +8893,9 @@ async function footballLoadStandings() {
         html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#d32f2f;border-radius:2px;display:inline-block"></span> Relegation zone</span>';
         html += '<span style="display:flex;align-items:center;gap:4px"><svg style="width:10px;opacity:.4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg> Click team for fixtures &amp; news</span>';
         html += '</div>';
-        el.innerHTML = html;
+        _fbClearLoading(el); el.innerHTML = html;
     } catch(e) {
-        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load standings: '+e.message+'</div>';
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load standings: '+e.message+'</div>';
     }
 }
 
@@ -8766,7 +8953,7 @@ function _footballMatchRow(m) {
 async function footballLoadFixtures() {
     const el = document.getElementById('football-fixtures-list');
     if (!el) return;
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading fixtures…</div>';
+    _fbSetLoading(el, 'Loading fixtures…');
     try {
         const matches = await _footballFetchMatches(_footballLeague, 'upcoming');
         if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No upcoming fixtures found.</div>'; return; }
@@ -8782,31 +8969,31 @@ async function footballLoadFixtures() {
             html += '<div style="font-size:12px;font-weight:600;color:var(--text2);margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)">'+label+'</div>';
             list.forEach(m => { html += _footballMatchRow(m); });
         });
-        el.innerHTML = html;
+        _fbClearLoading(el); el.innerHTML = html;
     } catch(e) {
-        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load fixtures: '+e.message+'</div>';
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load fixtures: '+e.message+'</div>';
     }
 }
 
 async function footballLoadResults() {
     const el = document.getElementById('football-results-list');
     if (!el) return;
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading results…</div>';
+    _fbSetLoading(el, 'Loading results…');
     try {
         const matches = (await _footballFetchMatches(_footballLeague, 'results')).reverse();
         if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No recent results.</div>'; return; }
         let html = '';
         matches.forEach(m => { html += _footballMatchRow(m); });
-        el.innerHTML = html;
+        _fbClearLoading(el); el.innerHTML = html;
     } catch(e) {
-        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load results: '+e.message+'</div>';
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load results: '+e.message+'</div>';
     }
 }
 
 async function footballLoadHighlights() {
     const el = document.getElementById('football-highlights-grid');
     if (!el) return;
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Loading highlights…</div>';
+    _fbSetLoading(el, 'Loading highlights…');
     const info = FOOTBALL_LEAGUES[_footballLeague] || {};
     const keys = info.highlights || [];
     try {
@@ -8849,9 +9036,9 @@ async function footballLoadHighlights() {
             if (h.embed) html += '<div class="football-embed-data" style="display:none">'+h.embed.replace(/</g,'\\x3c').replace(/>/g,'\\x3e')+'</div>';
             html += '</div>';
         });
-        el.innerHTML = html;
+        _fbClearLoading(el); el.innerHTML = html;
     } catch(e) {
-        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Failed to load highlights: '+e.message+'</div>';
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Failed to load highlights: '+e.message+'</div>';
     }
 }
 
@@ -8859,7 +9046,7 @@ async function footballLoadNews() {
     const el = document.getElementById('football-news-list');
     if (!el) return;
     const info = FOOTBALL_LEAGUES[_footballLeague] || {};
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading news…</div>';
+    _fbSetLoading(el, 'Loading news…');
     try {
         const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+_footballLeague+'/news?limit=20');
         const raw = await r.json();
@@ -8877,9 +9064,9 @@ async function footballLoadNews() {
             if (a.description) html += '<div style="font-size:11px;color:var(--text2);line-height:1.4;margin-bottom:4px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">'+a.description+'</div>';
             html += '<div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div></div>';
         });
-        el.innerHTML = html;
+        _fbClearLoading(el); el.innerHTML = html;
     } catch(e) {
-        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load news: '+e.message+'</div>';
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load news: '+e.message+'</div>';
     }
 }
 
@@ -8936,12 +9123,15 @@ function footballTeamTab(tab) {
 async function _footballTeamLoadFixtures() {
     const el = document.getElementById('football-team-content');
     if (!el) return;
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading schedule…</div>';
+    _fbSetLoading(el, 'Loading schedule…');
     try {
-        const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+_footballTeamLeague+'/teams/'+_footballTeamId+'/schedule');
+        // Use server-side proxy: correct season year + multi-competition (regular + cups)
+        const r = await fetch(API + '/api/football/team_fixtures?team_id='+encodeURIComponent(_footballTeamId)+'&league='+encodeURIComponent(_footballTeamLeague));
         const raw = await r.json();
+        if (raw.error) throw new Error(raw.error);
         const events = raw.events || [];
-        if (!events.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No schedule found.</div>'; return; }
+        if (!events.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No schedule found for this team.</div>'; return; }
+        const nowMs = Date.now();
         const upcoming = [], past = [];
         for (const event of events) {
             const comp = (event.competitions || [])[0] || {};
@@ -8953,69 +9143,82 @@ async function _footballTeamLoadFixtures() {
             const away = competitors.find(c => c.homeAway === 'away') || {};
             const ht = home.team || {}, at = away.team || {};
             const dt = event.date ? new Date(event.date) : null;
+            const eventMs = dt ? dt.getTime() : 0;
+            // Competition label (e.g. FA Cup, Champions League)
+            const compName = event.season?.slug || event.name || '';
+            const compLabel = comp.tournament?.displayName || comp.notes?.[0]?.headline || '';
             const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
             const scoreH = (isFinal||isLive) ? parseInt(home.score||0) : null;
             const scoreA = (isFinal||isLive) ? parseInt(away.score||0) : null;
             const homeW = isFinal && scoreH > scoreA, awayW = isFinal && scoreA > scoreH;
+            const compBadge = compLabel ? '<div style="font-size:9px;color:var(--text3);text-align:center;margin-bottom:2px">'+compLabel+'</div>' : '';
             const centerEl = isLive
                 ? '<span style="background:#f44336;color:#fff;padding:2px 5px;border-radius:3px;font-size:9px;font-weight:600">LIVE</span>'
                 : isFinal
                     ? '<div style="font-weight:700;font-size:14px;letter-spacing:1px">'+scoreH+' - '+scoreA+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
-                    : '<div style="font-size:10px;color:var(--text3);text-align:center;line-height:1.3">'+dateStr+'</div>';
+                    : compBadge+'<div style="font-size:10px;color:var(--text3);text-align:center;line-height:1.3">'+dateStr+'</div>';
             const row = '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);gap:8px;margin-bottom:6px">'
                 +'<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:5px;text-align:right">'
                 +(ht.logo?'<img src="'+ht.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
                 +'<span style="font-weight:'+(homeW?'700':'500')+';font-size:12px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+( ht.shortDisplayName||ht.displayName||'?')+'</span></div>'
-                +'<div style="min-width:72px;text-align:center">'+centerEl+'</div>'
+                +'<div style="min-width:76px;text-align:center">'+centerEl+'</div>'
                 +'<div style="flex:1;display:flex;align-items:center;gap:5px">'
                 +(at.logo?'<img src="'+at.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
                 +'<span style="font-weight:'+(awayW?'700':'500')+';font-size:12px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+( at.shortDisplayName||at.displayName||'?')+'</span></div>'
                 +'</div>';
-            const entry = {date: dt ? dt.getTime() : 0, row};
-            if (isFinal) past.push(entry);
+            const entry = {date: eventMs, row};
+            // Classify: final → past; live or date >= now-2hr → upcoming/live; date < now-2hr and not final → treat as past
+            if (isFinal || (!isLive && eventMs < nowMs - 7200000)) past.push(entry);
             else upcoming.push(entry);
         }
         // Sort: upcoming ascending (soonest first), past descending (most recent first)
         upcoming.sort((a,b) => a.date - b.date);
         past.sort((a,b) => b.date - a.date);
+        // Limit past results shown to keep it tidy
+        const pastShown = past.slice(0, 10);
         let html = '';
         if (upcoming.length) {
             html += '<div style="font-size:11px;font-weight:600;color:var(--blue);margin:0 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">📅 Upcoming Fixtures ('+upcoming.length+')</div>';
             html += upcoming.map(e => e.row).join('');
         }
-        if (past.length) {
-            html += '<div style="font-size:11px;font-weight:600;color:var(--text2);margin:'+(upcoming.length?'14px':'0')+' 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">✅ Recent Results ('+past.length+')</div>';
-            html += past.map(e => e.row).join('');
+        if (pastShown.length) {
+            html += '<div style="font-size:11px;font-weight:600;color:var(--text2);margin:'+(upcoming.length?'14px':'0')+' 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">✅ Recent Results ('+pastShown.length+(past.length>10?' of '+past.length:'')+')</div>';
+            html += pastShown.map(e => e.row).join('');
         }
         if (!html) html = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No events found.</div>';
-        el.innerHTML = html;
+        _fbClearLoading(el); el.innerHTML = html;
     } catch(e) {
-        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed: '+e.message+'</div>';
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load fixtures: '+e.message+'</div>';
     }
 }
 
 async function _footballTeamLoadNews() {
     const el = document.getElementById('football-team-content');
     if (!el) return;
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading news…</div>';
+    _fbSetLoading(el, 'Loading news…');
     try {
-        const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+_footballTeamLeague+'/teams/'+_footballTeamId+'/news?limit=15');
+        // Use server-side proxy to avoid browser CORS/rate-limit issues with ESPN
+        const r = await fetch(API + '/api/football/team_news?team_id='+encodeURIComponent(_footballTeamId)+'&league='+encodeURIComponent(_footballTeamLeague));
         const raw = await r.json();
+        if (raw.error && !raw.articles) throw new Error(raw.error);
         const articles = raw.articles || [];
-        if (!articles.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No news available.</div>'; return; }
+        if (!articles.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No news available for this team.</div>'; return; }
         let html = '';
         articles.forEach(a => {
             const dt = a.published ? new Date(a.published) : null;
-            const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short'}) : '';
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'}) : '';
             const imgUrl = (a.images || [])[0]?.url || '';
             const link = a.links?.web?.href || a.links?.mobile?.href || '';
-            html += '<div style="display:flex;gap:10px;padding:10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);margin-bottom:6px;cursor:pointer" onclick="if(\''+link+'\')window.open(\''+link+'\',\'_blank\')">';
-            if (imgUrl) html += '<img src="'+imgUrl+'" style="width:64px;height:48px;object-fit:cover;border-radius:4px;flex-shrink:0" onerror="this.style.display=\'none\'">';
-            html += '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:11px;line-height:1.4;margin-bottom:3px">'+a.headline+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div></div>';
+            const safeLink = (link||'').replace(/'/g,"\\'");
+            html += '<div style="display:flex;gap:10px;padding:10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);margin-bottom:6px;cursor:pointer" onclick="if(\''+safeLink+'\')window.open(\''+safeLink+'\',\'_blank\')">';
+            if (imgUrl) html += '<img src="'+imgUrl+'" style="width:72px;height:54px;object-fit:cover;border-radius:4px;flex-shrink:0" onerror="this.style.display=\'none\'">';
+            html += '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12px;line-height:1.4;margin-bottom:4px">'+a.headline+'</div>';
+            if (a.description) html += '<div style="font-size:10px;color:var(--text2);line-height:1.4;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">'+a.description+'</div>';
+            html += '<div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div></div>';
         });
-        el.innerHTML = html;
+        _fbClearLoading(el); el.innerHTML = html;
     } catch(e) {
-        el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed: '+e.message+'</div>';
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load news: '+e.message+'</div>';
     }
 }
 

@@ -2726,8 +2726,15 @@ def api_reddit_feed():
     except Exception:
         pass
 
-    # All methods failed
-    error_msg = oauth_error or anon_err or "All Reddit access methods failed"
+    # All methods failed — give the most actionable error message
+    if client_id and client_secret and not reddit_user:
+        error_msg = "Reddit username not set. Go to Settings → Reddit API Access and enter your Reddit username and password to access NSFW subreddits."
+    elif client_id and client_secret and reddit_user and oauth_error:
+        error_msg = f"Reddit login failed ({oauth_error}). Check your username/password in Settings → Reddit API Access."
+    elif anon_err and "403" in str(anon_err):
+        error_msg = "This subreddit requires Reddit login (NSFW or restricted). Enter your credentials in Settings → Reddit API Access."
+    else:
+        error_msg = oauth_error or anon_err or "All Reddit access methods failed. Check Settings → Reddit API Access."
     return jsonify({"error": error_msg, "ok": False})
 
 @app.route("/api/reddit/comments")
@@ -2883,40 +2890,45 @@ def api_football_team_fixtures():
             with _ur.urlopen(req, timeout=10) as r:
                 data = _jr.loads(r.read())
             events = data.get("events", [])
-            new_events = 0
             for ev in events:
                 eid = ev.get("id")
                 if eid and eid not in seen_ids:
                     seen_ids.add(eid)
                     all_events.append(ev)
-                    new_events += 1
-            # If this URL gave us events, skip remaining candidates for this season
-            if new_events > 0 and len(all_events) > 5:
-                break
         except Exception:
             pass
-    # Sort by date
+    # Sort by date ascending so upcoming matches appear after past ones
     all_events.sort(key=lambda ev: ev.get("date", ""))
     return jsonify({"events": all_events, "debug": {"total": len(all_events), "season_tried": sy}})
 
 @app.route("/api/football/team_news")
 def api_football_team_news():
-    """Proxy ESPN team news server-side to avoid browser CORS/rate-limit issues."""
+    """Proxy ESPN team news server-side — tries multiple ESPN news endpoints."""
     import urllib.request as _ur, json as _jr
     team_id = request.args.get("team_id", "").strip()
     league  = request.args.get("league", "eng.1").strip()
     if not team_id:
         return jsonify({"error": "team_id required"}), 400
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    url = (f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
-           f"/teams/{team_id}/news?limit=20")
-    try:
-        req = _ur.Request(url, headers={"User-Agent": ua})
-        with _ur.urlopen(req, timeout=12) as r:
-            data = _jr.loads(r.read())
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"articles": [], "error": str(e)[:200]}), 500
+    # Try multiple ESPN news endpoints — different leagues/teams use different paths
+    news_urls = [
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/news?limit=20",
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/news?team={team_id}&limit=20",
+        f"https://now.core.api.espn.com/v1/sports/news?leagues={league}&teams={team_id}&limit=20",
+    ]
+    for url in news_urls:
+        try:
+            req = _ur.Request(url, headers={"User-Agent": ua})
+            with _ur.urlopen(req, timeout=12) as r:
+                data = _jr.loads(r.read())
+            # ESPN returns articles under different keys depending on endpoint
+            articles = (data.get("articles") or data.get("items") or
+                        data.get("feed") or data.get("headlines") or [])
+            if articles:
+                return jsonify({"articles": articles})
+        except Exception:
+            pass
+    return jsonify({"articles": [], "error": "No news available from ESPN at this time"})
 
 @app.route("/api/epl/highlights")
 def api_epl_highlights():
@@ -4527,7 +4539,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.23</div>
+      <div class="sb-version">v3.15.24</div>
     </div>
   </div>
 
@@ -7846,7 +7858,14 @@ async function _feedsFetchRedditDirect(url, grid, appendMode) {
         else grid.innerHTML = html;
         if (moreBtn) moreBtn.style.display = _feedsRedditAfter ? '' : 'none';
     } catch(e) {
-        if (!appendMode) grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">⚠️</div><div class="empty-text" style="color:var(--red)">Reddit error: ${e.message}</div></div>`;
+        if (!appendMode) {
+            const needsSettings = e.message.includes('Settings') || e.message.includes('username') || e.message.includes('login');
+            grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
+              <div class="empty-icon">⚠️</div>
+              <div class="empty-text" style="color:var(--red);max-width:460px;line-height:1.6">${e.message}</div>
+              ${needsSettings ? `<button class="btn blue" style="margin-top:12px" onclick="showTab('settings',null)">⚙️ Open Settings</button>` : ''}
+            </div>`;
+        }
     }
 }
 

@@ -6,6 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.30] — 2026-03-17
+
+### Changed
+- **Overview dashboard redesigned to Homarr-style 3-column layout** — migrated from 2-column
+  CSS Grid to a 3-column grid (`1fr 1fr 1fr`) with updated area assignments:
+  `gauges(2col) | sysinfo` / `weather | storage | ctrs` / `services(3col)` /
+  `infra(2col) | logs` / `launcher(3col)`. Responsive breakpoints at 900px (2-col) and 600px (1-col).
+- **Containers widget** moved from the bottom row to the top-right (`weather | storage | ctrs`),
+  giving it equal visual weight to weather and storage.
+- **Per-cell max-heights** tuned for the new layout (gauges 200px, sysinfo/weather/storage/ctrs 320px).
+
+### Added
+- **Storage widget** (`#dash-storage`) — new dashboard cell using a compact horizontal-bar design.
+  Shows each real filesystem (tmpfs/loop/overlay filtered out) with a colour-coded bar (green < 70%,
+  yellow < 90%, red ≥ 90%), used/free/total sizes, and mount path. Loads via `/api/storage` at t=1.8s
+  and refreshes every 30s alongside other dashboard data.
+
+---
+
 ## [3.15.29] — 2026-03-17
 
 ### Added

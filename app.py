@@ -1053,7 +1053,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.29",
+            "version": "3.15.30",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -3744,27 +3744,27 @@ html { scroll-behavior: smooth; }
 #bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
 #app{position:relative;z-index:1;}
 
-/* ── Clean Dashboard Layout (CSS Grid) ────────────────────────────────── */
+/* ── Homarr-style Dashboard Layout (CSS Grid — 3 column) ──────────────── */
 .ov-dash{
   display:grid;
-  grid-template-columns:1fr 1fr;
+  grid-template-columns:1fr 1fr 1fr;
   grid-template-areas:
-    "gauges   gauges"
-    "weather  sysinfo"
-    "services services"
-    "infra    infra"
-    "logs     ctrs"
-    "launcher launcher";
+    "gauges   gauges   sysinfo"
+    "weather  storage  ctrs"
+    "services services services"
+    "infra    infra    logs"
+    "launcher launcher launcher";
   gap:14px;
   padding:0;
 }
 #dash-gauges   { grid-area:gauges; }
 #dash-sysinfo  { grid-area:sysinfo; }
 #dash-weather  { grid-area:weather; }
+#dash-storage  { grid-area:storage; }
+#dash-ctrs     { grid-area:ctrs; }
 #dash-services { grid-area:services; }
 #dash-infra    { grid-area:infra; }
 #dash-logs     { grid-area:logs; }
-#dash-ctrs     { grid-area:ctrs; }
 #dash-launcher { grid-area:launcher; }
 .dash-cell > .panel,
 .dash-cell > .metric-grid,
@@ -3773,19 +3773,33 @@ html { scroll-behavior: smooth; }
 .dash-cell { max-height:380px; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; scrollbar-color:var(--border) transparent; border-radius:var(--r,8px); }
 .dash-cell .panel { height:auto; overflow:visible; }
 /* Per-cell overrides */
-#dash-gauges  { max-height:160px; }
-#dash-weather { max-height:280px; }
+#dash-gauges  { max-height:200px; }
+#dash-sysinfo { max-height:320px; }
+#dash-weather { max-height:320px; }
+#dash-storage { max-height:320px; }
+#dash-ctrs    { max-height:320px; }
 #dash-launcher{ max-height:220px; }
 #dash-services{ max-height:420px; }
-#dash-ctrs    { max-height:380px; }
-#dash-logs    { max-height:340px; }
-#dash-infra   { max-height:360px; }
-@media(max-width:768px){
+#dash-logs    { max-height:380px; }
+#dash-infra   { max-height:380px; }
+@media(max-width:900px){
+  .ov-dash{
+    grid-template-columns:1fr 1fr;
+    grid-template-areas:
+      "gauges   gauges"
+      "weather  sysinfo"
+      "storage  ctrs"
+      "services services"
+      "infra    logs"
+      "launcher launcher";
+  }
+}
+@media(max-width:600px){
   .ov-dash{
     grid-template-columns:1fr;
     grid-template-areas:
-      "gauges" "weather" "sysinfo" "services"
-      "infra" "logs" "ctrs" "launcher";
+      "gauges" "sysinfo" "weather" "storage"
+      "ctrs" "services" "infra" "logs" "launcher";
   }
 }
 /* Service card tabs ── */
@@ -4697,7 +4711,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.29</div>
+      <div class="sb-version">v3.15.30</div>
     </div>
   </div>
 
@@ -5072,6 +5086,36 @@ body.sse-disconnected #app{padding-top:38px;}
             </div>
         </div>
 
+        <!-- ② Storage widget -->
+        <div class="dash-cell" id="dash-storage">
+            <div class="panel" style="margin:0;height:100%">
+              <div class="panel-title">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/></svg>
+                Storage
+              </div>
+              <div id="dash-storage-list" style="display:flex;flex-direction:column;gap:8px;padding:4px 2px">
+                <div style="color:var(--text3);font-size:12px;text-align:center;padding:16px">Loading...</div>
+              </div>
+            </div>
+        </div>
+
+        <!-- ② Containers Live (compact — top-right) -->
+        <div class="dash-cell" id="dash-ctrs">
+            <div class="panel" style="margin:0;height:100%">
+              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+                <span style="display:flex;align-items:center;gap:6px">
+                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                  Containers
+                  <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
+                </span>
+                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">All →</button>
+              </div>
+              <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:5px;margin-top:4px">
+                <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
+              </div>
+            </div>
+        </div>
+
         <!-- ③ Service Cards row -->
         <div class="dash-cell" id="dash-services">
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;box-sizing:border-box" id="service-cards-row">
@@ -5227,23 +5271,6 @@ body.sse-disconnected #app{padding-top:38px;}
                 <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('logs',null)">View All</button>
               </div>
               <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
-            </div>
-        </div>
-
-        <!-- ⑦ Containers Live -->
-        <div class="dash-cell" id="dash-ctrs">
-            <div class="panel" style="margin:0">
-              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-                <span style="display:flex;align-items:center;gap:6px">
-                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                  Containers
-                  <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
-                </span>
-                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">View All</button>
-              </div>
-              <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
-                <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
-              </div>
             </div>
         </div>
 
@@ -7164,6 +7191,49 @@ async function loadStorage() {
             }
         });
     } catch(e) {}
+}
+
+// ── Dashboard Storage widget (compact bar-style, reuses /api/storage) ─
+async function loadDashStorage() {
+    const el = document.getElementById('dash-storage-list');
+    if (!el) return;
+    try {
+        const r = await fetch(API + '/api/storage');
+        const d = await r.json();
+        if (!d.filesystems || !d.filesystems.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:16px">No filesystem data</div>';
+            return;
+        }
+        // Filter out tmpfs / devtmpfs / loop devices
+        const fsList = d.filesystems.filter(fs =>
+            !['tmpfs','devtmpfs','squashfs','overlay','none'].includes(fs.fstype || '') &&
+            !((fs.device || '').startsWith('/dev/loop'))
+        );
+        el.innerHTML = fsList.map(fs => {
+            const pct = Math.round(fs.percent || 0);
+            const mount = fs.mountpoint || fs.device || '?';
+            const clr = pct < 70 ? 'var(--green)' : pct < 90 ? 'var(--yellow,#e3b341)' : 'var(--red,#f85149)';
+            const clr2 = pct < 70 ? 'var(--green2)' : pct < 90 ? 'rgba(227,179,65,.15)' : 'rgba(248,81,73,.12)';
+            const used = fmtBytes(fs.used || 0);
+            const total = fmtBytes(fs.total || 0);
+            const free = fmtBytes((fs.total || 0) - (fs.used || 0));
+            const shortMount = mount.length > 22 ? '…' + mount.slice(-20) : mount;
+            return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 12px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+                <span style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono)" title="${mount}">${shortMount}</span>
+                <span style="font-size:12px;font-weight:700;color:${clr};background:${clr2};border-radius:5px;padding:1px 7px">${pct}%</span>
+              </div>
+              <div style="height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-bottom:5px">
+                <div style="height:100%;width:${pct}%;background:${clr};border-radius:3px;transition:width .6s"></div>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)">
+                <span>${used} used</span><span>${free} free / ${total}</span>
+              </div>
+            </div>`;
+        }).join('');
+    } catch(e) {
+        if (el) el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:16px">Unable to load storage</div>';
+    }
 }
 
 // ── Network (with bandwidth line charts) ─────────────────────────────
@@ -10719,7 +10789,7 @@ setInterval(() => {
 }, 45000);
 
 // Combined dashboard data (logs + network) — every 30s, only when on overview tab
-setInterval(() => { if (!_pollPaused) loadDashboardData(); }, 30000);
+setInterval(() => { if (!_pollPaused) { loadDashboardData(); loadDashStorage(); } }, 30000);
 
 // Service integration cards — every 60s (these call external services; no need to hammer)
 setInterval(() => {
@@ -10739,6 +10809,7 @@ setTimeout(loadDockerInfo,  1100);             // t=1.1s
 setTimeout(() => {                             // t=1.8s — first extras pass
     loadDashboardData();
     loadDashboardContainers();
+    loadDashStorage();                         // storage widget (reuses /api/storage)
 }, 1800);
 setTimeout(() => {                             // t=3s — service cards last (external APIs)
     loadRadarrCard(); loadSonarrCard(); loadPlexCard(); loadSeerrCard(); loadQbitCard('active');

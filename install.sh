@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# ArrHub — Master Installer v3.15.21
+# ArrHub — Master Installer v3.15.24
 # =============================================================================
 #
 # ONE-COMMAND INSTALL (dev branch — always uses latest dev code):

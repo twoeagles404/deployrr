@@ -4,7 +4,7 @@
 > One `curl | sudo bash` install. Pure Bash TUI + real-time Flask WebUI. **101 apps across 17 categories.** MIT licensed.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.12.0-blue)](https://github.com/twoeagles404/arrhub/releases)
+[![Version](https://img.shields.io/badge/version-3.15.24-blue)](https://github.com/twoeagles404/arrhub/releases)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-twoeagles404%2Farrhub-blue)](https://github.com/twoeagles404/arrhub/pkgs/container/arrhub)
 
 ---
@@ -21,8 +21,12 @@
 - **Stack Manager** — view per-app compose files and deployment history
 - **Updates tab** — check for image updates, pull latest with one click
 - **Backup tab** — one-click config backup and restore
-- **RSS & Live News** — CNN, BBC, Al Jazeera, Sky News, Sports, Tech, Science, YouTube feeds + 6 YouTube live news streams (BBC, Al Jazeera, Sky News, Bloomberg, DW, France 24); collapsible per-category in the All tab
-- **Draggable dashboard** — Overview panels are drag-and-drop resizable widgets (GridStack); click "Edit Layout" to rearrange and resize; layout saved per-browser
+- **RSS & Feeds** — Reddit (with OAuth for NSFW), YouTube, HackerNews, Twitter/X via proxy, RSS sources; collapsible per-category in the All tab
+- **Football Hub** — Live Premier League table, team fixture panels with upcoming + past results, team news; covers PL, La Liga, Bundesliga, Serie A, Ligue 1, MLS, Champions League, Europa League, World Cup, Copa America, AFCON
+- **IPTV Player** — Built-in HLS player; paste any M3U8 URL or use free channel links
+- **Clean CSS Grid dashboard** — Overview panels in a fixed Glance-style 2-column grid; Gauges, Weather (7-day forecast), System Info, Service Cards, Infrastructure, Logs, Containers, Service Launcher
+- **Glance-style weather** — 7-day forecast grid with emoji icons, hi/lo temps per day
+- **Twitter/X feed** — Server-side proxy via twitterwebviewer.com strips X-Frame-Options; toggle Cards/Web Viewer mode
 - **Themes & appearance** — 5 built-in themes (Dark, Light, Nord, Catppuccin, Dracula), 6 accent colors, custom background image with blur/overlay; persisted to localStorage
 - **Service cards** — Radarr upcoming movies, Sonarr upcoming episodes, Plex active streams, Seerr/Overseerr requests on the Overview page
 - **Alerts bar** — automatic warnings for down containers and high disk usage
@@ -30,7 +34,7 @@
 - **Mobile responsive** — bottom nav, hamburger sidebar, touch-friendly at any screen size
 - **Favorites** — star apps in the catalog; pinned to top of Deploy tab (localStorage)
 - **Port conflict detection** — auto-reassigns ports before deploying
-- **Settings tab** — config dir, media dir, timezone, PUID/PGID, service API keys, appearance
+- **Settings tab** — config dir, media dir, timezone, PUID/PGID, service API keys, Reddit OAuth credentials, weather location, appearance
 - **Tailscale integration** — install from PVE host shell (recommended) or inside LXC; connect, manage mesh VPN from the TUI
 - **No auth required** — designed for trusted LAN use (optional bearer token available)
 - **SQLite persistence** — settings and deploy history at `/data/arrhub.db`

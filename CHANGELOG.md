@@ -6,6 +6,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.28] — 2026-03-17
+
+### Fixed
+- **Intelligent Port Manager — intra-session conflict prevention** — deploying multiple apps in
+  one session no longer causes two containers to receive the same host port. `find_free_port` and
+  `resolve_ports` now use `_pm_port_available`, which checks both the live socket table **and**
+  an in-session reservation table (`_PM_SESSION_RESERVED`). Every assigned port is immediately
+  reserved so the next app in the same deployment can't claim it before any container has started.
+- **Port Manager syntax bug** — `_pm_reserve_port` had an unclosed string literal (`"${2:-?"`)
+  that would cause a bash parse error in Bash 4; corrected to `"${2:-unknown}"`.
+- **`resolve_ports` now respects session reservations** — previously called the removed
+  `port_in_use` helper; updated to use `_pm_port_available` + `_pm_reserve_port` so the same
+  conflict-prevention logic applies to multi-port mappings (e.g. qBittorrent 8090+6881).
+
+### Added
+- `_pm_port_available <port>` — unified check: session-reserved OR host socket in use → false.
+- `_pm_reserve_port <port> <app_id>` — marks a port as taken for the current session.
+- `_pm_session_owner <port>` — returns the app that reserved a port this session (for logging).
+- `_pm_is_hardcoded_port <port>` — prevents any app from being auto-assigned a system/infra port
+  (SSH 22, HTTP 80/443, Proxmox WebUI 8006, DB ports, etc.).
+- `_PM_CTR_PORT` — reference map of known container-internal ports for 30+ apps.
+- `_PM_APP_ENV_PORT` — marks apps (e.g. qBittorrent via `WEBUI_PORT`) that can shift their
+  internal port via an environment variable.
+
+---
+
 ## [3.15.27] — 2026-03-17
 
 ### Fixed

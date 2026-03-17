@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.15.27 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.15.28 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.15.27"
+VERSION="3.15.28"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -494,6 +494,7 @@ port_in_use() {
 # Knowledge base: ports that belong to well-known services and must NEVER be
 # reassigned even if currently unused (they own the port by convention).
 declare -A _PM_HARDCODED=(
+    # OS / system services — these own their ports at the kernel level
     [nginx]=80       [apache2]=80      [httpd]=80       [caddy]=80
     [nginx-ssl]=443  [apache-ssl]=443  [haproxy]=443
     [mysql]=3306     [mariadb]=3306    [mysqld]=3306
@@ -508,7 +509,60 @@ declare -A _PM_HARDCODED=(
     [ftp]=21         [vsftpd]=21
     [imap]=143       [imaps]=993
     [pop3]=110       [pop3s]=995
+    # Proxmox / infrastructure — never reassign these
+    [proxmox-webui]=8006
 )
+
+# ── Known container internal ports (CONTAINER side — cannot change without env var) ──
+# "hardcoded" = the app always listens on this port internally; only the HOST port is flexible.
+# "flexible"  = the app respects an env var to change its internal listening port.
+declare -A _PM_CTR_PORT=(
+    [sonarr]="8989"       [radarr]="7878"    [lidarr]="8686"
+    [prowlarr]="9696"     [bazarr]="6767"    [whisparr]="6969"
+    [jellyfin]="8096"     [plex]="32400"     [navidrome]="4533"
+    [tautulli]="8181"     [seerr]="5055"     [overseerr]="5055"
+    [boxarr]="8989"       [notifiarr]="5454" [recyclarr]=""
+    [uptime-kuma]="3001"  [dozzle]="8080"    [scrutiny]="8080"
+    [portainer]="9000"    [nginx-proxy]="80" [traefik]="8080"
+    [unpackerr]=""        [launcharr]="3333"
+    [qbittorrent]="8080"  [sabnzbd]="8080"   [nzbget]="6789"
+    [transmission]="9091" [deluge]="8112"    [aria2]="6800"
+    [jdownloader2]="5800" [mylar3]="8090"    [readarr]="8787"
+    [flaresolverr]="8191" [komga]="8080"     [kavita]="5000"
+    [audiobookshelf]="80" [immich]="2283"    [nextcloud]="80"
+    [pinchflat]="8945"    [homeassistant]="8123"
+    [arrhub]="9999"
+)
+
+# Apps that CAN change their internal port via an env var
+declare -A _PM_APP_ENV_PORT=(
+    [qbittorrent]="WEBUI_PORT"   # linuxserver qbit respects WEBUI_PORT
+)
+
+# ── In-session port reservation table ────────────────────────────────────────
+# Prevents two apps in the SAME deployment from being assigned the same host port.
+declare -A _PM_SESSION_RESERVED=()   # port -> "app_id (reason)"
+
+_pm_reserve_port() {
+    local port="$1" app="${2:-unknown}"
+    _PM_SESSION_RESERVED["$port"]="${app}"
+}
+
+_pm_session_owner() {
+    local port="$1"
+    echo "${_PM_SESSION_RESERVED[$port]:-}"
+}
+
+_pm_port_available() {
+    # Returns 0 (true) if port is available, 1 (false) if taken
+    local port="$1"
+    # 1. Already reserved this session?
+    [[ -n "${_PM_SESSION_RESERVED[$port]:-}" ]] && return 1
+    # 2. Currently in use on the host?
+    if ss -tlnp 2>/dev/null | grep -qE ":${port}[[:space:]]"; then return 1; fi
+    if ss -tlnp 2>/dev/null | grep -q ":${port}$"; then return 1; fi
+    return 0
+}
 
 # Check if a port is owned by a hardcoded/system service
 _pm_is_hardcoded_port() {
@@ -533,61 +587,45 @@ _pm_port_owner() {
 }
 
 # Core function: find a free port intelligently
-# Usage: find_free_port <desired_port> [range_start] [range_end]
+# Usage: find_free_port <desired_port> [range_start] [range_end] [app_id]
 find_free_port() {
     local desired="${1:-8080}"
     local range_start="${2:-8000}"
     local range_end="${3:-9900}"
+    local app_id="${4:-unknown}"
 
-    # 1. If desired port is free → use it (always first choice)
-    if ! ss -tlnp 2>/dev/null | grep -q ":${desired} " && \
-       ! ss -tlnp 2>/dev/null | grep -q ":${desired}$"; then
+    # 1. If desired port is free (host + session) → use it immediately
+    if _pm_port_available "$desired" && ! _pm_is_hardcoded_port "$desired"; then
+        _pm_reserve_port "$desired" "$app_id"
         echo "$desired"
         return 0
     fi
 
-    # 2. Port is taken — is it hardcoded?
+    # 2. Port is taken — log WHY
     if _pm_is_hardcoded_port "$desired"; then
-        # Cannot take this port — find alternative in range
-        log WARN "Port ${desired} belongs to a system service (hardcoded) — finding alternative in ${range_start}-${range_end}"
-        for p in $(seq "$range_start" "$range_end"); do
-            if _pm_is_hardcoded_port "$p"; then
-                continue  # skip known system ports
-            fi
-            if ! ss -tlnp 2>/dev/null | grep -q ":${p} " && \
-               ! ss -tlnp 2>/dev/null | grep -q ":${p}$"; then
-                echo "$p"
-                return 0
-            fi
-        done
-        log ERROR "No free ports found in range ${range_start}-${range_end}"
-        echo "$desired"  # return desired as fallback (will likely fail at runtime)
-        return 1
-    fi
-
-    # 3. Port is taken by a flexible (non-hardcoded) process
-    local owner; owner=$(_pm_port_owner "$desired")
-    if [[ -n "$owner" ]]; then
-        log WARN "Port ${desired} in use by '${owner}' — auto-assigning alternative"
+        log WARN "Port ${desired} belongs to a system/infra service (hardcoded) — finding alternative in ${range_start}-${range_end}"
+    elif [[ -n "${_PM_SESSION_RESERVED[$desired]:-}" ]]; then
+        log WARN "Port ${desired} already reserved this session by '${_PM_SESSION_RESERVED[$desired]}' — finding alternative for ${app_id}"
     else
-        log WARN "Port ${desired} in use — auto-assigning alternative"
+        local owner; owner=$(_pm_port_owner "$desired")
+        log WARN "Port ${desired} in use${owner:+ by '${owner}'} — finding alternative for ${app_id}"
     fi
 
-    # Find next free port NOT in hardcoded list and NOT in use
+    # 3. Scan range for first available port
     for p in $(seq "$range_start" "$range_end"); do
         if _pm_is_hardcoded_port "$p"; then
             continue
         fi
-        if ! ss -tlnp 2>/dev/null | grep -q ":${p} " && \
-           ! ss -tlnp 2>/dev/null | grep -q ":${p}$"; then
-            log INFO "Port ${desired} → auto-assigned ${p}"
+        if _pm_port_available "$p"; then
+            _pm_reserve_port "$p" "$app_id"
+            log INFO "PortMaster: ${app_id} ${desired} → ${p}"
             echo "$p"
             return 0
         fi
     done
 
-    log ERROR "PortMaster: No free ports in range ${range_start}-${range_end}"
-    echo "$desired"
+    log ERROR "PortMaster: No free ports in range ${range_start}-${range_end} for ${app_id}"
+    echo "$desired"  # fallback — will likely fail at container start
     return 1
 }
 
@@ -616,14 +654,16 @@ resolve_ports() {
             continue
         fi
 
-        if port_in_use "${host_port}"; then
+        if ! _pm_port_available "${host_port}" || _pm_is_hardcoded_port "${host_port}"; then
             local new_port
-            new_port=$(find_free_port "${host_port}")
-            log WARN "Port ${host_port} in use — reassigning ${id} to ${new_port}:${ctr_port}${proto}"
+            new_port=$(find_free_port "${host_port}" 8000 9900 "${id}")
+            log WARN "Port ${host_port} unavailable — reassigning ${id} to ${new_port}:${ctr_port}${proto}"
             d_msgbox "Port Conflict" \
                 "Port ${host_port} is already in use on this host.\n\n${APP_NAME[$id]:-$id} will use port ${new_port} instead.\n\nAccess it at: http://\$(hostname -I | awk '{print \$1}'):${new_port}"
             resolved+="${new_port}:${ctr_port}${proto} "
         else
+            # Port is free — reserve it so subsequent apps in the same deployment don't grab it
+            _pm_reserve_port "${host_port}" "${id}"
             resolved+="${host_port}:${ctr_port}${proto} "
         fi
     done

@@ -49,9 +49,15 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=8)
 _weather_cache = {"data": None, "ts": 0}
 _rss_cache = {}
 _catalog_cache = {"data": None, "ts": 0}
+_logs_cache    = {"data": None, "ts": 0}   # short-lived; refreshed every 10 s
+_network_cache = {"data": None, "ts": 0}   # refreshed every 30 s
+_overview_static_cache = {"data": None, "ts": 0}  # hostname/kernel/arch — rarely change
 CACHE_WEATHER = 1800  # 30 minutes
 CACHE_RSS = 900       # 15 minutes
 CACHE_CATALOG = 300   # 5 minutes
+CACHE_LOGS = 10       # 10 seconds
+CACHE_NETWORK = 30    # 30 seconds
+CACHE_STATIC = 300    # 5 minutes for hostname/kernel info
 
 # ── Catalog ───────────────────────────────────────────────────────────────────
 # Check multiple locations: volume mount first, then local (for development/baked-in)
@@ -163,12 +169,31 @@ def index():
 
 @app.route("/api/overview")
 def api_overview():
-    """System overview: CPU, memory, load average, uptime."""
+    """System overview: CPU, memory, load average, uptime.
+    Static fields (hostname, kernel, arch) are cached for 5 min.
+    cpu_percent uses non-blocking interval=0 after a warm-up read."""
     try:
-        cpu_pct = psutil.cpu_percent(interval=0.1)
+        # Static info — rarely changes; cache for 5 minutes
+        now = time.time()
+        static = _overview_static_cache.get("data")
+        if not static or now - _overview_static_cache.get("ts", 0) > CACHE_STATIC:
+            static = {
+                "hostname": os.uname().nodename,
+                "os":       os.uname().sysname,
+                "kernel":   os.uname().release,
+                "arch":     os.uname().machine,
+                "python":   "3.12",
+                "cpu_count": psutil.cpu_count(),
+            }
+            _overview_static_cache["data"] = static
+            _overview_static_cache["ts"] = now
+
+        # Non-blocking cpu_percent — first call seeds the counter, returns 0.0
+        # Subsequent calls (SSE already calls this every 2 s) return a real value
+        cpu_pct = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
         load = os.getloadavg() if hasattr(os, 'getloadavg') else (0, 0, 0)
-        uptime = time.time() - psutil.boot_time()
+        uptime = now - psutil.boot_time()
 
         # Temperature
         temps = {}
@@ -179,26 +204,19 @@ def api_overview():
             pass
 
         return jsonify({
-            "hostname": os.uname().nodename,
-            "os": os.uname().sysname,
-            "kernel": os.uname().release,
-            "arch": os.uname().machine,
-            "python": "3.12",
-            "cpu_count": psutil.cpu_count(),
-            "cpu_percent": cpu_pct,
-            "mem_percent": mem.percent,
+            **static,
+            "cpu_percent": round(cpu_pct, 1),
+            "mem_percent": round(mem.percent, 1),
             "mem_used": mem.used,
             "mem_total": mem.total,
             "memory": {
-                "total": mem.total,
-                "used": mem.used,
-                "percent": mem.percent,
-                "available": mem.available
+                "total": mem.total, "used": mem.used,
+                "percent": round(mem.percent, 1), "available": mem.available
             },
-            "load_avg": {"1m": load[0], "5m": load[1], "15m": load[2]},
+            "load_avg": {"1m": round(load[0], 2), "5m": round(load[1], 2), "15m": round(load[2], 2)},
             "uptime_seconds": uptime,
             "uptime_display": _format_uptime(uptime),
-            "temperatures": temps
+            "temperatures": temps,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -270,7 +288,10 @@ def api_storage():
 
 @app.route("/api/network")
 def api_network():
-    """Network interfaces and statistics."""
+    """Network interfaces and statistics — cached for 30 s."""
+    _now = time.time()
+    if _network_cache["data"] and _now - _network_cache["ts"] < CACHE_NETWORK:
+        return jsonify(_network_cache["data"])
     try:
         interfaces = []
         addrs_by_name = psutil.net_if_addrs()
@@ -310,6 +331,14 @@ def api_network():
             },
             "connections": connections
         })
+        _network_cache["data"] = {"interfaces": interfaces, "io": {
+            "bytes_sent": net_io.bytes_sent, "bytes_recv": net_io.bytes_recv,
+            "packets_sent": net_io.packets_sent, "packets_recv": net_io.packets_recv,
+            "errin": net_io.errin, "errout": net_io.errout,
+            "dropin": net_io.dropin, "dropout": net_io.dropout,
+        }, "connections": connections}
+        _network_cache["ts"] = _now
+        return jsonify(_network_cache["data"])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -514,10 +543,15 @@ def api_hardware():
 
 @app.route("/api/logs")
 def api_logs():
-    """System logs from Docker containers, ArrHub logs, and host."""
+    """System logs from Docker containers, ArrHub logs, and host. Cached 10 s for generic requests."""
+    lines_count = request.args.get('lines', 100, type=int)
+    unit = request.args.get('unit', '')
+    # Only cache the generic multi-container request (no unit filter)
+    _now = time.time()
+    if not unit and _logs_cache["data"] and _now - _logs_cache["ts"] < CACHE_LOGS:
+        cached = _logs_cache["data"]
+        return jsonify({"lines": cached[-lines_count:]})
     try:
-        lines_count = request.args.get('lines', 100, type=int)
-        unit = request.args.get('unit', '')
 
         log_lines = []
 
@@ -583,13 +617,36 @@ def api_logs():
         if not log_lines:
             log_lines = ["No logs available. Container logs will appear here when Docker is running."]
 
-        # Sort and return last N
+        # Sort and cache
         log_lines.sort()
-        log_lines = log_lines[-lines_count:]
+        if not unit:
+            _logs_cache["data"] = log_lines
+            _logs_cache["ts"] = _now
 
-        return jsonify({"lines": log_lines})
+        return jsonify({"lines": log_lines[-lines_count:]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/dashboard")
+def api_dashboard():
+    """Combined dashboard endpoint — returns logs + network in one round-trip.
+    Called by the overview page every 30 s instead of two separate requests."""
+    _now = time.time()
+    # Logs (cached separately)
+    if _logs_cache["data"] and _now - _logs_cache["ts"] < CACHE_LOGS:
+        log_lines = _logs_cache["data"][-12:]
+    else:
+        log_lines = []
+    # Network IO (cached separately)
+    if _network_cache["data"] and _now - _network_cache["ts"] < CACHE_NETWORK:
+        net_io = _network_cache["data"].get("io", {})
+    else:
+        try:
+            nio = psutil.net_io_counters()
+            net_io = {"bytes_sent": nio.bytes_sent, "bytes_recv": nio.bytes_recv}
+        except Exception:
+            net_io = {}
+    return jsonify({"logs": log_lines, "net_io": net_io, "ts": int(_now)})
 
 @app.route("/api/catalog")
 def api_catalog():
@@ -996,7 +1053,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.27",
+            "version": "3.15.28",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -4640,7 +4697,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.27</div>
+      <div class="sb-version">v3.15.28</div>
     </div>
   </div>
 
@@ -10601,39 +10658,93 @@ function toggleLogsAutoRefresh(btn) {
     }
 }
 
-// ── Polling ───────────────────────────────────────────────────────────
-// Active containers tab: refresh full list every 8s
-setInterval(() => {
-    if (currentTab === 'containers') loadContainers();
-}, 8000);
+// ── Combined dashboard refresh (replaces separate logs + network calls) ──────
+async function loadDashboardData() {
+    // Only fetch when overview is active to save server load
+    if (currentTab !== 'overview') return;
+    try {
+        const r = await fetch(API + '/api/dashboard');
+        const d = await r.json();
+        // Logs
+        const el = document.getElementById('ov-log-excerpt');
+        if (el && d.logs && d.logs.length) {
+            el.innerHTML = d.logs.slice(-12).map(line => {
+                const u = line.toUpperCase();
+                let col = 'var(--text2)';
+                if (/\b(ERR(?:OR)?|CRITICAL|FATAL)\b/.test(u))       col = 'var(--red)';
+                else if (/\b(WARN(?:ING)?)\b/.test(u))                col = 'var(--yellow,#e3b341)';
+                else if (/\b(INFO|NOTICE|STARTED|DONE|OK)\b/.test(u)) col = 'var(--green)';
+                else if (/\b(DEBUG|TRACE)\b/.test(u))                 col = 'var(--text3)';
+                const safe = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                return `<span style="color:${col}">${safe}</span>`;
+            }).join('\n');
+        }
+        // Network IO
+        const io = d.net_io || {};
+        const sent = io.bytes_sent || 0, recv = io.bytes_recv || 0, total = sent + recv || 1;
+        setEl('ov-net-sent', fmtBytes(sent));
+        setEl('ov-net-recv', fmtBytes(recv));
+        const sentBar = document.getElementById('net-sent-bar');
+        const recvBar = document.getElementById('net-recv-bar');
+        if (sentBar) sentBar.style.width = Math.max(4, Math.round(sent/total*100)) + '%';
+        if (recvBar) recvBar.style.width = Math.max(4, Math.round(recv/total*100)) + '%';
+    } catch(e) {}
+}
 
-// Slower polls for other tabs
+// ── Polling ───────────────────────────────────────────────────────────
+// Pause all non-critical polling when the browser tab is hidden
+let _pollPaused = false;
+document.addEventListener('visibilitychange', () => {
+    _pollPaused = document.hidden;
+});
+
+// Active containers tab: refresh full list every 10s
 setInterval(() => {
+    if (!_pollPaused && currentTab === 'containers') loadContainers();
+}, 10000);
+
+// Slower polls for other tabs (every 15s)
+setInterval(() => {
+    if (_pollPaused) return;
     if (currentTab === 'storage') loadStorage();
     else if (currentTab === 'stornet') { loadStorage(); loadNetwork(); }
     else if (currentTab === 'overview') loadDashboardContainers();
-}, 10000);
+}, 15000);
 
-// Background stats refresh for running containers (every 30s when NOT on containers tab)
+// Background stats refresh for running containers (every 45s when NOT on containers tab)
 setInterval(() => {
-    if (currentTab !== 'containers') {
+    if (!_pollPaused && currentTab !== 'containers') {
         allContainers.filter(c => c.status === 'running').forEach(c => loadCtrStats(c.name, false));
     }
-}, 30000);
+}, 45000);
 
-// ── Boot ──────────────────────────────────────────────────────────────
+// Combined dashboard data (logs + network) — every 30s, only when on overview tab
+setInterval(() => { if (!_pollPaused) loadDashboardData(); }, 30000);
+
+// Service integration cards — every 60s (these call external services; no need to hammer)
+setInterval(() => {
+    if (!_pollPaused && currentTab === 'overview') {
+        loadRadarrCard(); loadSonarrCard(); loadPlexCard(); loadSeerrCard(); loadQbitCard('active');
+    }
+}, 60000);
+
+// ── Boot — staggered to avoid stampeding a single gunicorn worker ─────
 updateGreeting();
 try { initGauges(); } catch(e) { console.warn('Chart.js not ready, gauges disabled:', e); }
-loadOverview();
-loadContainers();   // also populates allContainers for alerts
-loadWeather();
-loadDockerInfo();
-loadOverviewExtras();   // also calls loadDashboardContainers()
-setInterval(loadOverviewExtras, 15000);  // refresh logs + network every 15 s
-startSSE();
-// Initial alerts render (will be updated once containers load)
-setTimeout(refreshAlerts, 2000);
-// Fallback: if GridStack doesn't load, show widgets after 3s
+startSSE();                                    // t=0  — SSE handles live CPU/RAM/load
+loadOverview();                                // t=0  — initial static info (hostname etc.)
+setTimeout(loadContainers,   300);             // t=300ms
+setTimeout(loadWeather,      700);             // t=700ms
+setTimeout(loadDockerInfo,  1100);             // t=1.1s
+setTimeout(() => {                             // t=1.8s — first extras pass
+    loadDashboardData();
+    loadDashboardContainers();
+}, 1800);
+setTimeout(() => {                             // t=3s — service cards last (external APIs)
+    loadRadarrCard(); loadSonarrCard(); loadPlexCard(); loadSeerrCard(); loadQbitCard('active');
+}, 3000);
+setTimeout(refreshAlerts, 2500);
+// Fallback: ensure dashboard is visible after 3s
 setTimeout(() => {
     const grid = document.getElementById('ov-grid');
     if (grid && !grid.classList.contains('gs-ready')) {

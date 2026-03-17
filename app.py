@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from functools import wraps
 import psutil
 import requests
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, make_response
 
 app = Flask(__name__)
 
@@ -987,6 +987,51 @@ def api_settings_set():
         if key in data:
             _db_set(key, data[key])
     return jsonify({"status": "saved"})
+
+@app.route("/api/config/export")
+def api_config_export():
+    """Export all settings from the database as a JSON backup."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        payload = {
+            "arrhub_backup": True,
+            "version": "3.15.27",
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "settings": {k: v for k, v in rows},
+        }
+        resp = make_response(json.dumps(payload, indent=2))
+        resp.headers["Content-Type"] = "application/json"
+        resp.headers["Content-Disposition"] = f'attachment; filename="arrhub-config-{time.strftime("%Y%m%d")}.json"'
+        return resp
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/config/import", methods=["POST"])
+@require_auth
+def api_config_import():
+    """Restore settings from a JSON backup (writes every key/value pair)."""
+    data = request.json or {}
+    if not data.get("arrhub_backup"):
+        return jsonify({"error": "Not a valid ArrHub backup file"}), 400
+    settings = data.get("settings", {})
+    if not settings:
+        return jsonify({"error": "No settings found in backup"}), 400
+    # Skip internal/runtime keys that should not be restored
+    _skip = {"_schema_version", "session_secret"}
+    count = 0
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            for key, value in settings.items():
+                if isinstance(key, str) and key not in _skip:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                        (key, str(value) if value is not None else "")
+                    )
+                    count += 1
+        return jsonify({"ok": True, "restored": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/updates")
 def api_updates():
@@ -2853,24 +2898,24 @@ def api_epl_standings():
 
 @app.route("/api/epl/matches")
 def api_epl_matches():
-    """Fetch upcoming and recent PL matches from ESPN free API."""
+    """Fetch upcoming and recent matches from ESPN free API (supports any league)."""
     import urllib.request as _ur, json as _jr
-    mtype = request.args.get("type", "upcoming")  # upcoming | results
-    cache_key = f"epl_matches_{mtype}"
+    mtype  = request.args.get("type", "upcoming")  # upcoming | results
+    league = request.args.get("league", "eng.1").strip()
+    cache_key = f"epl_matches_{mtype}_{league}"
     if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 600:
         return jsonify(_epl_cache[cache_key]["data"])
     try:
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        # ESPN scoreboard: dates param format YYYYMMDD, range up to 7 days
         import datetime as _dt
         today = _dt.date.today()
         if mtype == "results":
-            # Fetch last 3 matchdays of results
-            dates_param = "&".join(f"dates={(today - _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(14))
-            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?{dates_param}&limit=50"
+            # Fetch results from last 21 days
+            dates_param = "&".join(f"dates={(today - _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(21))
         else:
-            dates_param = "&".join(f"dates={(today + _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(21))
-            url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?{dates_param}&limit=50"
+            # Fetch upcoming fixtures for next 60 days to capture full season run-in
+            dates_param = "&".join(f"dates={(today + _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(60))
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?{dates_param}&limit=100"
         req = _ur.Request(url, headers={"User-Agent": ua})
         with _ur.urlopen(req, timeout=12) as r:
             data = _jr.loads(r.read())
@@ -3667,7 +3712,17 @@ html { scroll-behavior: smooth; }
 .dash-cell > .panel,
 .dash-cell > .metric-grid,
 .dash-cell > div { margin:0; }
+/* Each dashboard card has a max-height and scrolls internally */
+.dash-cell { max-height:380px; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; scrollbar-color:var(--border) transparent; border-radius:var(--r,8px); }
 .dash-cell .panel { height:auto; overflow:visible; }
+/* Per-cell overrides */
+#dash-gauges  { max-height:160px; }
+#dash-weather { max-height:280px; }
+#dash-launcher{ max-height:220px; }
+#dash-services{ max-height:420px; }
+#dash-ctrs    { max-height:380px; }
+#dash-logs    { max-height:340px; }
+#dash-infra   { max-height:360px; }
 @media(max-width:768px){
   .ov-dash{
     grid-template-columns:1fr;
@@ -4585,7 +4640,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.26</div>
+      <div class="sb-version">v3.15.27</div>
     </div>
   </div>
 
@@ -5501,6 +5556,28 @@ body.sse-disconnected #app{padding-top:38px;}
         <button class="btn-primary" style="margin-top:16px" onclick="saveSvcSettings()">Save Integrations</button>
       </div>
 
+      <!-- ── Config Backup & Restore ── -->
+      <div class="panel">
+        <div class="panel-title">💾 Config Backup & Restore</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:14px">
+          Export all your settings (API keys, URLs, credentials) to a JSON file. Import it to restore after a fresh install or container rebuild.
+          <strong style="color:var(--text2)"> Keep your backup file safe — it contains credentials.</strong>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+          <button class="btn-primary" onclick="exportConfig()" style="padding:8px 18px">
+            ⬇️ Export Config
+          </button>
+          <button class="btn" onclick="importConfig()" style="padding:8px 18px">
+            ⬆️ Import Config
+          </button>
+          <span id="config-backup-status" style="font-size:11px;color:var(--green)"></span>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:var(--text3)">
+          Export saves: service URLs, API keys, Reddit credentials, weather city, downloader settings, and all other server-side settings.<br>
+          <em>Appearance/theme preferences are saved locally in your browser and are not included.</em>
+        </div>
+      </div>
+
       <!-- ── Appearance ── -->
       <div class="panel">
         <div class="panel-title">🎨 Appearance</div>
@@ -5701,23 +5778,21 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
       </div>
 
-      <!-- ── IPTV BROWSE CHANNELS MODAL (embeds moviebite.cc for channel discovery) ── -->
-      <div id="iptv-browse-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:900;align-items:center;justify-content:center" onclick="if(event.target===this)iptvHideBrowse()">
-        <div style="position:relative;width:min(1100px,97vw);height:90vh;background:var(--bg2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
-            <div>
-              <span id="iptv-browse-title" style="font-size:13px;font-weight:600">📺 Browse Channels</span>
-              <span style="font-size:11px;color:var(--text3);margin-left:10px">Find a channel → add it with ＋ Channel</span>
-            </div>
-            <button onclick="iptvHideBrowse()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:2px 6px">✕</button>
+      <!-- ── IPTV BROWSE CHANNELS PANEL (inline, not a modal overlay) ── -->
+      <div id="iptv-browse-modal" style="display:none;margin-top:12px;border-radius:12px;overflow:hidden;background:var(--bg2);border:1px solid var(--border);flex-direction:column">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--surface)">
+          <div>
+            <span id="iptv-browse-title" style="font-size:13px;font-weight:600">📺 Browse Channels</span>
+            <span style="font-size:11px;color:var(--text3);margin-left:10px">Find a channel → add it with ＋ Channel</span>
           </div>
-          <div style="flex:1;overflow:hidden;position:relative">
-            <iframe id="iptv-browse-iframe" src="" frameborder="0" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen"></iframe>
-          </div>
-          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;background:var(--surface)">
-            <span style="font-size:11px;color:var(--text2)">Channel URL: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:10px">live.moviebite.cc/channels/<b>SLUG</b></code></span>
-            <button onclick="iptvHideBrowse();iptvShowAddChannel()" class="btn-primary" style="padding:5px 14px;font-size:12px;margin-left:auto">＋ Add Channel</button>
-          </div>
+          <button onclick="iptvHideBrowse()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:2px 6px" title="Close browser">✕</button>
+        </div>
+        <div style="height:560px;overflow:hidden;position:relative">
+          <iframe id="iptv-browse-iframe" src="" frameborder="0" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen"></iframe>
+        </div>
+        <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;background:var(--surface)">
+          <span style="font-size:11px;color:var(--text2)">Channel URL: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:10px">live.moviebite.cc/channels/<b>SLUG</b></code></span>
+          <button onclick="iptvHideBrowse();iptvShowAddChannel()" class="btn-primary" style="padding:5px 14px;font-size:12px;margin-left:auto">＋ Add Channel</button>
         </div>
       </div>
 
@@ -9137,31 +9212,10 @@ async function footballLoadStandings() {
 }
 
 async function _footballFetchMatches(league, type) {
-    const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+league+'/scoreboard?limit=100');
+    // Use server-side proxy which does a 60-day lookahead for upcoming / 21-day for results
+    const r = await fetch(API + '/api/epl/matches?type=' + encodeURIComponent(type) + '&league=' + encodeURIComponent(league));
     const raw = await r.json();
-    const matches = [];
-    for (const event of (raw.events || [])) {
-        const comp = (event.competitions || [])[0] || {};
-        const competitors = comp.competitors || [];
-        const home = competitors.find(c => c.homeAway === 'home') || {};
-        const away = competitors.find(c => c.homeAway === 'away') || {};
-        const ht = home.team || {}, at = away.team || {};
-        const statusName = comp.status?.type?.name || '';
-        const isFinal = statusName === 'STATUS_FINAL';
-        const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
-        if (type === 'results' && !isFinal) continue;
-        if (type === 'upcoming' && isFinal) continue;
-        matches.push({
-            home: ht.shortDisplayName || ht.displayName || '?', homeId: ht.id || '',
-            homeCrest: ht.logo || '',
-            away: at.shortDisplayName || at.displayName || '?', awayId: at.id || '',
-            awayCrest: at.logo || '', date: event.date || '',
-            status: isLive ? 'IN_PLAY' : (isFinal ? 'FINISHED' : 'SCHEDULED'),
-            scoreH: (isFinal || isLive) ? parseInt(home.score || 0) : null,
-            scoreA: (isFinal || isLive) ? parseInt(away.score || 0) : null,
-        });
-    }
-    return matches;
+    return raw.matches || [];
 }
 
 function _footballMatchRow(m) {
@@ -9485,8 +9539,8 @@ function iptvSetSource(src) {
     if (src === 'bintv' || src === 'daddylive') {
         iptvReload();
         const label = src === 'bintv' ? 'BinTV' : 'DaddyLive';
-        showToast(`Browse ${label} to find channels, then add them with + Channel`, 'info');
-        iptvBrowseChannels();
+        showToast(`${label} selected — click Browse to find channels`, 'info', 3000);
+        // Do NOT auto-open the browse overlay; user clicks Browse when they want it
     } else {
         iptvReload();
     }
@@ -9793,18 +9847,23 @@ function iptvReload() {
 }
 
 function iptvBrowseChannels() {
-    const modal = document.getElementById('iptv-browse-modal');
+    const panel = document.getElementById('iptv-browse-modal');
     const iframe = document.getElementById('iptv-browse-iframe');
-    if (!modal) return;
-    if (iframe) {
+    if (!panel) return;
+    const isVisible = panel.style.display === 'flex';
+    if (isVisible) { iptvHideBrowse(); return; }  // toggle off if already open
+    if (iframe && !iframe.src) {
         const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/', daddylive: 'https://daddylive.cv/channel' };
         iframe.src = urls[_iptvSource] || urls.moviebite;
     }
-    modal.style.display = 'flex';
+    panel.style.display = 'flex';
+    panel.style.flexDirection = 'column';
+    // Scroll the panel into view smoothly
+    setTimeout(() => panel.scrollIntoView({behavior:'smooth', block:'nearest'}), 50);
 }
 function iptvHideBrowse() {
-    const modal = document.getElementById('iptv-browse-modal');
-    if (modal) modal.style.display = 'none';
+    const panel = document.getElementById('iptv-browse-modal');
+    if (panel) panel.style.display = 'none';
 }
 
 // ── Add / delete custom channels ────────────────────────────────────────────
@@ -10392,6 +10451,55 @@ async function saveRedditCredentials() {
     } catch(e) {
         if (st) st.textContent = 'Failed to save';
     }
+}
+
+// ── Config Backup & Restore ─────────────────────────────────────────────────
+async function exportConfig() {
+    const st = document.getElementById('config-backup-status');
+    try {
+        const r = await fetch(API + '/api/config/export');
+        if (!r.ok) throw new Error('Export failed: ' + r.status);
+        const blob = await r.blob();
+        const dt = new Date().toISOString().slice(0, 10);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `arrhub-config-${dt}.json`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        if (st) { st.textContent = '✓ Config exported'; setTimeout(() => { if (st) st.textContent = ''; }, 4000); }
+        showToast('Config exported successfully', 'success', 3000);
+    } catch(e) {
+        if (st) st.textContent = 'Export failed';
+        showToast('Export failed: ' + e.message, 'error', 4000);
+    }
+}
+
+function importConfig() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.json';
+    input.onchange = async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const st = document.getElementById('config-backup-status');
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            if (!data.arrhub_backup) throw new Error('Not a valid ArrHub backup file');
+            const r = await fetch(API + '/api/config/import', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            const result = await r.json();
+            if (result.error) throw new Error(result.error);
+            if (st) st.textContent = `✓ Restored ${result.restored} settings — reloading…`;
+            showToast(`Restored ${result.restored} settings — reloading page…`, 'success', 3000);
+            setTimeout(() => location.reload(), 2800);
+        } catch(err) {
+            if (st) { st.style.color = 'var(--red)'; st.textContent = 'Import failed: ' + err.message; }
+            showToast('Import failed: ' + err.message, 'error', 5000);
+        }
+    };
+    input.click();
 }
 
 async function loadDashboardContainers() {

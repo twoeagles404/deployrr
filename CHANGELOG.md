@@ -6,6 +6,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.27] — 2026-03-17
+
+### Fixed
+- **Dashboard overview cards now scroll internally** — each widget cell has a capped max-height
+  (380px default, tuned per-cell) and scrolls its content rather than stretching the page.
+- **Football fixtures now show upcoming matches** — the JS fixtures loader was hitting the ESPN
+  scoreboard endpoint directly with no date filter (returning only today's games). It now uses
+  the server-side proxy which does a 60-day date-range scan for upcoming fixtures and 21 days for
+  results. The Python endpoint also now accepts a `league` parameter so all leagues work.
+- **IPTV browse panel no longer pops out as a fullscreen overlay** — Browse Channels is now an
+  inline panel that slides open below the IPTV controls inside the tab, not a fixed modal covering
+  the whole screen. Switching to BinTV or DaddyLive no longer auto-opens the browser.
+- **Config Backup & Restore** — new Settings panel with Export Config (downloads a JSON backup of
+  all server-side settings: API keys, URLs, credentials) and Import Config (uploads and restores
+  from a backup file, then reloads the page). Useful after fresh installs or container rebuilds.
+
+### Added
+- `GET /api/config/export` — streams all database settings as a dated JSON attachment.
+- `POST /api/config/import` — restores settings from a backup JSON, skipping internal keys.
+
+---
+
 ## [3.15.26] — 2026-03-17
 
 ### Fixed

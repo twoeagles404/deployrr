@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.10.0 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.15.25 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.13.0"
+VERSION="3.15.25"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -178,6 +178,7 @@ load_catalog() {
     define_app qbittorrent  "qBittorrent"  "lscr.io/linuxserver/qbittorrent:latest"  "Downloaders"  "8090:8080 6881:6881 6881:6881/udp"
     APP_CUSTOM_SVC[qbittorrent]="yes"
     define_app transmission "Transmission" "lscr.io/linuxserver/transmission:latest" "Downloaders"  "9091:9091 51413:51413 51413:51413/udp"
+    APP_CUSTOM_SVC[transmission]="yes"
     define_app deluge       "Deluge"       "lscr.io/linuxserver/deluge:latest"       "Downloaders"  "8112:8112 6881:6881 6881:6881/udp"
     define_app sabnzbd      "SABnzbd"      "lscr.io/linuxserver/sabnzbd:latest"      "Downloaders"  "8090:8080"
     define_app nzbget       "NZBget"       "lscr.io/linuxserver/nzbget:latest"       "Downloaders"  "6789:6789"
@@ -489,21 +490,105 @@ port_in_use() {
 }
 
 # Find next available port starting from $1, incrementing by 1
-find_free_port() {
+# ── PortMaster — intelligent port assignment ─────────────────────────────────
+# Knowledge base: ports that belong to well-known services and must NEVER be
+# reassigned even if currently unused (they own the port by convention).
+declare -A _PM_HARDCODED=(
+    [nginx]=80       [apache2]=80      [httpd]=80       [caddy]=80
+    [nginx-ssl]=443  [apache-ssl]=443  [haproxy]=443
+    [mysql]=3306     [mariadb]=3306    [mysqld]=3306
+    [postgres]=5432  [postgresql]=5432 [pg]=5432
+    [redis]=6379     [redis-server]=6379
+    [mongodb]=27017  [mongod]=27017
+    [elasticsearch]=9200
+    [rabbitmq]=5672  [rabbitmq-server]=5672
+    [smtp]=25        [postfix]=25      [sendmail]=25
+    [dns]=53         [named]=53        [bind]=53       [dnsmasq]=53
+    [ssh]=22         [sshd]=22
+    [ftp]=21         [vsftpd]=21
+    [imap]=143       [imaps]=993
+    [pop3]=110       [pop3s]=995
+)
+
+# Check if a port is owned by a hardcoded/system service
+_pm_is_hardcoded_port() {
     local port="$1"
-    local max_tries="${2:-50}"
-    local i=0
-    while (( i < max_tries )); do
-        if ! port_in_use "${port}"; then
-            echo "${port}"
+    for svc in "${!_PM_HARDCODED[@]}"; do
+        if [[ "${_PM_HARDCODED[$svc]}" == "$port" ]]; then
+            return 0  # yes, hardcoded
+        fi
+    done
+    return 1  # not hardcoded
+}
+
+# Check who owns a port (returns process name or empty)
+_pm_port_owner() {
+    local port="$1"
+    # Try ss first, fall back to netstat, then /proc
+    if command -v ss &>/dev/null; then
+        ss -tlnp 2>/dev/null | awk -v p=":$port " '$4 ~ p {match($0,/users:\(\("[^"]+"/); if(RSTART) {s=substr($0,RSTART+9); gsub(/".*/,"",s); print s; exit}}'
+    elif command -v netstat &>/dev/null; then
+        netstat -tlnp 2>/dev/null | awk -v p=":$port " '$4 ~ p {split($NF,a,"/"); print a[2]; exit}'
+    fi
+}
+
+# Core function: find a free port intelligently
+# Usage: find_free_port <desired_port> [range_start] [range_end]
+find_free_port() {
+    local desired="${1:-8080}"
+    local range_start="${2:-8000}"
+    local range_end="${3:-9900}"
+
+    # 1. If desired port is free → use it (always first choice)
+    if ! ss -tlnp 2>/dev/null | grep -q ":${desired} " && \
+       ! ss -tlnp 2>/dev/null | grep -q ":${desired}$"; then
+        echo "$desired"
+        return 0
+    fi
+
+    # 2. Port is taken — is it hardcoded?
+    if _pm_is_hardcoded_port "$desired"; then
+        # Cannot take this port — find alternative in range
+        log WARN "Port ${desired} belongs to a system service (hardcoded) — finding alternative in ${range_start}-${range_end}"
+        for p in $(seq "$range_start" "$range_end"); do
+            if _pm_is_hardcoded_port "$p"; then
+                continue  # skip known system ports
+            fi
+            if ! ss -tlnp 2>/dev/null | grep -q ":${p} " && \
+               ! ss -tlnp 2>/dev/null | grep -q ":${p}$"; then
+                echo "$p"
+                return 0
+            fi
+        done
+        log ERROR "No free ports found in range ${range_start}-${range_end}"
+        echo "$desired"  # return desired as fallback (will likely fail at runtime)
+        return 1
+    fi
+
+    # 3. Port is taken by a flexible (non-hardcoded) process
+    local owner; owner=$(_pm_port_owner "$desired")
+    if [[ -n "$owner" ]]; then
+        log WARN "Port ${desired} in use by '${owner}' — auto-assigning alternative"
+    else
+        log WARN "Port ${desired} in use — auto-assigning alternative"
+    fi
+
+    # Find next free port NOT in hardcoded list and NOT in use
+    for p in $(seq "$range_start" "$range_end"); do
+        if _pm_is_hardcoded_port "$p"; then
+            continue
+        fi
+        if ! ss -tlnp 2>/dev/null | grep -q ":${p} " && \
+           ! ss -tlnp 2>/dev/null | grep -q ":${p}$"; then
+            log INFO "Port ${desired} → auto-assigned ${p}"
+            echo "$p"
             return 0
         fi
-        (( port++ ))
-        (( i++ ))
     done
-    # Fallback: pick a random high port
-    local rnd=$(( RANDOM % 10000 + 20000 ))
-    echo "${rnd}"
+
+    log ERROR "PortMaster: No free ports in range ${range_start}-${range_end}"
+    echo "$desired"
+    return 1
 }
 
 # Resolve port conflicts in a port mapping string like "8080:80 9090:90"
@@ -728,6 +813,9 @@ add_service_arrhub_webui() {
         fi
     fi
 
+    # Ensure persistent data dir exists
+    mkdir -p "${DEST}/data" 2>/dev/null || true
+
     {
         echo ""
         echo "  arrhub_webui:"
@@ -740,6 +828,9 @@ add_service_arrhub_webui() {
         echo "      - \"${hp_9999}:9999\""
         echo "    volumes:"
         echo "      - /var/run/docker.sock:/var/run/docker.sock:ro"
+        echo "      - ${DEST}/data:/data"
+        echo "      - ${DEST}/apps:/opt/arrhub/apps:ro"
+        echo "      - ${DEST}/arrhub-webui/app.py:/app/app.py:ro"
     } >> "${f}"
 }
 
@@ -1169,6 +1260,41 @@ add_service_qbittorrent() {
     printf '\n\033[1;33m  ▶ qBittorrent default credentials: admin / adminadmin\n  ▶ Change immediately after first login!\033[0m\n'
 }
 
+add_service_transmission() {
+    local id="${1:-transmission}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_9091; hp_9091=$(find_free_port 9091)
+    local hp_51413; hp_51413=$(find_free_port 51413)
+
+    if [[ "${hp_9091}" != "9091" ]]; then
+        log WARN "Port 9091 in use — ${id} reassigned to ${hp_9091}"
+    fi
+    if [[ "${hp_51413}" != "51413" ]]; then
+        log WARN "Port 51413 in use — ${id} reassigned to ${hp_51413}"
+    fi
+
+    {
+        echo ""
+        echo "  transmission:"
+        echo "    image: lscr.io/linuxserver/transmission:latest"
+        echo "    container_name: transmission"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - PUID=${PUID_VAL}"
+        echo "      - PGID=${PGID_VAL}"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/transmission:/config"
+        echo "      - ${MEDIA_DIR}/downloads:/downloads"
+        echo "    ports:"
+        echo "      - \"${hp_9091}:9091\""
+        echo "      - \"${hp_51413}:51413\""
+        echo "      - \"${hp_51413}:51413/udp\""
+    } >> "${f}"
+    log INFO "Transmission configured with downloads at ${MEDIA_DIR}/downloads (WebUI: port ${hp_9091})"
+}
+
 add_service_prometheus() {
     local id="${1:-prometheus}"
     local f; f="$(app_compose "${id}")"
@@ -1399,25 +1525,58 @@ filter_apps() {
 self_update() {
     local script_path
     script_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+    local webui_dir="${SCRIPT_DIR}/arrhub-webui"
 
-    d_infobox "ArrHub Update" "Downloading latest version from GitHub...\n\nThis may take a moment."
+    d_infobox "ArrHub Update" "Downloading latest version from:\n  Branch: ${GITHUB_BRANCH}\n  Source: ${GITHUB_RAW}\n\nThis may take a moment."
 
-    local tmp_file="${TMP_DIR}/arrhub_latest.sh"
+    local tmp_sh="${TMP_DIR}/arrhub_latest.sh"
+    local tmp_py="${TMP_DIR}/arrhub_latest_app.py"
+    local ok_sh=false ok_py=false
 
-    if curl -fsSL "${GITHUB_RAW}/arrhub.sh" -o "${tmp_file}" 2>/dev/null; then
-        if [[ -s "${tmp_file}" ]]; then
-            chmod +x "${tmp_file}"
-            cp "${tmp_file}" "${script_path}"
-            log INFO "Self-update completed successfully"
-            d_msgbox "Update Complete" "ArrHub has been updated to the latest version.\n\nPlease restart the script."
-            exit 0
-        else
-            log_err "UPDATE" "Downloaded file is empty"
-            d_msgbox "Update Failed" "Downloaded file is empty. Check your internet connection."
-        fi
+    # ── 1. Download arrhub.sh ────────────────────────────────────────────
+    if curl -fsSL "${GITHUB_RAW}/arrhub.sh" -o "${tmp_sh}" 2>/dev/null && [[ -s "${tmp_sh}" ]]; then
+        chmod +x "${tmp_sh}"
+        cp "${tmp_sh}" "${script_path}"
+        log INFO "arrhub.sh updated from ${GITHUB_BRANCH}"
+        ok_sh=true
     else
-        log_err "UPDATE" "Failed to download from GitHub"
-        d_msgbox "Update Failed" "Could not download from:\n${GITHUB_RAW}/arrhub.sh\n\nCheck your internet connection."
+        log_err "UPDATE" "Failed to download arrhub.sh from ${GITHUB_RAW}"
+    fi
+
+    # ── 2. Download app.py (WebUI backend) ─────────────────────────────
+    mkdir -p "${webui_dir}"
+    if curl -fsSL "${GITHUB_RAW}/app.py" -o "${tmp_py}" 2>/dev/null && [[ -s "${tmp_py}" ]]; then
+        cp "${tmp_py}" "${webui_dir}/app.py"
+        log INFO "app.py updated from ${GITHUB_BRANCH}"
+        ok_py=true
+    else
+        log_err "UPDATE" "Failed to download app.py from ${GITHUB_RAW}"
+    fi
+
+    # ── 3. Restart WebUI container to pick up new app.py ────────────────
+    local container_restarted=false
+    if [[ "${ok_py}" == "true" ]]; then
+        if docker inspect arrhub_webui &>/dev/null 2>&1; then
+            d_infobox "ArrHub Update" "Restarting WebUI container..."
+            if docker restart arrhub_webui >> "${LOG_FILE}" 2>&1; then
+                log INFO "arrhub_webui restarted after update"
+                container_restarted=true
+            else
+                log_err "UPDATE" "docker restart arrhub_webui failed"
+            fi
+        fi
+    fi
+
+    # ── 4. Report result ─────────────────────────────────────────────────
+    if [[ "${ok_sh}" == "true" ]]; then
+        local msg="ArrHub updated from branch: ${GITHUB_BRANCH}\n"
+        [[ "${ok_py}" == "true" ]] && msg+="  ✓ WebUI (app.py) updated\n" || msg+="  ✗ WebUI download failed\n"
+        [[ "${container_restarted}" == "true" ]] && msg+="  ✓ WebUI container restarted\n" || msg+="  ⚠ Could not restart container — run: media → WebUI Control → Restart\n"
+        msg+="\nPlease restart the TUI script to apply TUI changes."
+        d_msgbox "Update Complete" "${msg}"
+        exit 0
+    else
+        d_msgbox "Update Failed" "Could not download from:\n  ${GITHUB_RAW}/arrhub.sh\n\nCheck internet and try again.\nBranch: ${GITHUB_BRANCH}"
     fi
 }
 
@@ -2414,6 +2573,7 @@ webui_menu() {
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v "${webui_dir}/app.py:/app/app.py:ro" \
                             --pid=host \
                             arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI started (fresh install)"
@@ -2453,6 +2613,7 @@ webui_menu() {
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v "${webui_dir}/app.py:/app/app.py:ro" \
                             --pid=host \
                             arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI rebuilt and restarted"

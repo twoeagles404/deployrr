@@ -6,6 +6,140 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.25] — 2026-03-16
+
+### Added
+- **Reddit session login — no app required** — new Tier 1 auth using Reddit's cookie-based
+  session login (`POST /api/login`). Only username and password needed; no Reddit app creation,
+  no Client ID or Secret. Session cookie cached for 1 hour. Falls through to OAuth (Tier 2)
+  and anonymous (Tier 3/4) if session login fails.
+
+### Changed
+- **Settings → Reddit Login panel** — username and password are now the primary fields at the
+  top, clearly marked "No app creation required." Client ID and Secret moved into a collapsed
+  `<details>` block labelled "Advanced — Reddit API App (optional)". Description updated to
+  reflect that username+password is all that is needed for NSFW access.
+- **Error messages** — Reddit errors now reference "Settings → Reddit Login" and distinguish
+  between wrong password, session failure, and missing credentials.
+
+---
+
+## [3.15.24] — 2026-03-16
+
+### Fixed
+- **Football fixtures — upcoming matches not showing** — removed premature `break` in the
+  `api_football_team_fixtures` proxy that stopped fetching after the first URL returned >5 past
+  events. Now collects all unique events across every `season × seasontype` candidate URL
+  (deduped by ESPN event ID), so upcoming PL fixtures and cup/European matches all appear.
+- **Football team news empty** — team news proxy now tries 3 ESPN endpoints in order
+  (`/teams/{id}/news`, `/league/news?team={id}`, `now.core.api.espn.com`) and normalises
+  across response keys (`articles`, `items`, `feed`, `headlines`). Returns the first
+  non-empty result.
+- **Reddit error messages not actionable** — final error now explains exactly what is missing:
+  username not set, login failed (with hint to check Settings), or NSFW/restricted sub.
+- **Reddit JS error banner** — error display now shows an "Open Settings" button when the
+  message indicates missing credentials, so the user can jump straight to the fix.
+
+---
+
+## [3.15.23] — 2026-03-16
+
+### Fixed
+- **Tab switching broken — all tabs showed Overview content** — the v3.15.21 CSS Grid redesign
+  left 4 extra `</div>` closing tags inside `dash-services`, `dash-infra`, `dash-logs`, and
+  `dash-ctrs` cells. This pushed every other tab panel (`#tab-iptv`, `#tab-containers`,
+  `#tab-epl`, etc.) outside the `#content` div, making them render off-screen even when given
+  the `active` class. Clicking any sidebar item appeared to do nothing. Fixed by removing one
+  extra `</div>` from each of the 4 affected cells; all 8 dash-cells now open at depth 3 and
+  return cleanly to depth 2.
+
+---
+
+## [3.15.22] — 2026-03-16
+
+### Fixed
+- **`_gs`/`_gsEditing` ReferenceError** — v3.15.21 removed the GridStack instance variables but
+  left 5 call sites in `removeWidget`, `restoreWidget`, `_saveWidgetConfig`, and
+  `_loadWidgetConfig`. Added stub declarations (`let _gs = null; let _gsEditing = false;`)
+  and rewrote the four widget helper functions to operate on CSS Grid `#dash-{id}` cells
+  directly (show/hide via `style.display`) instead of calling GridStack APIs.
+
+---
+
+## [3.15.21] — 2026-03-16
+
+### Changed
+- **Dashboard redesign — GridStack → CSS Grid** — replaced GridStack drag-and-drop layout with
+  a clean, fixed 2-column CSS Grid inspired by Glance. Eight named grid areas:
+  `gauges`, `weather`, `sysinfo`, `services`, `infra`, `logs`, `ctrs`, `launcher`.
+  No more layout thrashing, overlapping titles, or positioning bugs from saved localStorage state.
+
+### Added
+- **Reddit 4-tier OAuth fallback** — Tier 1: password grant (script app with username+password);
+  Tier 2: client_credentials (app-only); Tier 3: anonymous old.reddit.com with over18 cookie;
+  Tier 4: Reddit RSS feed. Each tier falls through to the next on failure.
+
+---
+
+## [3.15.20] — 2026-03-15
+
+### Added
+- **Glance-style 7-day weather grid** — forecast widget redesigned as a horizontal strip with
+  day label, date, emoji icon, high/low temperatures; matches the clean Glance dashboard style.
+- **Reddit OAuth settings** — new Settings panel for Reddit Client ID, Client Secret, Username,
+  and Password; required for NSFW subreddit access. Saved server-side to SQLite.
+- **Twitter/X server proxy** — `/api/twitter/webviewer` fetches twitterwebviewer.com server-side,
+  injects `<base href>`, strips `X-Frame-Options`/CSP headers, and returns proxied HTML so the
+  feed displays inside an iframe. Cards/Web Viewer toggle in the Twitter tab.
+- **Arsenal multi-season fixture fallback** — fixture proxy tries `season`, `season-1`,
+  `season+1` × `no-type`, `type-2`, `type-3` to reliably find active season data across
+  mid-season API edge cases.
+
+---
+
+## [3.15.19] — 2026-03-15
+
+### Added
+- **Football Hub tab** — dedicated Football section with: live Premier League table (ESPN free
+  API), fixtures/results, highlights (Scorebat free API), and news. Tab navigation: Tables,
+  Fixtures, Results, Highlights, News.
+- **Team fixture panel** — click any team in the standings to open a side panel showing upcoming
+  fixtures and recent results with scores, competition badges, and date/time. Server-side ESPN
+  proxy handles CORS and season-year calculation (`year+1` if month ≥ August).
+- **No-flicker feed refresh** — `_fbSetLoading`/`_fbClearLoading` helpers dim existing content
+  (opacity 0.45 + pointer-events none) on repeat loads instead of replacing with a spinner,
+  eliminating content flash.
+- **Reddit always-proxy** — Reddit feed removed from direct browser fetch path entirely;
+  all requests routed through the server proxy to avoid CORS blocks and age-gate HTML responses.
+
+---
+
+## [3.14.0] — 2026-03-10
+
+### Added
+- **Radarr/Sonarr tabbed service cards** — each card now has Upcoming, Queue, and Library tabs.
+  Queue tab shows active downloads with progress bars, time remaining, quality, indexer, and
+  download client info. Library tab shows aggregate stats (total, monitored, downloaded, missing).
+- **Click-to-expand detail** — all service card items (Radarr, Sonarr, Plex, Seerr) are now
+  clickable to reveal an inline detail panel with additional metadata.
+- **System Gauges widget** — CPU, Memory, Load Average, and Containers are now a proper GridStack
+  widget (`gs-id="gauges"`) that can be dragged, resized, and rearranged alongside other widgets.
+  Previously the gauge row was stuck outside the grid.
+- **Widget minimum sizes** — all widgets now have `gs-min-w` and `gs-min-h` constraints to prevent
+  them from being resized too small to be useful.
+- **Responsive compact mode** — widgets auto-detect their rendered size and toggle a `.widget-compact`
+  CSS class that tightens padding, shrinks fonts, and stacks grids for small widget sizes.
+- **New API endpoints** — `/api/services/radarr/queue`, `/api/services/radarr/library`,
+  `/api/services/sonarr/queue`, `/api/services/sonarr/library`.
+
+### Fixed
+- **RSS feed collapse bug** — clicking a feed dropdown no longer collapses other feeds in the same
+  CSS grid row. Fixed by adding `align-items:start` to the feed grid container.
+- **GridStack layout version** — added `_GRID_VER` key to invalidate stale saved layouts when
+  widget structure changes (e.g., adding the gauges widget).
+
+---
+
 ## [3.13.0] — 2026-03-10
 
 ### Fixed

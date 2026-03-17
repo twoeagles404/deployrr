@@ -2557,8 +2557,8 @@ def api_feeds_og():
 
 @app.route("/api/reddit/feed")
 def api_reddit_feed():
-    """Server-side Reddit proxy — OAuth with username/password for script apps, with fallbacks."""
-    import urllib.request as _ur, json as _jr, base64 as _b64
+    """Server-side Reddit proxy — session login (username+password only), OAuth fallback, then anonymous."""
+    import urllib.request as _ur, urllib.parse as _up, json as _jr, base64 as _b64, http.cookiejar as _cj
     sub   = request.args.get("sub",   "").strip()
     sort  = request.args.get("sort",  "hot").strip()
     after = request.args.get("after", "").strip()
@@ -2574,10 +2574,60 @@ def api_reddit_feed():
     reddit_user   = _get_setting("reddit_username",      "").strip()
     reddit_pass   = _get_setting("reddit_password",      "").strip()
     app_ua = f"ArrHub:v1 (by /u/{reddit_user or 'homelab_user'})"
+    browser_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-    oauth_error = None
+    session_error = None
+    oauth_error   = None
 
-    # --- Try 1: OAuth with username+password (script app) ---
+    # --- Try 1: Cookie session login (username + password only — no API app needed) ---
+    if reddit_user and reddit_pass:
+        try:
+            session_cache_key = f"reddit_session_{reddit_user}"
+            session_cookie = None
+            if session_cache_key in _rss_cache and time.time() - _rss_cache[session_cache_key].get("ts", 0) < 3600:
+                session_cookie = _rss_cache[session_cache_key]["data"]
+            if not session_cookie:
+                jar = _cj.CookieJar()
+                opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
+                login_payload = _up.urlencode({"user": reddit_user, "passwd": reddit_pass, "api_type": "json"}).encode()
+                login_req = _ur.Request(
+                    "https://www.reddit.com/api/login",
+                    data=login_payload,
+                    headers={
+                        "User-Agent": app_ua,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                    }
+                )
+                with opener.open(login_req, timeout=12) as lr:
+                    resp = _jr.loads(lr.read())
+                errors = resp.get("json", {}).get("errors", [])
+                if errors:
+                    session_error = f"Login failed: {errors[0][1] if errors[0] else errors}"
+                else:
+                    for ck in jar:
+                        if ck.name in ("reddit_session", "token_v2"):
+                            session_cookie = ck.value
+                            _rss_cache[session_cache_key] = {"data": session_cookie, "ts": time.time()}
+                            break
+            if session_cookie:
+                fetch_url = f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1"
+                if after: fetch_url += f"&after={after}"
+                fetch_req = _ur.Request(fetch_url, headers={
+                    "User-Agent": app_ua,
+                    "Cookie": f"reddit_session={session_cookie}; over18=1",
+                    "Accept": "application/json",
+                })
+                with _ur.urlopen(fetch_req, timeout=15) as r:
+                    data = _jr.loads(r.read())
+                if isinstance(data, dict) and data.get("data"):
+                    result = {"data": data["data"], "ok": True, "method": "session"}
+                    _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                    return jsonify(result)
+        except Exception as e:
+            session_error = f"Session login failed: {str(e)[:120]}"
+
+    # --- Try 2: OAuth password grant (script app — needs client_id + secret + username + password) ---
     if client_id and client_secret and reddit_user and reddit_pass:
         try:
             token_cache_key = f"reddit_token_{client_id}"
@@ -2586,7 +2636,7 @@ def api_reddit_feed():
                 token = _rss_cache[token_cache_key]["data"].get("access_token")
             if not token:
                 creds = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-                post_data = f"grant_type=password&username={reddit_user}&password={reddit_pass}".encode()
+                post_data = _up.urlencode({"grant_type": "password", "username": reddit_user, "password": reddit_pass}).encode()
                 tok_req = _ur.Request(
                     "https://www.reddit.com/api/v1/access_token",
                     data=post_data,
@@ -2596,16 +2646,14 @@ def api_reddit_feed():
                 with _ur.urlopen(tok_req, timeout=10) as tr:
                     tok_data = _jr.loads(tr.read())
                 if tok_data.get("error"):
-                    oauth_error = f"Reddit OAuth error: {tok_data.get('error')}"
+                    oauth_error = f"OAuth error: {tok_data.get('error')}"
                 else:
                     token = tok_data.get("access_token")
                     _rss_cache[token_cache_key] = {"data": tok_data, "ts": time.time()}
             if token:
                 url = f"https://oauth.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1"
                 if after: url += f"&after={after}"
-                api_req = _ur.Request(url, headers={
-                    "Authorization": f"Bearer {token}", "User-Agent": app_ua
-                })
+                api_req = _ur.Request(url, headers={"Authorization": f"Bearer {token}", "User-Agent": app_ua})
                 with _ur.urlopen(api_req, timeout=15) as r:
                     data = _jr.loads(r.read())
                 if isinstance(data, dict) and data.get("data"):
@@ -2614,42 +2662,6 @@ def api_reddit_feed():
                     return jsonify(result)
         except Exception as e:
             oauth_error = f"OAuth failed: {str(e)[:100]}"
-
-    # --- Try 2: client_credentials (app-only, no username needed) ---
-    if client_id and client_secret and not (reddit_user and reddit_pass):
-        try:
-            token_cache_key = f"reddit_cc_token_{client_id}"
-            token = None
-            if token_cache_key in _rss_cache and time.time() - _rss_cache[token_cache_key].get("ts", 0) < 3300:
-                token = _rss_cache[token_cache_key]["data"].get("access_token")
-            if not token:
-                creds = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-                tok_req = _ur.Request(
-                    "https://www.reddit.com/api/v1/access_token",
-                    data=b"grant_type=client_credentials",
-                    headers={"Authorization": f"Basic {creds}", "User-Agent": app_ua,
-                             "Content-Type": "application/x-www-form-urlencoded"}
-                )
-                with _ur.urlopen(tok_req, timeout=10) as tr:
-                    tok_data = _jr.loads(tr.read())
-                if not tok_data.get("error"):
-                    token = tok_data.get("access_token")
-                    _rss_cache[token_cache_key] = {"data": tok_data, "ts": time.time()}
-            if token:
-                url = f"https://oauth.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1"
-                if after: url += f"&after={after}"
-                api_req = _ur.Request(url, headers={
-                    "Authorization": f"Bearer {token}", "User-Agent": app_ua
-                })
-                with _ur.urlopen(api_req, timeout=15) as r:
-                    data = _jr.loads(r.read())
-                if isinstance(data, dict) and data.get("data"):
-                    result = {"data": data["data"], "ok": True, "method": "client_credentials"}
-                    _rss_cache[cache_key] = {"data": result, "ts": time.time()}
-                    return jsonify(result)
-        except Exception as e:
-            if not oauth_error:
-                oauth_error = f"Client creds failed: {str(e)[:100]}"
 
     # --- Try 3: Anonymous JSON API (old.reddit.com, then www) ---
     browser_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -2727,14 +2739,16 @@ def api_reddit_feed():
         pass
 
     # All methods failed — give the most actionable error message
-    if client_id and client_secret and not reddit_user:
-        error_msg = "Reddit username not set. Go to Settings → Reddit API Access and enter your Reddit username and password to access NSFW subreddits."
-    elif client_id and client_secret and reddit_user and oauth_error:
-        error_msg = f"Reddit login failed ({oauth_error}). Check your username/password in Settings → Reddit API Access."
+    if not reddit_user:
+        error_msg = "Reddit username not set. Go to Settings → Reddit Login and enter your Reddit username and password. No app creation required."
+    elif session_error and "WRONG_PASSWORD" in str(session_error):
+        error_msg = "Wrong Reddit password. Check your credentials in Settings → Reddit Login."
+    elif session_error:
+        error_msg = f"Reddit login failed: {session_error}. Check your username/password in Settings → Reddit Login."
     elif anon_err and "403" in str(anon_err):
-        error_msg = "This subreddit requires Reddit login (NSFW or restricted). Enter your credentials in Settings → Reddit API Access."
+        error_msg = "This subreddit requires Reddit login (NSFW or restricted). Enter your credentials in Settings → Reddit Login."
     else:
-        error_msg = oauth_error or anon_err or "All Reddit access methods failed. Check Settings → Reddit API Access."
+        error_msg = session_error or oauth_error or anon_err or "All Reddit access methods failed. Check Settings → Reddit Login."
     return jsonify({"error": error_msg, "ok": False})
 
 @app.route("/api/reddit/comments")
@@ -4539,7 +4553,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.24</div>
+      <div class="sb-version">v3.15.25</div>
     </div>
   </div>
 
@@ -5339,20 +5353,30 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSettings()">Save Settings</button>
       </div>
-      <!-- Reddit API Access -->
+      <!-- Reddit Login -->
       <div class="panel">
-        <div class="panel-title">🤖 Reddit API Access</div>
+        <div class="panel-title">🔐 Reddit Login</div>
         <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
-          Required to access NSFW subreddits and avoid 403 blocks. Create a free app at
-          <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener" style="color:var(--blue)">reddit.com/prefs/apps</a>
-          — choose <strong>script</strong> type. Leave blank to use anonymous access.
+          Enter your Reddit username and password to access NSFW subreddits. <strong>No app creation required.</strong>
+          Leave blank to use anonymous access (public subreddits only).
         </div>
         <div class="settings-grid">
-          <div class="field"><label>Client ID</label><input type="text" id="cfg-reddit-client-id" placeholder="14-char app ID from Reddit"><div class="field-hint">Found under your app name on the apps page</div></div>
-          <div class="field"><label>Client Secret</label><input type="password" id="cfg-reddit-client-secret" placeholder="•••••••••••"><div class="field-hint">The "secret" field for your Reddit app</div></div>
-          <div class="field"><label>Reddit Username</label><input type="text" id="cfg-reddit-username" placeholder="your_reddit_username"><div class="field-hint">Your Reddit account username (needed for NSFW)</div></div>
-          <div class="field"><label>Reddit Password</label><input type="password" id="cfg-reddit-password" placeholder="•••••••••••"><div class="field-hint">Your Reddit account password (needed for NSFW)</div></div>
+          <div class="field"><label>Reddit Username</label><input type="text" id="cfg-reddit-username" placeholder="your_reddit_username"><div class="field-hint">Your Reddit account username</div></div>
+          <div class="field"><label>Reddit Password</label><input type="password" id="cfg-reddit-password" placeholder="•••••••••••"><div class="field-hint">Your Reddit account password</div></div>
         </div>
+        <details style="margin-top:12px">
+          <summary style="font-size:11px;color:var(--text3);cursor:pointer;user-select:none">⚙️ Advanced — Reddit API App (optional, for official OAuth access)</summary>
+          <div style="margin-top:10px;padding:10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border)">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:8px">
+              Only needed if username+password login stops working. Create a free <strong>script</strong>-type app at
+              <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener" style="color:var(--blue)">reddit.com/prefs/apps</a>.
+            </div>
+            <div class="settings-grid">
+              <div class="field"><label>Client ID</label><input type="text" id="cfg-reddit-client-id" placeholder="14-char app ID"><div class="field-hint">Found under your app name on the apps page</div></div>
+              <div class="field"><label>Client Secret</label><input type="password" id="cfg-reddit-client-secret" placeholder="•••••••••••"><div class="field-hint">The "secret" field for your Reddit app</div></div>
+            </div>
+          </div>
+        </details>
         <button class="btn-primary" style="margin-top:12px" onclick="saveRedditCredentials()">Save Reddit Credentials</button>
         <span id="reddit-creds-status" style="font-size:11px;color:var(--green);margin-left:10px"></span>
       </div>

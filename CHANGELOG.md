@@ -6,6 +6,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.25] — 2026-03-16
+
+### Added
+- **Reddit session login — no app required** — new Tier 1 auth using Reddit's cookie-based
+  session login (`POST /api/login`). Only username and password needed; no Reddit app creation,
+  no Client ID or Secret. Session cookie cached for 1 hour. Falls through to OAuth (Tier 2)
+  and anonymous (Tier 3/4) if session login fails.
+
+### Changed
+- **Settings → Reddit Login panel** — username and password are now the primary fields at the
+  top, clearly marked "No app creation required." Client ID and Secret moved into a collapsed
+  `<details>` block labelled "Advanced — Reddit API App (optional)". Description updated to
+  reflect that username+password is all that is needed for NSFW access.
+- **Error messages** — Reddit errors now reference "Settings → Reddit Login" and distinguish
+  between wrong password, session failure, and missing credentials.
+
+---
+
 ## [3.15.24] — 2026-03-16
 
 ### Fixed

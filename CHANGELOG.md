@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.29] — 2026-03-17
+
+### Added
+- **UniDownloader stack** — new deployable preset combining three web-based download managers:
+  - `gallery_dl` (Gallery-DL Server, `qx6ghqkz/gallery-dl-server:latest`, port 9080) — grab images/galleries from hundreds of sites (Twitter/X, Reddit, Instagram, Pixiv, etc.). Downloads land in `<MEDIA_DIR>/downloads/gallery-dl`.
+  - `metube` (MeTube / yt-dlp, `ghcr.io/alexta69/metube:latest`, port 8081) — browser-based yt-dlp frontend for video & audio downloads. Subtitles enabled by default; downloads land in `<MEDIA_DIR>/downloads/metube`.
+  - `jdownloader2` (JDownloader 2 GUI, `jlesage/jdownloader-2:latest`, port 5800) — full JDownloader 2 with remote VNC GUI for managed downloads from file-hosts.
+- `UNIDOWNLOADER_STACK` preset — accessible from Quick Presets → option 15 "UniDownloader ★".
+- `add_service_gallery_dl` and `add_service_metube` custom service writers that mount the correct download directories and respect the port manager.
+
+---
+
 ## [3.15.28] — 2026-03-17
 
 ### Fixed

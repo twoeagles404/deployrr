@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.15.28 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.15.29 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.15.28"
+VERSION="3.15.29"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -182,11 +182,15 @@ load_catalog() {
     define_app deluge       "Deluge"       "lscr.io/linuxserver/deluge:latest"       "Downloaders"  "8112:8112 6881:6881 6881:6881/udp"
     define_app sabnzbd      "SABnzbd"      "lscr.io/linuxserver/sabnzbd:latest"      "Downloaders"  "8090:8080"
     define_app nzbget       "NZBget"       "lscr.io/linuxserver/nzbget:latest"       "Downloaders"  "6789:6789"
-    define_app jdownloader2 "JDownloader2" "jlesage/jdownloader-2:latest"            "Downloaders"  "5800:5800"
-    define_app pyload       "pyLoad"       "ghcr.io/pyload/pyload:latest"            "Downloaders"  "8000:8000"
-    define_app aria2        "Aria2"        "p3terx/aria2-pro:latest"                 "Downloaders"  "6800:6800 6888:6888 6888:6888/udp"
-    define_app pinchflat    "Pinchflat"    "ghcr.io/kieraneglin/pinchflat:latest"    "Downloaders"  "8945:8945"
-    define_app qbitrr       "qbitrr"       "feramance/qbitrr:latest"                 "Downloaders"  "6969:6969"
+    define_app jdownloader2 "JDownloader2"      "jlesage/jdownloader-2:latest"            "Downloaders"  "5800:5800"
+    define_app gallery_dl   "Gallery-DL Server" "qx6ghqkz/gallery-dl-server:latest"      "Downloaders"  "9080:9080"
+    APP_CUSTOM_SVC[gallery_dl]="yes"
+    define_app metube       "MeTube (yt-dlp)"   "ghcr.io/alexta69/metube:latest"          "Downloaders"  "8081:8081"
+    APP_CUSTOM_SVC[metube]="yes"
+    define_app pyload       "pyLoad"            "ghcr.io/pyload/pyload:latest"            "Downloaders"  "8000:8000"
+    define_app aria2        "Aria2"             "p3terx/aria2-pro:latest"                 "Downloaders"  "6800:6800 6888:6888 6888:6888/udp"
+    define_app pinchflat    "Pinchflat"         "ghcr.io/kieraneglin/pinchflat:latest"    "Downloaders"  "8945:8945"
+    define_app qbitrr       "qbitrr"            "feramance/qbitrr:latest"                 "Downloaders"  "6969:6969"
     APP_CUSTOM_SVC[qbitrr]="yes"
 
     # -- ARR Suite --
@@ -338,7 +342,7 @@ load_catalog() {
 
 ALL_APPS=(
     # Downloaders
-    qbittorrent transmission deluge sabnzbd nzbget jdownloader2 pyload aria2 pinchflat qbitrr
+    qbittorrent transmission deluge sabnzbd nzbget jdownloader2 gallery_dl metube pyload aria2 pinchflat qbitrr
     # ARR Suite
     prowlarr radarr sonarr lidarr bazarr whisparr mylar3 doplarr boxarr recyclarr unpackerr notifiarr
     # Media Servers
@@ -392,6 +396,7 @@ HOME_AUTO_PRESET=(homeassistant mosquitto node_red zigbee2mqtt esphome)
 DEV_PRESET=(gitea code_server portainer drone)
 SECURITY_PRESET=(vaultwarden authentik uptime_kuma)
 DOWNLOADS_PRESET=(qbittorrent sabnzbd prowlarr radarr sonarr unpackerr)
+UNIDOWNLOADER_STACK=(gallery_dl metube jdownloader2)
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -527,7 +532,8 @@ declare -A _PM_CTR_PORT=(
     [unpackerr]=""        [launcharr]="3333"
     [qbittorrent]="8080"  [sabnzbd]="8080"   [nzbget]="6789"
     [transmission]="9091" [deluge]="8112"    [aria2]="6800"
-    [jdownloader2]="5800" [mylar3]="8090"    [readarr]="8787"
+    [jdownloader2]="5800" [gallery_dl]="9080" [metube]="8081"
+    [mylar3]="8090"       [readarr]="8787"
     [flaresolverr]="8191" [komga]="8080"     [kavita]="5000"
     [audiobookshelf]="80" [immich]="2283"    [nextcloud]="80"
     [pinchflat]="8945"    [homeassistant]="8123"
@@ -1335,6 +1341,53 @@ add_service_transmission() {
     log INFO "Transmission configured with downloads at ${MEDIA_DIR}/downloads (WebUI: port ${hp_9091})"
 }
 
+add_service_gallery_dl() {
+    local id="${1:-gallery_dl}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_9080; hp_9080=$(find_free_port 9080 8000 9900 "${id}")
+
+    mkdir -p "${MEDIA_DIR}/downloads/gallery-dl" 2>/dev/null || true
+
+    {
+        echo ""
+        echo "  gallery_dl:"
+        echo "    image: qx6ghqkz/gallery-dl-server:latest"
+        echo "    container_name: gallery_dl"
+        echo "    restart: unless-stopped"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/gallery_dl:/config"
+        echo "      - ${MEDIA_DIR}/downloads/gallery-dl:/gallery-dl"
+        echo "    ports:"
+        echo "      - \"${hp_9080}:9080\""
+    } >> "${f}"
+    log INFO "Gallery-DL Server configured — downloads → ${MEDIA_DIR}/downloads/gallery-dl  (WebUI: :${hp_9080})"
+}
+
+add_service_metube() {
+    local id="${1:-metube}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_8081; hp_8081=$(find_free_port 8081 8000 9900 "${id}")
+
+    {
+        echo ""
+        echo "  metube:"
+        echo "    image: ghcr.io/alexta69/metube:latest"
+        echo "    container_name: metube"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - DOWNLOAD_DIR=/downloads"
+        echo "      - YTDL_OPTIONS={\"writesubtitles\":true,\"subtitleslangs\":[\"en\"],\"updatetime\":false}"
+        echo "    volumes:"
+        echo "      - ${MEDIA_DIR}/downloads/metube:/downloads"
+        echo "    ports:"
+        echo "      - \"${hp_8081}:8081\""
+    } >> "${f}"
+    mkdir -p "${MEDIA_DIR}/downloads/metube" 2>/dev/null || true
+    log INFO "MeTube (yt-dlp) configured — downloads → ${MEDIA_DIR}/downloads/metube  (WebUI: :${hp_8081})"
+}
+
 add_service_prometheus() {
     local id="${1:-prometheus}"
     local f; f="$(app_compose "${id}")"
@@ -2079,7 +2132,8 @@ deploy_quick_preset() {
             "12" "Dev Workstation — Gitea + Code-Server + Portainer" \
             "13" "Security        — Vaultwarden + Authentik + Uptime Kuma" \
             "14" "Downloads Only  — qBit + SABnzbd + Prowlarr + ARR" \
-            "15" "Back") || return
+            "15" "UniDownloader ★ — Gallery-DL + MeTube + JDownloader2" \
+            "16" "Back") || return
 
         local selected=()
         case "${preset}" in
@@ -2100,7 +2154,8 @@ deploy_quick_preset() {
             12) selected=("${DEV_PRESET[@]}") ;;
             13) selected=("${SECURITY_PRESET[@]}") ;;
             14) selected=("${DOWNLOADS_PRESET[@]}") ;;
-            15) return ;;
+            15) selected=("${UNIDOWNLOADER_STACK[@]}") ;;
+            16) return ;;
         esac
 
         log INFO "Quick preset ${preset}: ${selected[*]}"

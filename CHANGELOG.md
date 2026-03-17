@@ -6,6 +6,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.26] — 2026-03-17
+
+### Fixed
+- **Twitter / X web viewer URL error** — pill buttons now carry a `data-handle` attribute
+  with the clean username. Web Viewer mode reads `data-handle` instead of `textContent`,
+  preventing the "𝕏 @Handle" prefix from polluting the proxy URL. Python endpoint also
+  strips non-word leading characters as a safety net.
+- **Reddit session login 403 Blocked** — login flow now seeds the CookieJar by first GETting
+  the Reddit homepage so Reddit's anonymous `loid` cookies are present before the POST,
+  matching real browser behaviour. Also retries against `old.reddit.com/api/login` if
+  `www.reddit.com` fails. Browser-like Origin/Referer headers added. Error message for
+  persistent 403s now includes step-by-step guidance for creating a Reddit script app.
+
+---
+
 ## [3.15.25] — 2026-03-16
 
 ### Added

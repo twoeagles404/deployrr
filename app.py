@@ -1629,7 +1629,10 @@ def api_rss_custom_delete(name):
 @app.route("/api/twitter/webviewer")
 def api_twitter_webviewer():
     """Proxy twitterwebviewer.com, stripping X-Frame-Options so we can embed it."""
-    handle = request.args.get("handle", "").strip().lstrip("@")
+    import re as _re_tw
+    handle = request.args.get("handle", "").strip()
+    # Strip any leading non-word prefix (e.g. "𝕏 @", "X @", emoji + space)
+    handle = _re_tw.sub(r'^[^\w]+', '', handle).strip().lstrip("@")
     if not handle:
         return "handle required", 400
     import urllib.request as _ur
@@ -2580,6 +2583,9 @@ def api_reddit_feed():
     oauth_error   = None
 
     # --- Try 1: Cookie session login (username + password only — no API app needed) ---
+    # Reddit requires a pre-existing anonymous loid/session cookie before it accepts login POSTs.
+    # We GET the Reddit homepage first with a CookieJar so Reddit sets those cookies, then POST login.
+    _browser_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     if reddit_user and reddit_pass:
         try:
             session_cache_key = f"reddit_session_{reddit_user}"
@@ -2589,32 +2595,52 @@ def api_reddit_feed():
             if not session_cookie:
                 jar = _cj.CookieJar()
                 opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
+                # Step 1: GET Reddit homepage to obtain anonymous loid/session cookies
+                try:
+                    seed_req = _ur.Request("https://www.reddit.com/", headers={
+                        "User-Agent": _browser_ua,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.5",
+                    })
+                    with opener.open(seed_req, timeout=10) as _sr:
+                        _sr.read()
+                except Exception:
+                    pass  # Even if this fails, proceed — some cookies may have been set
+                # Step 2: POST login with browser-like headers and the loid cookies now in jar
                 login_payload = _up.urlencode({"user": reddit_user, "passwd": reddit_pass, "api_type": "json"}).encode()
-                login_req = _ur.Request(
-                    "https://www.reddit.com/api/login",
-                    data=login_payload,
-                    headers={
-                        "User-Agent": app_ua,
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Accept": "application/json",
-                    }
-                )
-                with opener.open(login_req, timeout=12) as lr:
-                    resp = _jr.loads(lr.read())
-                errors = resp.get("json", {}).get("errors", [])
-                if errors:
-                    session_error = f"Login failed: {errors[0][1] if errors[0] else errors}"
-                else:
-                    for ck in jar:
-                        if ck.name in ("reddit_session", "token_v2"):
-                            session_cookie = ck.value
-                            _rss_cache[session_cache_key] = {"data": session_cookie, "ts": time.time()}
+                for login_url in ["https://www.reddit.com/api/login", "https://old.reddit.com/api/login"]:
+                    try:
+                        login_req = _ur.Request(
+                            login_url,
+                            data=login_payload,
+                            headers={
+                                "User-Agent": _browser_ua,
+                                "Content-Type": "application/x-www-form-urlencoded",
+                                "Accept": "application/json",
+                                "Origin": "https://www.reddit.com",
+                                "Referer": "https://www.reddit.com/login",
+                            }
+                        )
+                        with opener.open(login_req, timeout=12) as lr:
+                            resp = _jr.loads(lr.read())
+                        errors = resp.get("json", {}).get("errors", [])
+                        if errors:
+                            session_error = f"Login failed: {errors[0][1] if errors[0] else errors}"
+                        else:
+                            for ck in jar:
+                                if ck.name in ("reddit_session", "token_v2"):
+                                    session_cookie = ck.value
+                                    _rss_cache[session_cache_key] = {"data": session_cookie, "ts": time.time()}
+                                    break
+                        if session_cookie:
                             break
+                    except Exception as _le:
+                        session_error = f"Session login failed ({login_url.split('/')[2]}): {str(_le)[:100]}"
             if session_cookie:
                 fetch_url = f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1"
                 if after: fetch_url += f"&after={after}"
                 fetch_req = _ur.Request(fetch_url, headers={
-                    "User-Agent": app_ua,
+                    "User-Agent": _browser_ua,
                     "Cookie": f"reddit_session={session_cookie}; over18=1",
                     "Accept": "application/json",
                 })
@@ -2743,6 +2769,12 @@ def api_reddit_feed():
         error_msg = "Reddit username not set. Go to Settings → Reddit Login and enter your Reddit username and password. No app creation required."
     elif session_error and "WRONG_PASSWORD" in str(session_error):
         error_msg = "Wrong Reddit password. Check your credentials in Settings → Reddit Login."
+    elif session_error and ("403" in str(session_error) or "Blocked" in str(session_error)):
+        error_msg = ("Reddit is blocking the login request (403). This can happen if your username/password is wrong, "
+                     "or if Reddit is temporarily blocking automated logins. "
+                     "Try: 1) Double-check your password in Settings → Reddit Login. "
+                     "2) If still blocked, create a free Reddit script app at reddit.com/prefs/apps "
+                     "and enter the Client ID + Secret in the Advanced section of Settings → Reddit Login.")
     elif session_error:
         error_msg = f"Reddit login failed: {session_error}. Check your username/password in Settings → Reddit Login."
     elif anon_err and "403" in str(anon_err):
@@ -4553,7 +4585,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.25</div>
+      <div class="sb-version">v3.15.26</div>
     </div>
   </div>
 
@@ -8308,7 +8340,7 @@ function twitterSetMode(mode) {
         // Load the active handle in the web viewer iframe
         const activePill = document.querySelector('#feeds-twitter-handle-tabs .filter-pill.active');
         if (activePill) {
-            const handle = (activePill.dataset.url || activePill.textContent || '').replace(/^@/, '');
+            const handle = (activePill.dataset.handle || activePill.textContent || '').replace(/^[\s\S]*?@?(\w+)\s*$/, '$1').replace(/^@/, '').trim();
             const iframe = document.getElementById('feeds-twitter-webviewer-iframe');
             if (iframe && handle) iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
         }
@@ -8333,7 +8365,7 @@ function _feedsLoadTwitterPage() {
     if (!_feedsTwitterActive || !handles.find(h => h.id === _feedsTwitterActive))
         _feedsTwitterActive = handles[0].id;
     tabs.innerHTML = handles.map(h =>
-        `<button class="filter-pill${h.id===_feedsTwitterActive?' active':''}" onclick="_feedsSelectTwitter('${h.id}',this)">𝕏 ${h.name}</button>`
+        `<button class="filter-pill${h.id===_feedsTwitterActive?' active':''}" data-handle="${(h.url||'').replace(/^@/,'')}" onclick="_feedsSelectTwitter('${h.id}',this)">𝕏 ${h.name}</button>`
     ).join('');
     const active = handles.find(h => h.id === _feedsTwitterActive);
     if (active && grid) _feedsFetchTwitterCards(active.url, grid, false);

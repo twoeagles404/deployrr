@@ -6,6 +6,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.34] — 2026-03-17
+
+### Fixed
+- **Recent Logs always showing "(loading…)"** — `/api/dashboard` only returned logs if
+  `/api/logs` had already been called to warm the cache. Fixed by populating the log cache
+  inline inside `api_dashboard` so the widget loads correctly on first dashboard render.
+- **Infrastructure storage donuts showing value below the circle** — percentage label was a
+  sibling `<div>` placed after the canvas in document flow. Fixed by wrapping canvas + an
+  absolute-positioned `<span>` overlay inside a `position:relative` container, centering the
+  percentage text directly inside the donut ring.
+- **Infrastructure storage showing same values for all mounts** — Docker bind-mounts
+  (`/etc/resolv.conf`, `/etc/hostname`, `/etc/hosts`, `/app/app.py`, etc.) all report the same
+  underlying device. Fixed by deduplicating by device ID in `loadStorage()` — each physical
+  disk is now shown only once.
+- **Dashboard CPU/Memory gauge text position** — `translateY(-8px)` was insufficient to center
+  text within the 270° speedometer arc. Increased to `translateY(-18px)` and bumped font-size
+  to 32px so the value sits visually inside the arc's centre.
+- **Football team fixtures "No schedule found"** — `seasontype=2`-only URLs silently returned
+  no events for some leagues (e.g. Premier League with season=2026). Restored dual-URL
+  strategy (bare + `seasontype=2` per season year). Added server-side competition-name keyword
+  filter so cup matches (Copa del Rey, FA Cup, etc.) are stripped before returning results,
+  while correct league data is always preserved.
+- **YouTube playing audio only (no video)** — `aspect-ratio:16/9` on the embedded iframe was
+  not computing height correctly in all browsers, making the video element zero-height while
+  audio continued. Replaced with a fixed `height:480px` and removed `line-height:0` from the
+  container div.
+- **Feeds web viewer "Application error"** — `twitterwebviewer.com` throws a Next.js
+  client-side exception when embedded. Added `onload`/`onerror` handlers on the iframe;
+  on error the iframe is hidden and a clean fallback panel is shown with an "Open on X" link.
+  Both iframe-src assignment paths now also update the fallback link href.
+
+---
+
 ## [3.15.33] — 2026-03-17
 
 ### Added

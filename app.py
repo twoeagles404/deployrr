@@ -633,10 +633,26 @@ def api_dashboard():
     Called by the overview page every 30 s instead of two separate requests."""
     _now = time.time()
     # Logs (cached separately)
-    if _logs_cache["data"] and _now - _logs_cache["ts"] < CACHE_LOGS:
-        log_lines = _logs_cache["data"][-12:]
-    else:
-        log_lines = []
+    if not _logs_cache["data"] or _now - _logs_cache["ts"] >= CACHE_LOGS:
+        # Populate logs cache inline so dashboard always shows logs
+        try:
+            fresh = []
+            if DOCKER_OK:
+                for _lc in _dc.containers.list():
+                    try:
+                        _ll = _lc.logs(tail=8, timestamps=True).decode('utf-8', errors='replace')
+                        for _line in _ll.strip().split('\n'):
+                            if _line.strip():
+                                fresh.append(f"[{_lc.name}] {_line}")
+                    except Exception:
+                        pass
+            if fresh:
+                fresh.sort()
+                _logs_cache["data"] = fresh
+                _logs_cache["ts"] = _now
+        except Exception:
+            pass
+    log_lines = _logs_cache["data"][-12:] if _logs_cache["data"] else []
     # Network IO (cached separately)
     if _network_cache["data"] and _now - _network_cache["ts"] < CACHE_NETWORK:
         net_io = _network_cache["data"].get("io", {})
@@ -1053,7 +1069,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.33",
+            "version": "3.15.34",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -3076,10 +3092,22 @@ def api_football_team_fixtures():
     # ESPN uses END-year of season: 2025-26 = 2026. Try current year and adjacent years.
     sy = today.year + 1 if today.month >= 8 else today.year
     season_candidates = list(dict.fromkeys([sy, sy - 1, sy + 1]))  # deduplicated, primary first
-    # Candidate URLs: seasontype=2 = regular season only — prevents Copa del Rey / cup matches mixing in
+    # League competition name keywords — used to filter out cup/non-league matches after fetch
+    _COMP_KW = {
+        "eng.1": ["premier league", "premier", "barclays"],
+        "esp.1": ["laliga", "la liga", "primera"],
+        "ger.1": ["bundesliga"],
+        "ita.1": ["serie a"],
+        "fra.1": ["ligue 1"],
+        "por.1": ["primeira liga", "liga nos"],
+        "eur.1": ["champions league", "champions"],
+        "eur.2": ["europa league", "europa"],
+    }
+
     candidate_urls = []
     for s in season_candidates:
-        # seasontype=2 = regular season only — prevents Copa del Rey / cup matches mixing in
+        # Try bare URL first (all competitions), then regular-season-only as backup
+        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}")
         candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}&seasontype=2")
     all_events = []
     seen_ids = set()
@@ -3096,6 +3124,23 @@ def api_football_team_fixtures():
                     all_events.append(ev)
         except Exception:
             pass
+    # Filter to league matches only (removes cup/secondary competition matches)
+    _kws = _COMP_KW.get(league, [])
+    if _kws and all_events:
+        def _ev_matches_league(ev):
+            comp = (ev.get("competitions") or [{}])[0]
+            slug  = (ev.get("season") or {}).get("slug", "").lower()
+            name  = (ev.get("name") or "").lower()
+            notes = " ".join(
+                (n.get("headline","") + " " + n.get("value",""))
+                for n in (comp.get("notes") or [])
+            ).lower()
+            haystack = f"{slug} {name} {notes}"
+            return any(kw.lower() in haystack for kw in _kws)
+        filtered = [ev for ev in all_events if _ev_matches_league(ev)]
+        if filtered:
+            all_events = filtered  # Only use filtered set when it yields results
+
     # Sort by date ascending so upcoming matches appear after past ones
     all_events.sort(key=lambda ev: ev.get("date", ""))
     return jsonify({"events": all_events, "debug": {"total": len(all_events), "season_tried": sy}})
@@ -4782,7 +4827,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.33</div>
+      <div class="sb-version">v3.15.34</div>
     </div>
   </div>
 
@@ -4972,9 +5017,9 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
                 <div style="position:relative;width:160px;height:160px">
                   <canvas id="cpu-gauge-canvas" width="160" height="160"></canvas>
-                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-8px);pointer-events:none">
-                    <span id="cpu-gauge-text" style="font-size:30px;font-weight:700;font-family:var(--mono);color:#3fb950;line-height:1">0%</span>
-                    <span style="font-size:10px;color:var(--text3);margin-top:3px;letter-spacing:.04em;text-transform:uppercase">Usage</span>
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-18px);pointer-events:none">
+                    <span id="cpu-gauge-text" style="font-size:32px;font-weight:700;font-family:var(--mono);color:#3fb950;line-height:1">0%</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">Usage</span>
                   </div>
                 </div>
                 <div id="cpu-cores" style="font-size:12px;color:var(--text2);font-weight:500">— cores · — MHz</div>
@@ -4989,9 +5034,9 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
                 <div style="position:relative;width:160px;height:160px">
                   <canvas id="mem-gauge-canvas" width="160" height="160"></canvas>
-                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-8px);pointer-events:none">
-                    <span id="mem-gauge-text" style="font-size:30px;font-weight:700;font-family:var(--mono);color:#bc8cff;line-height:1">0%</span>
-                    <span style="font-size:10px;color:var(--text3);margin-top:3px;letter-spacing:.04em;text-transform:uppercase">RAM</span>
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-18px);pointer-events:none">
+                    <span id="mem-gauge-text" style="font-size:32px;font-weight:700;font-family:var(--mono);color:#bc8cff;line-height:1">0%</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">RAM</span>
                   </div>
                 </div>
                 <div id="mem-detail" style="font-size:12px;color:var(--text2);font-weight:500">— / — GB</div>
@@ -6031,8 +6076,8 @@ body.sse-disconnected #app{padding-top:38px;}
             <div id="feeds-media-title" style="font-size:13px;font-weight:600;color:var(--text);line-height:1.3;max-width:calc(100% - 40px)"></div>
             <button onclick="feedsCloseMedia()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px" title="Close">✕</button>
           </div>
-          <div id="feeds-media-body" style="background:#000;line-height:0">
-            <iframe id="feeds-media-iframe" src="" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture;web-share" allowfullscreen style="width:100%;aspect-ratio:16/9;display:block;border:none;min-height:180px"></iframe>
+          <div id="feeds-media-body" style="background:#000">
+            <iframe id="feeds-media-iframe" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen style="width:100%;height:480px;display:block;border:none"></iframe>
           </div>
           <div style="padding:10px 16px;display:flex;justify-content:flex-end">
             <a id="feeds-media-extlink" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ Open on YouTube</a>
@@ -6227,7 +6272,16 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <!-- Web viewer mode (twitterwebviewer.com via proxy) -->
         <div id="feeds-twitter-viewer-mode" style="display:none">
-          <iframe id="feeds-twitter-webviewer-iframe" src="" style="width:100%;height:620px;border:none;border-radius:var(--r);background:var(--bg2)" allowfullscreen></iframe>
+          <div id="feeds-twitter-webviewer-wrap" style="position:relative;width:100%;height:620px">
+            <iframe id="feeds-twitter-webviewer-iframe" src="" style="width:100%;height:100%;border:none;border-radius:var(--r);background:var(--bg2)" allowfullscreen
+              onload="feedsTwitterViewerLoaded(this)"
+              onerror="feedsTwitterViewerError(this)"></iframe>
+            <div id="feeds-twitter-webviewer-fallback" style="display:none;position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg2);border-radius:var(--r)">
+              <div style="font-size:40px">𝕏</div>
+              <div style="font-size:13px;color:var(--text2);text-align:center">Twitter/X cannot be embedded in a web frame.<br>Open it directly in a new tab.</div>
+              <a id="feeds-twitter-webviewer-extlink" href="#" target="_blank" rel="noopener" class="btn blue" style="padding:8px 18px;font-size:13px">↗ Open on X</a>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -7324,7 +7378,10 @@ async function loadStorage() {
             el.innerHTML = '<div class="empty"><div class="empty-icon">💾</div><div class="empty-text">No filesystem data</div></div>';
             return;
         }
+        const _seenDevices = new Set();
         d.filesystems.forEach(fs => {
+            if (fs.device && _seenDevices.has(fs.device)) return;
+            if (fs.device) _seenDevices.add(fs.device);
             const pct = Math.round(fs.percent || 0);
             const mount = fs.mountpoint || fs.device;
             const safeId = 'disk-' + mount.replace(/[^a-zA-Z0-9]/g, '_');
@@ -7338,10 +7395,14 @@ async function loadStorage() {
                 card.className = 'panel';
                 card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;';
                 card.innerHTML = `
-                  <canvas id="c-${safeId}" width="130" height="130"></canvas>
+                  <div style="position:relative;width:130px;height:130px">
+                    <canvas id="c-${safeId}" width="130" height="130"></canvas>
+                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+                      <span id="pct-${safeId}" style="font-size:22px;font-weight:700;font-family:var(--mono);color:${clr}">${pct}%</span>
+                    </div>
+                  </div>
                   <div style="font-size:12px;font-weight:600;color:var(--text);text-align:center;word-break:break-all">${mount}</div>
-                  <div style="font-size:11px;color:var(--text3)">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}</div>
-                  <div style="font-size:20px;font-weight:700;color:${clr}" id="pct-${safeId}">${pct}%</div>`;
+                  <div style="font-size:11px;color:var(--text3)">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}</div>`;
                 el.appendChild(card);
             } else {
                 // Update percentage label color
@@ -8722,7 +8783,14 @@ function twitterSetMode(mode) {
         if (activePill) {
             const handle = (activePill.dataset.handle || activePill.textContent || '').replace(/^[\s\S]*?@?(\w+)\s*$/, '$1').replace(/^@/, '').trim();
             const iframe = document.getElementById('feeds-twitter-webviewer-iframe');
-            if (iframe && handle) iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
+            const fallback = document.getElementById('feeds-twitter-webviewer-fallback');
+            const extLink  = document.getElementById('feeds-twitter-webviewer-extlink');
+            if (fallback) fallback.style.display = 'none';
+            if (iframe && handle) {
+                iframe.style.display = '';
+                iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
+            }
+            if (extLink) extLink.href = `https://x.com/${handle}`;
         }
     }
 }
@@ -8764,7 +8832,14 @@ function _feedsSelectTwitter(id, el) {
     if (_twitterViewMode === 'viewer' && h) {
         const handle = (h.url || '').replace(/^@/, '');
         const iframe = document.getElementById('feeds-twitter-webviewer-iframe');
-        if (iframe && handle) iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
+        const fallback = document.getElementById('feeds-twitter-webviewer-fallback');
+        const extLink  = document.getElementById('feeds-twitter-webviewer-extlink');
+        if (fallback) fallback.style.display = 'none';
+        if (iframe && handle) {
+            iframe.style.display = '';
+            iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
+        }
+        if (extLink) extLink.href = `https://x.com/${handle}`;
     }
 }
 
@@ -8830,6 +8905,22 @@ function feedsOpenYT(videoId, title) {
     if (extLink) extLink.href = `https://www.youtube.com/watch?v=${videoId}`;
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
+}
+function feedsTwitterViewerLoaded(iframe) {
+    // Check if the page content indicates an error (Next.js app error)
+    try {
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (doc && doc.body && doc.body.innerText.includes('Application error')) {
+            feedsTwitterViewerError(iframe);
+        }
+    } catch(e) {
+        // Cross-origin: can't inspect — assume OK
+    }
+}
+function feedsTwitterViewerError(iframe) {
+    if (iframe) iframe.style.display = 'none';
+    const fallback = document.getElementById('feeds-twitter-webviewer-fallback');
+    if (fallback) { fallback.style.display = 'flex'; }
 }
 function feedsCloseMedia() {
     const modal = document.getElementById('feeds-media-modal');

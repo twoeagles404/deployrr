@@ -6,6 +6,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.31] — 2026-03-17
+
+### Changed
+- **Dashboard rebuilt with Homarr-style widget system** — complete overhaul of the overview grid
+  and widget management to match Homarr's UX philosophy:
+  - Grid switched from named CSS Grid areas to **12-column `grid-auto-flow: dense`** — hidden
+    widgets leave no empty gap; remaining widgets compact automatically.
+  - **"Edit" and "Widgets" buttons** are now always visible in the overview header. Edit mode
+    highlights cells with a blue dashed outline and reveals an ✕ button on each widget to hide it.
+    "Done" exits edit mode.
+  - **Widget palette modal** redesigned: 9 toggleable widget cards with icon, name, description,
+    and visible/hidden status. "Show All" restores everything. Click outside to close.
+  - **Scroll opt-in**: only `storage`, `ctrs`, `services`, `infra`, `logs` carry `scrollable`
+    class with a max-height cap. Gauges, System Info, Weather, and Launcher now size naturally —
+    no scroll, no height crop.
+  - `resetGridLayout()` now restores all hidden widgets without a page reload.
+  - `WIDGET_DEFS` updated with `storage` widget and `desc`/`scrollable` metadata.
+
+---
+
 ## [3.15.30] — 2026-03-17
 
 ### Changed

@@ -1053,7 +1053,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.30",
+            "version": "3.15.31",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -3744,63 +3744,71 @@ html { scroll-behavior: smooth; }
 #bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
 #app{position:relative;z-index:1;}
 
-/* ── Homarr-style Dashboard Layout (CSS Grid — 3 column) ──────────────── */
+/* ── Homarr-style Dashboard Layout — 12-col span grid, dense auto-flow ── */
+/* Widgets use data-span="N" for column width. Hidden widgets leave no gap  */
+/* because grid-auto-flow:dense re-packs remaining visible cells.           */
 .ov-dash{
   display:grid;
-  grid-template-columns:1fr 1fr 1fr;
-  grid-template-areas:
-    "gauges   gauges   sysinfo"
-    "weather  storage  ctrs"
-    "services services services"
-    "infra    infra    logs"
-    "launcher launcher launcher";
+  grid-template-columns:repeat(12,1fr);
+  grid-auto-flow:dense;
   gap:14px;
   padding:0;
 }
-#dash-gauges   { grid-area:gauges; }
-#dash-sysinfo  { grid-area:sysinfo; }
-#dash-weather  { grid-area:weather; }
-#dash-storage  { grid-area:storage; }
-#dash-ctrs     { grid-area:ctrs; }
-#dash-services { grid-area:services; }
-#dash-infra    { grid-area:infra; }
-#dash-logs     { grid-area:logs; }
-#dash-launcher { grid-area:launcher; }
+/* Span widths */
+.dash-cell[data-span="12"]{ grid-column:span 12; }
+.dash-cell[data-span="8"] { grid-column:span 8;  }
+.dash-cell[data-span="6"] { grid-column:span 6;  }
+.dash-cell[data-span="4"] { grid-column:span 4;  }
+.dash-cell[data-span="3"] { grid-column:span 3;  }
+/* Base cell — position:relative so remove-btn can be absolute inside */
+.dash-cell{
+  position:relative;
+  min-height:0;
+}
 .dash-cell > .panel,
 .dash-cell > .metric-grid,
 .dash-cell > div { margin:0; }
-/* Each dashboard card has a max-height and scrolls internally */
-.dash-cell { max-height:380px; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; scrollbar-color:var(--border) transparent; border-radius:var(--r,8px); }
-.dash-cell .panel { height:auto; overflow:visible; }
-/* Per-cell overrides */
-#dash-gauges  { max-height:200px; }
-#dash-sysinfo { max-height:320px; }
-#dash-weather { max-height:320px; }
-#dash-storage { max-height:320px; }
-#dash-ctrs    { max-height:320px; }
-#dash-launcher{ max-height:220px; }
-#dash-services{ max-height:420px; }
-#dash-logs    { max-height:380px; }
-#dash-infra   { max-height:380px; }
+/* Scrollable cells — opt-in only */
+.dash-cell.scrollable{
+  overflow-y:auto;overflow-x:hidden;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+#dash-storage.scrollable { max-height:320px; }
+#dash-ctrs.scrollable    { max-height:320px; }
+#dash-services.scrollable{ max-height:440px; }
+#dash-infra.scrollable   { max-height:380px; }
+#dash-logs.scrollable    { max-height:380px; }
+/* ── Edit-mode overlay ── */
+.ov-dash.edit-mode .dash-cell{
+  outline:2px dashed var(--blue);
+  outline-offset:3px;
+  border-radius:var(--r,8px);
+}
+/* Per-widget remove button — hidden until edit mode */
+.widget-remove-btn{
+  display:none;
+  position:absolute;top:6px;right:6px;z-index:20;
+  width:22px;height:22px;border-radius:50%;
+  background:var(--red2,rgba(248,81,73,.15));
+  color:var(--red,#f85149);
+  border:1px solid var(--red,#f85149);
+  cursor:pointer;font-size:14px;font-weight:700;line-height:1;
+  align-items:center;justify-content:center;
+  transition:background .15s;
+}
+.widget-remove-btn:hover{ background:var(--red,#f85149);color:#fff; }
+.ov-dash.edit-mode .widget-remove-btn{ display:flex!important; }
+/* Responsive */
 @media(max-width:900px){
-  .ov-dash{
-    grid-template-columns:1fr 1fr;
-    grid-template-areas:
-      "gauges   gauges"
-      "weather  sysinfo"
-      "storage  ctrs"
-      "services services"
-      "infra    logs"
-      "launcher launcher";
-  }
+  .dash-cell[data-span="8"] { grid-column:span 6; }
+  .dash-cell[data-span="4"] { grid-column:span 6; }
 }
 @media(max-width:600px){
-  .ov-dash{
-    grid-template-columns:1fr;
-    grid-template-areas:
-      "gauges" "sysinfo" "weather" "storage"
-      "ctrs" "services" "infra" "logs" "launcher";
-  }
+  .dash-cell[data-span="12"],
+  .dash-cell[data-span="8"],
+  .dash-cell[data-span="6"],
+  .dash-cell[data-span="4"],
+  .dash-cell[data-span="3"]{ grid-column:span 12; }
 }
 /* Service card tabs ── */
 .svc-card{display:flex;flex-direction:column;overflow:hidden;}
@@ -3838,9 +3846,10 @@ html { scroll-behavior: smooth; }
 .launcher-tile-port{font-size:10px;color:var(--text3);font-family:var(--mono);}
 /* Widget palette cards */
 .widget-palette-card{
-  display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 8px;
-  background:var(--surface);border:2px solid var(--border);border-radius:8px;
+  display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px 8px 10px;
+  background:var(--surface);border:2px solid var(--border);border-radius:10px;
   cursor:pointer;transition:border-color .15s,background .15s;text-align:center;
+  position:relative;
 }
 .widget-palette-card:hover{border-color:var(--blue);background:var(--surface2);}
 .widget-palette-card.active{border-color:var(--green);background:var(--green2);}
@@ -4711,7 +4720,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.30</div>
+      <div class="sb-version">v3.15.31</div>
     </div>
   </div>
 
@@ -4867,17 +4876,18 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="section-sub" id="ov-hostname" style="font-size:11px;opacity:.4;margin-top:2px">Loading...</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
-          <button id="ov-add-btn" class="btn" onclick="showWidgetPalette()" style="display:none;font-size:11px;padding:4px 12px;gap:4px">
-            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            Add Widget
+          <!-- Always-visible widget controls — Homarr-style -->
+          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px" title="Enter edit mode to show/hide widgets">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Edit
           </button>
-          <button id="ov-reset-btn" class="btn" onclick="resetGridLayout()" style="font-size:11px;padding:4px 12px;gap:4px;display:none">
+          <button id="ov-add-btn" class="btn blue" onclick="showWidgetPalette()" style="font-size:11px;padding:4px 12px;gap:4px" title="Add or remove dashboard widgets">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Widgets
+          </button>
+          <button id="ov-reset-btn" class="btn" onclick="resetGridLayout()" style="font-size:11px;padding:4px 12px;gap:4px;display:none" title="Restore all hidden widgets">
             <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Reset
-          </button>
-          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px;display:none">
-            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-            Edit Layout
           </button>
         </div>
       </div>
@@ -4888,7 +4898,8 @@ body.sse-disconnected #app{padding-top:38px;}
       <div id="ov-dashboard" class="ov-dash">
 
         <!-- ⓪ System Gauges widget -->
-        <div class="dash-cell" id="dash-gauges">
+        <div class="dash-cell" id="dash-gauges" data-span="8" data-widget="gauges">
+          <button class="widget-remove-btn" onclick="removeWidget('gauges')" title="Hide widget">✕</button>
             <div class="metric-grid" id="gauge-row" style="margin:0;padding:10px 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
 
               <!-- ── CPU ── -->
@@ -4980,7 +4991,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ① System Info widget -->
-        <div class="dash-cell" id="dash-sysinfo">
+        <div class="dash-cell" id="dash-sysinfo" data-span="4" data-widget="sysinfo">
+          <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Hide widget">✕</button>
             <div class="panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -5061,7 +5073,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ② Weather widget -->
-        <div class="dash-cell" id="dash-weather">
+        <div class="dash-cell" id="dash-weather" data-span="4" data-widget="weather">
+          <button class="widget-remove-btn" onclick="removeWidget('weather')" title="Hide widget">✕</button>
             <div class="panel" id="weather-panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
@@ -5087,7 +5100,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ② Storage widget -->
-        <div class="dash-cell" id="dash-storage">
+        <div class="dash-cell scrollable" id="dash-storage" data-span="4" data-widget="storage">
+          <button class="widget-remove-btn" onclick="removeWidget('storage')" title="Hide widget">✕</button>
             <div class="panel" style="margin:0;height:100%">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/></svg>
@@ -5100,7 +5114,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ② Containers Live (compact — top-right) -->
-        <div class="dash-cell" id="dash-ctrs">
+        <div class="dash-cell scrollable" id="dash-ctrs" data-span="4" data-widget="ctrs">
+          <button class="widget-remove-btn" onclick="removeWidget('ctrs')" title="Hide widget">✕</button>
             <div class="panel" style="margin:0;height:100%">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span style="display:flex;align-items:center;gap:6px">
@@ -5117,7 +5132,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ③ Service Cards row -->
-        <div class="dash-cell" id="dash-services">
+        <div class="dash-cell scrollable" id="dash-services" data-span="12" data-widget="services">
+          <button class="widget-remove-btn" onclick="removeWidget('services')" title="Hide widget">✕</button>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;box-sizing:border-box" id="service-cards-row">
               <div class="panel svc-card" style="margin:0" id="radarr-card">
                 <div class="svc-card-hdr">
@@ -5172,7 +5188,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ④+⑤ Docker & Network I/O -->
-        <div class="dash-cell" id="dash-infra">
+        <div class="dash-cell scrollable" id="dash-infra" data-span="8" data-widget="infra">
+          <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Hide widget">✕</button>
             <div class="panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
@@ -5261,7 +5278,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ⑥ Recent Logs -->
-        <div class="dash-cell" id="dash-logs">
+        <div class="dash-cell scrollable" id="dash-logs" data-span="4" data-widget="logs">
+          <button class="widget-remove-btn" onclick="removeWidget('logs')" title="Hide widget">✕</button>
             <div class="panel" style="margin:0">
               <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
                 <span>
@@ -5275,7 +5293,8 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
 
         <!-- ⑧ Service Launcher -->
-        <div class="dash-cell" id="dash-launcher">
+        <div class="dash-cell" id="dash-launcher" data-span="12" data-widget="launcher">
+          <button class="widget-remove-btn" onclick="removeWidget('launcher')" title="Hide widget">✕</button>
             <div class="panel" style="margin:0">
               <div class="panel-title">
                 🚀 Service Launcher
@@ -5287,14 +5306,27 @@ body.sse-disconnected #app{padding-top:38px;}
 
       </div><!-- /ov-dashboard -->
 
-      <!-- Widget Palette Modal -->
-      <div id="widget-palette-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;width:520px;max-width:95vw;max-height:80vh;overflow:auto">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <div style="font-size:14px;font-weight:600;color:var(--text)">Add / Remove Widgets</div>
-            <button class="btn" onclick="document.getElementById('widget-palette-modal').style.display='none'" style="padding:4px 12px">✕ Close</button>
+      <!-- Widget Palette Modal — Homarr-style -->
+      <div id="widget-palette-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:0;width:580px;max-width:95vw;max-height:82vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.5)">
+          <!-- Header -->
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">
+            <div>
+              <div style="font-size:15px;font-weight:700;color:var(--text)">Dashboard Widgets</div>
+              <div style="font-size:11px;color:var(--text3);margin-top:2px">Click a widget to show or hide it on your dashboard</div>
+            </div>
+            <button class="btn" onclick="document.getElementById('widget-palette-modal').style.display='none'" style="padding:4px 12px;font-size:13px">✕</button>
           </div>
-          <div id="widget-palette-body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px"></div>
+          <!-- Widget grid -->
+          <div id="widget-palette-body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px;padding:16px;overflow-y:auto"></div>
+          <!-- Footer -->
+          <div style="padding:10px 20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+            <span id="widget-palette-count" style="font-size:11px;color:var(--text3)"></span>
+            <button class="btn" onclick="resetGridLayout();document.getElementById('widget-palette-modal').style.display='none'" style="font-size:11px;padding:4px 14px">
+              <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              Show All
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -10960,15 +10992,18 @@ function hlsPlay(videoId, url) {
 }
 
 // ── Widget palette definitions ────────────────────────────────────────────────
+// span: grid column span in the 12-col grid
+// scrollable: whether the cell has overflow-y:auto (true = has max-height)
 const WIDGET_DEFS = {
-  gauges:   { label: 'System Gauges',    icon: '📊',  dw:12, dh:3, dx:0,  dy:0  },
-  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:5, dx:0,  dy:3  },
-  weather:  { label: 'Weather',          icon: '🌤️', dw:6,  dh:4, dx:6,  dy:3  },
-  services: { label: 'Service Cards',    icon: '🃏',  dw:12, dh:5, dx:0,  dy:7  },
-  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:4, dx:0,  dy:12 },
-  logs:     { label: 'Recent Logs',      icon: '📋',  dw:4,  dh:4, dx:0,  dy:15 },
-  ctrs:     { label: 'Containers',       icon: '📦',  dw:8,  dh:4, dx:4,  dy:15 },
-  launcher: { label: 'Service Launcher', icon: '🚀',  dw:12, dh:3, dx:0,  dy:19 },
+  gauges:   { label: 'System Gauges',    icon: '📊', desc: 'CPU, RAM & load gauges',            span: 8,  scrollable: false },
+  sysinfo:  { label: 'System Info',      icon: 'ℹ️', desc: 'OS, kernel, hostname, uptime',      span: 4,  scrollable: false },
+  weather:  { label: 'Weather',          icon: '🌤️',desc: 'Current weather & forecast',         span: 4,  scrollable: false },
+  storage:  { label: 'Storage',          icon: '💾', desc: 'Disk usage per filesystem mount',   span: 4,  scrollable: true  },
+  ctrs:     { label: 'Containers',       icon: '📦', desc: 'Live container status list',        span: 4,  scrollable: true  },
+  services: { label: 'Service Cards',    icon: '🃏', desc: 'ARR / Plex / qBit service cards',  span: 12, scrollable: true  },
+  infra:    { label: 'Docker & Network', icon: '🐳', desc: 'Docker engine stats + network I/O', span: 8,  scrollable: true  },
+  logs:     { label: 'Recent Logs',      icon: '📋', desc: 'Live log stream excerpt',           span: 4,  scrollable: true  },
+  launcher: { label: 'Service Launcher', icon: '🚀', desc: 'Quick-launch tiles for all services',span: 12, scrollable: false },
 };
 
 let _hiddenWidgets = new Set();
@@ -10989,7 +11024,7 @@ async function _saveWidgetConfig() {
   } catch(e) {}
 }
 
-// Load widget config from server and apply hidden list — CSS Grid version
+// Load widget config from server and apply hidden list
 async function _loadWidgetConfig() {
   try {
     const r = await fetch('/api/widget_config');
@@ -11000,56 +11035,64 @@ async function _loadWidgetConfig() {
         const cell = document.getElementById(`dash-${id}`);
         if (cell) cell.style.display = 'none';
       });
-      const addBtn = document.getElementById('ov-add-btn');
-      if (addBtn && _hiddenWidgets.size > 0) addBtn.style.display = '';
+      _syncResetBtn();
     }
   } catch(e) {}
 }
 
-// Remove (hide) a widget — CSS Grid version, no GridStack needed
-function removeWidget(gsId) {
-  const cell = document.getElementById(`dash-${gsId}`);
-  if (!cell) return;
-  _hiddenWidgets.add(gsId);
-  cell.style.display = 'none';
-  const addBtn = document.getElementById('ov-add-btn');
-  if (addBtn) addBtn.style.display = '';
-  _saveWidgetConfig();
-  showToast(`"${WIDGET_DEFS[gsId]?.label || gsId}" hidden — use Add Widget to restore`, 'info', 3000);
+function _syncResetBtn() {
+  const btn = document.getElementById('ov-reset-btn');
+  if (btn) btn.style.display = _hiddenWidgets.size > 0 ? '' : 'none';
 }
 
-// Restore a hidden widget — CSS Grid version
-function restoreWidget(gsId) {
-  const def = WIDGET_DEFS[gsId];
+// Remove (hide) a widget
+function removeWidget(id) {
+  const cell = document.getElementById(`dash-${id}`);
+  if (!cell) return;
+  _hiddenWidgets.add(id);
+  cell.style.display = 'none';
+  _syncResetBtn();
+  _saveWidgetConfig();
+  showToast(`"${WIDGET_DEFS[id]?.label || id}" hidden — click Widgets to restore`, 'info', 2500);
+}
+
+// Restore a hidden widget
+function restoreWidget(id) {
+  const def = WIDGET_DEFS[id];
   if (!def) return;
-  _hiddenWidgets.delete(gsId);
-  const cell = document.getElementById(`dash-${gsId}`);
+  _hiddenWidgets.delete(id);
+  const cell = document.getElementById(`dash-${id}`);
   if (cell) cell.style.display = '';
-  if (_hiddenWidgets.size === 0) {
-    const addBtn = document.getElementById('ov-add-btn');
-    if (addBtn) addBtn.style.display = 'none';
-  }
-  const modal = document.getElementById('widget-palette-modal');
-  if (modal) modal.style.display = 'none';
+  _syncResetBtn();
   _saveWidgetConfig();
   showToast(`"${def.label}" restored`, 'success', 2000);
+  showWidgetPalette(); // refresh in-place
 }
 
-// Show widget palette modal
+// Show widget palette modal — Homarr-style
 function showWidgetPalette() {
   const body = document.getElementById('widget-palette-body');
+  const countEl = document.getElementById('widget-palette-count');
   if (!body) return;
   body.innerHTML = '';
+  const hidden = [..._hiddenWidgets].length;
+  const total = Object.keys(WIDGET_DEFS).length;
+  if (countEl) countEl.textContent = hidden > 0 ? `${hidden} widget${hidden>1?'s':''} hidden` : 'All widgets visible';
   Object.entries(WIDGET_DEFS).forEach(([id, def]) => {
     const isHidden = _hiddenWidgets.has(id);
     const div = document.createElement('div');
     div.className = 'widget-palette-card' + (isHidden ? '' : ' active');
-    div.title = isHidden ? 'Click to restore' : 'Click to hide';
-    div.innerHTML = `<div class="wpc-icon">${def.icon}</div><div class="wpc-name">${def.label}</div><div class="wpc-status">${isHidden ? '➕ Hidden' : '✅ Visible'}</div>`;
+    div.title = isHidden ? 'Click to show on dashboard' : 'Click to hide from dashboard';
+    div.innerHTML = `
+      <div class="wpc-icon">${def.icon}</div>
+      <div class="wpc-name">${def.label}</div>
+      <div class="wpc-status">${isHidden
+        ? '<span style="color:var(--text3)">Hidden</span>'
+        : '<span style="color:var(--green)">✓ Visible</span>'}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:3px;text-align:center;line-height:1.3">${def.desc}</div>`;
     div.onclick = () => {
       if (isHidden) restoreWidget(id);
-      else removeWidget(id);
-      showWidgetPalette();  // refresh palette
+      else { removeWidget(id); showWidgetPalette(); }
     };
     body.appendChild(div);
   });
@@ -11129,17 +11172,33 @@ async function loadServiceLauncher() {
 }
 
 function toggleGridEdit() {
-    showToast('Dashboard uses a fixed layout — no edit mode needed', 'info');
+  const dash = document.getElementById('ov-dashboard');
+  const btn  = document.getElementById('ov-edit-btn');
+  if (!dash || !btn) return;
+  const entering = !dash.classList.contains('edit-mode');
+  dash.classList.toggle('edit-mode', entering);
+  if (entering) {
+    btn.style.background = 'var(--blue)';
+    btn.style.color      = '#fff';
+    btn.innerHTML = `<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Done`;
+    showToast('Edit mode — click ✕ on any widget to hide it', 'info', 3000);
+  } else {
+    btn.style.background = '';
+    btn.style.color      = '';
+    btn.innerHTML = `<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> Edit`;
+  }
 }
 
 function resetGridLayout() {
-  if (!confirm('Reset overview layout to defaults? (all widget positions + hidden state reset)')) return;
-  localStorage.removeItem('arrhub_grid');
   _hiddenWidgets.clear();
   _saveWidgetConfig();
-  const resetBtn = document.getElementById('ov-reset-btn');
-  if (resetBtn) resetBtn.style.display = 'none';
-  location.reload();
+  // Restore all cells
+  Object.keys(WIDGET_DEFS).forEach(id => {
+    const cell = document.getElementById(`dash-${id}`);
+    if (cell) cell.style.display = '';
+  });
+  _syncResetBtn();
+  showToast('All widgets restored', 'success', 2000);
 }
 
 // Init GridStack in static mode on load to apply any saved positions

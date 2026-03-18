@@ -1053,7 +1053,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.32",
+            "version": "3.15.33",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -3076,12 +3076,11 @@ def api_football_team_fixtures():
     # ESPN uses END-year of season: 2025-26 = 2026. Try current year and adjacent years.
     sy = today.year + 1 if today.month >= 8 else today.year
     season_candidates = list(dict.fromkeys([sy, sy - 1, sy + 1]))  # deduplicated, primary first
-    # Candidate URLs in priority order: no seasontype (all), then type 2, then type 3
+    # Candidate URLs: seasontype=2 = regular season only — prevents Copa del Rey / cup matches mixing in
     candidate_urls = []
     for s in season_candidates:
-        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}")
+        # seasontype=2 = regular season only — prevents Copa del Rey / cup matches mixing in
         candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}&seasontype=2")
-        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}&seasontype=3")
     all_events = []
     seen_ids = set()
     for url in candidate_urls:
@@ -3829,10 +3828,14 @@ html { scroll-behavior: smooth; }
   scrollbar-width:thin;scrollbar-color:var(--border) transparent;
 }
 #dash-storage.scrollable { max-height:320px; }
-#dash-ctrs.scrollable    { max-height:320px; }
 #dash-services.scrollable{ max-height:440px; }
 #dash-infra.scrollable   { max-height:380px; }
 #dash-logs.scrollable    { max-height:380px; }
+#dash-todo.scrollable    { max-height:400px; }
+/* Apps & Calendar widget styles */
+.apps-tab-btn{ transition:border-color .15s,color .15s; }
+.apps-tab-btn:hover{ background:var(--bg3)!important; }
+#cal-grid > div:hover{ background:var(--bg3)!important; filter:brightness(1.08); }
 /* ── Edit-mode overlay ── */
 .ov-dash.edit-mode .dash-cell{
   outline:2px dashed var(--blue);
@@ -4779,7 +4782,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.32</div>
+      <div class="sb-version">v3.15.33</div>
     </div>
   </div>
 
@@ -5172,23 +5175,7 @@ body.sse-disconnected #app{padding-top:38px;}
             </div>
         </div>
 
-        <!-- ② Containers Live (compact — top-right) -->
-        <div class="dash-cell scrollable" id="dash-ctrs" data-span="4" data-widget="ctrs">
-          <button class="widget-remove-btn" onclick="removeWidget('ctrs')" title="Hide widget">✕</button>
-            <div class="panel" style="margin:0;height:100%">
-              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-                <span style="display:flex;align-items:center;gap:6px">
-                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                  Containers
-                  <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
-                </span>
-                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">All →</button>
-              </div>
-              <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:5px;margin-top:4px">
-                <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
-              </div>
-            </div>
-        </div>
+
 
         <!-- ③ Service Cards row -->
         <div class="dash-cell scrollable" id="dash-services" data-span="12" data-widget="services">
@@ -5351,16 +5338,101 @@ body.sse-disconnected #app{padding-top:38px;}
             </div>
         </div>
 
-        <!-- ⑧ Service Launcher -->
-        <div class="dash-cell" id="dash-launcher" data-span="12" data-widget="launcher">
-          <button class="widget-remove-btn" onclick="removeWidget('launcher')" title="Hide widget">✕</button>
-            <div class="panel" style="margin:0">
-              <div class="panel-title">
-                🚀 Service Launcher
-                <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Click any tile to open</span>
-              </div>
-              <div id="launcher-tiles" style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 0"></div>
+        <!-- ⑧ Apps: Service Launcher + Containers (combined) -->
+        <div class="dash-cell" id="dash-apps" data-span="8" data-widget="apps">
+          <button class="widget-remove-btn" onclick="removeWidget('apps')" title="Hide widget">✕</button>
+          <div class="panel" style="margin:0;height:100%">
+            <div style="display:flex;align-items:center;border-bottom:1px solid var(--border);margin-bottom:0">
+              <button id="apps-tab-btn-launcher" class="apps-tab-btn active" onclick="appsTabSwitch('launcher')" style="flex:1;padding:8px 10px;background:none;border:none;border-bottom:2px solid var(--accent,#2563eb);color:var(--text);font-size:11px;font-weight:600;cursor:pointer">🚀 Launcher</button>
+              <button id="apps-tab-btn-ctrs" class="apps-tab-btn" onclick="appsTabSwitch('ctrs')" style="flex:1;padding:8px 10px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:11px;cursor:pointer">
+                📦 Containers
+                <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:600;margin-left:4px">—</span>
+              </button>
             </div>
+            <!-- Launcher panel -->
+            <div id="apps-panel-launcher" style="padding:6px;overflow-y:auto;max-height:340px">
+              <div id="ov-launcher-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:6px"></div>
+            </div>
+            <!-- Containers panel -->
+            <div id="apps-panel-ctrs" style="display:none;padding:6px 0;overflow-y:auto;max-height:340px">
+              <div style="display:flex;justify-content:flex-end;padding:0 8px 6px">
+                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">All →</button>
+              </div>
+              <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:5px;padding:0 8px">
+                <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ⑨ To-Do List -->
+        <div class="dash-cell scrollable" id="dash-todo" data-span="4" data-widget="todo">
+          <button class="widget-remove-btn" onclick="removeWidget('todo')" title="Hide widget">✕</button>
+          <div class="panel" style="margin:0;height:100%">
+            <div class="panel-title" style="display:flex;align-items:center;gap:6px">
+              <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+              To-Do
+              <span id="todo-pending-count" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600"></span>
+            </div>
+            <div style="display:flex;gap:5px;margin-bottom:8px">
+              <input id="todo-new-input" type="text" placeholder="Add a task…"
+                style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--r);font-size:12px"
+                onkeydown="if(event.key==='Enter')todoAdd()">
+              <button onclick="todoAdd()" class="btn blue" style="padding:5px 10px;font-size:11px;white-space:nowrap">+ Add</button>
+            </div>
+            <div id="todo-list" style="display:flex;flex-direction:column;gap:4px;max-height:280px;overflow-y:auto;scrollbar-width:thin"></div>
+          </div>
+        </div>
+
+        <!-- ⑩ Calendar -->
+        <div class="dash-cell" id="dash-calendar" data-span="12" data-widget="calendar">
+          <button class="widget-remove-btn" onclick="removeWidget('calendar')" title="Hide widget">✕</button>
+          <div class="panel" style="margin:0">
+            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <span style="display:flex;align-items:center;gap:6px">
+                <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M16 2v4M8 2v4M3 10h18"/></svg>
+                Calendar
+              </span>
+              <div style="display:flex;align-items:center;gap:6px">
+                <button onclick="calPrevMonth()" class="btn" style="padding:3px 9px;font-size:13px">◀</button>
+                <span id="cal-month-label" style="font-size:12px;font-weight:600;min-width:110px;text-align:center"></span>
+                <button onclick="calNextMonth()" class="btn" style="padding:3px 9px;font-size:13px">▶</button>
+                <button onclick="calGoToday()" class="btn blue" style="padding:3px 9px;font-size:11px">Today</button>
+              </div>
+            </div>
+            <!-- Day-of-week headers -->
+            <div id="cal-dow-row" style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:3px">
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Sun</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Mon</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Tue</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Wed</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Thu</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Fri</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Sat</div>
+            </div>
+            <!-- Calendar grid -->
+            <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px"></div>
+            <!-- Add event modal -->
+            <div id="cal-event-form" style="display:none;margin-top:10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px;gap:8px">
+              <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:6px">
+                Add event — <span id="cal-form-date-label" style="color:var(--blue)"></span>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <input id="cal-event-title" type="text" placeholder="Event title…"
+                  style="flex:1;min-width:120px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--r);font-size:12px"
+                  onkeydown="if(event.key==='Enter')calSubmitEvent()">
+                <select id="cal-event-color" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 7px;border-radius:var(--r);font-size:12px">
+                  <option value="#2563eb">🔵 Blue</option>
+                  <option value="#16a34a">🟢 Green</option>
+                  <option value="#dc2626">🔴 Red</option>
+                  <option value="#d97706">🟠 Orange</option>
+                  <option value="#9333ea">🟣 Purple</option>
+                </select>
+                <button onclick="calSubmitEvent()" class="btn blue" style="padding:5px 12px;font-size:11px">Save</button>
+                <button onclick="calCloseForm()" class="btn" style="padding:5px 10px;font-size:11px">Cancel</button>
+              </div>
+            </div>
+          </div>
         </div>
 
       </div><!-- /ov-dashboard -->
@@ -5830,12 +5902,20 @@ body.sse-disconnected #app{padding-top:38px;}
             <option value="bintv">BinTV</option>
             <option value="daddylive">DaddyLive</option>
           </select>
-          <div id="iptv-dl-domain-wrap" style="display:none;align-items:center;gap:4px">
+          <div id="iptv-dl-domain-wrap" style="display:none;align-items:center;gap:4px;flex-wrap:wrap">
             <span style="font-size:10px;color:var(--text3)">Domain:</span>
             <input id="iptv-dl-domain" type="text" placeholder="daddylive.me"
-              style="font-size:10px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);width:130px"
+              style="font-size:10px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);width:120px"
               onchange="iptvSetDaddyliveDomain(this.value)"
               title="DaddyLive domain — changes frequently. Try: daddylive.me  daddylive.eu  daddylive.sh"/>
+            <span style="font-size:10px;color:var(--text3)">Path:</span>
+            <select id="iptv-dl-pattern" onchange="iptvSetDaddylivePattern(this.value)"
+              style="font-size:10px;padding:3px 5px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r)">
+              <option value="stream">/stream/stream-N.php</option>
+              <option value="live">/live/stream-N.php</option>
+              <option value="embed">/embed/stream-N.php</option>
+              <option value="premium">/premium-streams/stream-N.php</option>
+            </select>
           </div>
           <button onclick="iptvBrowseChannels()" class="btn" style="padding:6px 14px;font-size:12px" title="Browse channels in a panel">🔍 Browse</button>
           <button onclick="iptvShowAddChannel()" class="btn-primary" style="padding:6px 14px;font-size:12px">＋ Channel</button>
@@ -9754,10 +9834,24 @@ let _iptvTZOffset    = parseInt(localStorage.getItem('iptv_tz_offset') || '0', 1
 
 // ── DaddyLive domain — changes frequently; user can override in Settings ──
 // Stream URL: <domain>/stream/stream-<id>.php
-let _daddyliveDomain = localStorage.getItem('iptv_daddylive_domain') || 'daddylive.me';
+let _daddyliveDomain   = localStorage.getItem('iptv_daddylive_domain')   || 'daddylive.me';
+let _daddylivePattern  = localStorage.getItem('iptv_daddylive_pattern')  || 'stream';
 function iptvSetDaddyliveDomain(d) {
     _daddyliveDomain = (d || 'daddylive.me').replace(/^https?:\/\//, '').replace(/\/$/, '');
     localStorage.setItem('iptv_daddylive_domain', _daddyliveDomain);
+}
+function iptvSetDaddylivePattern(p) {
+    _daddylivePattern = p || 'stream';
+    localStorage.setItem('iptv_daddylive_pattern', _daddylivePattern);
+}
+function _daddyliveStreamUrl(id) {
+    const patterns = {
+        'stream':  `/stream/stream-${id}.php`,
+        'live':    `/live/stream-${id}.php`,
+        'embed':   `/embed/stream-${id}.php`,
+        'premium': `/premium-streams/stream-${id}.php`,
+    };
+    return `https://${_daddyliveDomain}${patterns[_daddylivePattern] || patterns.stream}`;
 }
 
 // ── BinTV hard-coded channel list ────────────────────────────────────
@@ -9874,6 +9968,8 @@ function _iptvInitUI() {
     if (dlWrap) dlWrap.style.display = _iptvSource === 'daddylive' ? 'flex' : 'none';
     const dlInput = document.getElementById('iptv-dl-domain');
     if (dlInput) dlInput.value = _daddyliveDomain;
+    const dlPattern = document.getElementById('iptv-dl-pattern');
+    if (dlPattern) dlPattern.value = _daddylivePattern;
 }
 
 function iptvSetView(v) {
@@ -9998,21 +10094,21 @@ function iptvPlayChannel(id, name, rowEl) {
         const streamUrls = {
             moviebite: `https://live.moviebite.cc/channels/${id}`,
             bintv:     `https://www.bintv.net/channel/${id}`,
-            daddylive: `https://${_daddyliveDomain}/stream/stream-${id}.php`
+            daddylive: _daddyliveStreamUrl(id)
         };
         frame.src = streamUrls[_iptvSource] || streamUrls.moviebite;
         frame.style.display = '';
     }
     if (placeholder) placeholder.style.display = 'none';
     if (nowPlaying)  nowPlaying.textContent = name;
-    const sourceNames = { moviebite: 'MovieBite', bintv: 'BinTV', daddylive: `DaddyLive (${_daddyliveDomain})` };
+    const sourceNames = { moviebite: 'MovieBite', bintv: 'BinTV', daddylive: `DaddyLive (${_daddyliveDomain}/${_daddylivePattern})` };
     if (nowSource)   nowSource.textContent  = `${sourceNames[_iptvSource]||'Stream'} · ${name}`;
 
     const popoutBtn = document.getElementById('iptv-popout-btn');
     const popUrls = {
         moviebite: `https://live.moviebite.cc/channels/${id}`,
         bintv:     `https://www.bintv.net/channel/${id}`,
-        daddylive: `https://${_daddyliveDomain}/stream/stream-${id}.php`
+        daddylive: _daddyliveStreamUrl(id)
     };
     if (popoutBtn) popoutBtn.dataset.url = popUrls[_iptvSource] || popUrls.moviebite;
 }
@@ -11162,15 +11258,16 @@ function hlsPlay(videoId, url) {
 // span: grid column span in the 12-col grid
 // scrollable: whether the cell has overflow-y:auto (true = has max-height)
 const WIDGET_DEFS = {
-  gauges:   { label: 'System Gauges',    icon: '📊', desc: 'CPU, RAM & load gauges',            span: 8,  scrollable: false },
-  sysinfo:  { label: 'System Info',      icon: 'ℹ️', desc: 'OS, kernel, hostname, uptime',      span: 4,  scrollable: false },
-  weather:  { label: 'Weather',          icon: '🌤️',desc: 'Current weather & forecast',         span: 4,  scrollable: false },
-  storage:  { label: 'Storage',          icon: '💾', desc: 'Disk usage per filesystem mount',   span: 4,  scrollable: true  },
-  ctrs:     { label: 'Containers',       icon: '📦', desc: 'Live container status list',        span: 4,  scrollable: true  },
-  services: { label: 'Service Cards',    icon: '🃏', desc: 'ARR / Plex / qBit service cards',  span: 12, scrollable: true  },
-  infra:    { label: 'Docker & Network', icon: '🐳', desc: 'Docker engine stats + network I/O', span: 8,  scrollable: true  },
-  logs:     { label: 'Recent Logs',      icon: '📋', desc: 'Live log stream excerpt',           span: 4,  scrollable: true  },
-  launcher: { label: 'Service Launcher', icon: '🚀', desc: 'Quick-launch tiles for all services',span: 12, scrollable: false },
+  gauges:   { label: 'System Gauges',    icon: '📊', desc: 'CPU, RAM & load gauges',              span: 8,  scrollable: false },
+  sysinfo:  { label: 'System Info',      icon: 'ℹ️', desc: 'OS, kernel, hostname, uptime',        span: 4,  scrollable: false },
+  weather:  { label: 'Weather',          icon: '🌤️', desc: 'Current weather & forecast',          span: 4,  scrollable: false },
+  storage:  { label: 'Storage',          icon: '💾', desc: 'Disk usage per filesystem mount',     span: 4,  scrollable: true  },
+  services: { label: 'Service Cards',    icon: '🃏', desc: 'ARR / Plex / qBit service cards',    span: 12, scrollable: true  },
+  infra:    { label: 'Docker & Network', icon: '🐳', desc: 'Docker engine stats + network I/O',  span: 8,  scrollable: true  },
+  logs:     { label: 'Recent Logs',      icon: '📋', desc: 'Live log stream excerpt',             span: 4,  scrollable: true  },
+  apps:     { label: 'Apps & Containers',icon: '🚀', desc: 'Service launcher + live container list', span: 8, scrollable: false },
+  todo:     { label: 'To-Do List',       icon: '✅', desc: 'Editable personal task list',         span: 4,  scrollable: true  },
+  calendar: { label: 'Calendar',         icon: '📅', desc: 'Monthly calendar with custom events', span: 12, scrollable: false },
 };
 
 let _hiddenWidgets = new Set();
@@ -11301,21 +11398,22 @@ function updateGreeting() {
 }
 
 async function loadServiceLauncher() {
-  const el = document.getElementById('launcher-tiles');
-  if (!el) return;
+  const elOld = document.getElementById('launcher-tiles');
+  const elNew = document.getElementById('ov-launcher-grid');
+  const targetEls = [elOld, elNew].filter(e => e);
+  if (!targetEls.length) return;
   try {
     const r = await fetch('/api/containers');
     const data = await r.json();
     const running = (data.containers || []).filter(c => c.status === 'running');
     if (!running.length) {
-      el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No running containers found.</div>';
+      const msg = '<div style="color:var(--text3);font-size:12px;padding:8px">No running containers found.</div>';
+      targetEls.forEach(el => { el.innerHTML = msg; });
       return;
     }
-    el.innerHTML = running.map(c => {
+    const html = running.map(c => {
       const name = (c.name || '').replace(/^\//, '');
       const ports = c.ports || [];
-      // Pick first host port that looks like an HTTP port
-      // Prefer web-ish ports (1024-65535, not known non-HTTP like 53,25,110,143,993,995)
       const skipPorts = new Set(['53','25','110','143','993','995','22','21','5432','3306','6379','27017']);
       const webPorts = ports.filter(p => {
         const hp = p.split(':')[0];
@@ -11333,9 +11431,182 @@ async function loadServiceLauncher() {
         ? `<a href="${url}" target="_blank" rel="noopener" class="launcher-tile">${tileHtml}</a>`
         : `<div class="launcher-tile" style="opacity:.5;cursor:default">${tileHtml}</div>`;
     }).join('');
+    targetEls.forEach(el => { el.innerHTML = html; });
   } catch(e) {
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px">Failed to load containers.</div>';
+    const msg = '<div style="color:var(--text3);font-size:12px">Failed to load containers.</div>';
+    targetEls.forEach(el => { el.innerHTML = msg; });
   }
+}
+
+// ── Calendar ──────────────────────────────────────────────────────────────
+let _calEvents = {};  // {"YYYY-MM-DD": [{id, title, color}, ...]}
+let _calYear = new Date().getFullYear();
+let _calMonth = new Date().getMonth();  // 0-based
+let _calSelectedDate = null;
+(function _calLoad() {
+  try { _calEvents = JSON.parse(localStorage.getItem('arrhub_calendar') || '{}'); } catch(e) { _calEvents = {}; }
+})();
+function _calSave() { localStorage.setItem('arrhub_calendar', JSON.stringify(_calEvents)); }
+
+function calRender() {
+  const el = document.getElementById('cal-grid');
+  const lbl = document.getElementById('cal-month-label');
+  if (!el) return;
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  if (lbl) lbl.textContent = `${monthNames[_calMonth]} ${_calYear}`;
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  const firstDay = new Date(_calYear, _calMonth, 1).getDay();  // 0=Sun
+  const daysInMonth = new Date(_calYear, _calMonth + 1, 0).getDate();
+  let html = '';
+  // Empty cells before first day
+  for (let i = 0; i < firstDay; i++) html += '<div style="min-height:52px"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${_calYear}-${String(_calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isToday = dateStr === todayStr;
+    const isSelected = dateStr === _calSelectedDate;
+    const evts = _calEvents[dateStr] || [];
+    const dots = evts.slice(0,3).map(e => `<div style="width:6px;height:6px;border-radius:50%;background:${e.color || '#2563eb'};flex-shrink:0"></div>`).join('');
+    const extraCount = evts.length > 3 ? `<span style="font-size:8px;color:var(--text3)">+${evts.length-3}</span>` : '';
+    html += `<div onclick="calDayClick('${dateStr}')" style="min-height:52px;padding:4px 5px;border-radius:6px;background:${isSelected?'var(--blue2)':isToday?'var(--surface)':'var(--bg3)'};border:1px solid ${isSelected?'var(--blue)':isToday?'var(--accent,#2563eb)':'var(--border)'};cursor:pointer;transition:background .15s;position:relative" title="Click to add event">
+      <div style="font-size:11px;font-weight:${isToday?'700':'500'};color:${isToday?'var(--accent,#2563eb)':'var(--text)'};">${d}</div>
+      ${evts.length ? `<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:3px;">${dots}${extraCount}</div>` : ''}
+      ${evts.slice(0,2).map(e => `<div title="${e.title}" style="font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 3px;border-radius:3px;background:${e.color||'#2563eb'}22;color:${e.color||'#2563eb'};margin-top:1px">${e.title.replace(/</g,'&lt;')}</div>`).join('')}
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function calDayClick(dateStr) {
+  _calSelectedDate = dateStr;
+  const form = document.getElementById('cal-event-form');
+  const lbl = document.getElementById('cal-form-date-label');
+  if (lbl) lbl.textContent = new Date(dateStr + 'T12:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const inp = document.getElementById('cal-event-title');
+  if (inp) inp.value = '';
+  if (form) form.style.display = 'flex';
+  calRender();
+  // If there are existing events on this day, show them above the form
+  const evts = _calEvents[dateStr] || [];
+  if (evts.length) {
+    const existingEl = document.getElementById('cal-existing-events');
+    // Inject existing events list if not already present
+    if (!existingEl && form) {
+      const div = document.createElement('div');
+      div.id = 'cal-existing-events';
+      div.style.cssText = 'margin-top:8px;display:flex;flex-direction:column;gap:3px';
+      form.appendChild(div);
+    }
+    const eel = document.getElementById('cal-existing-events');
+    if (eel) eel.innerHTML = evts.map(e =>
+      `<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;background:var(--bg3);border-radius:5px">
+        <div style="width:8px;height:8px;border-radius:50%;background:${e.color||'#2563eb'};flex-shrink:0"></div>
+        <span style="flex:1;font-size:11px">${e.title.replace(/</g,'&lt;')}</span>
+        <button onclick="calDeleteEvent('${dateStr}','${e.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px;padding:0" title="Delete">✕</button>
+      </div>`
+    ).join('');
+  } else {
+    const eel = document.getElementById('cal-existing-events');
+    if (eel) eel.innerHTML = '';
+  }
+}
+
+function calSubmitEvent() {
+  if (!_calSelectedDate) return;
+  const title = (document.getElementById('cal-event-title')?.value || '').trim();
+  const color = document.getElementById('cal-event-color')?.value || '#2563eb';
+  if (!title) return;
+  if (!_calEvents[_calSelectedDate]) _calEvents[_calSelectedDate] = [];
+  _calEvents[_calSelectedDate].push({ id: Date.now().toString(36), title, color });
+  _calSave(); calRender();
+  document.getElementById('cal-event-title').value = '';
+  // Refresh existing events display
+  calDayClick(_calSelectedDate);
+}
+
+function calDeleteEvent(dateStr, eventId) {
+  if (_calEvents[dateStr]) {
+    _calEvents[dateStr] = _calEvents[dateStr].filter(e => e.id !== eventId);
+    if (!_calEvents[dateStr].length) delete _calEvents[dateStr];
+    _calSave(); calRender();
+    calDayClick(dateStr);
+  }
+}
+
+function calCloseForm() {
+  _calSelectedDate = null;
+  const form = document.getElementById('cal-event-form');
+  if (form) form.style.display = 'none';
+  calRender();
+}
+
+function calPrevMonth() {
+  _calMonth--;
+  if (_calMonth < 0) { _calMonth = 11; _calYear--; }
+  calRender();
+}
+function calNextMonth() {
+  _calMonth++;
+  if (_calMonth > 11) { _calMonth = 0; _calYear++; }
+  calRender();
+}
+function calGoToday() {
+  const now = new Date();
+  _calYear = now.getFullYear();
+  _calMonth = now.getMonth();
+  calRender();
+}
+
+// ── To-Do List ─────────────────────────────────────────────────────────────
+let _todoItems = [];
+(function _todoLoad() {
+  try { _todoItems = JSON.parse(localStorage.getItem('arrhub_todos') || '[]'); } catch(e) { _todoItems = []; }
+})();
+function _todoSave() { localStorage.setItem('arrhub_todos', JSON.stringify(_todoItems)); }
+function _todoRender() {
+  const el = document.getElementById('todo-list');
+  const badge = document.getElementById('todo-pending-count');
+  if (!el) return;
+  const pending = _todoItems.filter(t => !t.done).length;
+  if (badge) badge.textContent = pending > 0 ? pending : '';
+  if (!_todoItems.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">No tasks yet — add one above!</div>'; return; }
+  el.innerHTML = _todoItems.map(t =>
+    `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;${t.done?'opacity:.55':''}">
+      <input type="checkbox" ${t.done?'checked':''} onchange="todoToggle('${t.id}')"
+        style="cursor:pointer;width:14px;height:14px;accent-color:var(--accent,#2563eb)">
+      <span style="flex:1;font-size:12px;${t.done?'text-decoration:line-through;color:var(--text3)':''}">${t.text.replace(/</g,'&lt;')}</span>
+      <button onclick="todoDelete('${t.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:0 2px;line-height:1" title="Delete">✕</button>
+    </div>`
+  ).join('');
+}
+function todoAdd() {
+  const inp = document.getElementById('todo-new-input');
+  if (!inp) return;
+  const text = inp.value.trim();
+  if (!text) return;
+  _todoItems.unshift({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,5), text, done: false, created: Date.now() });
+  _todoSave(); _todoRender();
+  inp.value = '';
+}
+function todoToggle(id) {
+  const item = _todoItems.find(t => t.id === id);
+  if (item) { item.done = !item.done; _todoSave(); _todoRender(); }
+}
+function todoDelete(id) {
+  _todoItems = _todoItems.filter(t => t.id !== id);
+  _todoSave(); _todoRender();
+}
+
+function appsTabSwitch(tab) {
+  const panelL = document.getElementById('apps-panel-launcher');
+  const panelC = document.getElementById('apps-panel-ctrs');
+  const btnL   = document.getElementById('apps-tab-btn-launcher');
+  const btnC   = document.getElementById('apps-tab-btn-ctrs');
+  const showLauncher = tab === 'launcher';
+  if (panelL) panelL.style.display = showLauncher ? '' : 'none';
+  if (panelC) panelC.style.display = showLauncher ? 'none' : '';
+  if (btnL) { btnL.style.borderBottom = showLauncher ? '2px solid var(--accent,#2563eb)' : '2px solid transparent'; btnL.style.color = showLauncher ? 'var(--text)' : 'var(--text2)'; btnL.style.fontWeight = showLauncher ? '600' : '400'; }
+  if (btnC) { btnC.style.borderBottom = showLauncher ? '2px solid transparent' : '2px solid var(--accent,#2563eb)'; btnC.style.color = showLauncher ? 'var(--text2)' : 'var(--text)'; btnC.style.fontWeight = showLauncher ? '400' : '600'; }
 }
 
 function toggleGridEdit() {
@@ -11371,6 +11642,8 @@ function resetGridLayout() {
 // Init GridStack in static mode on load to apply any saved positions
 window.addEventListener('load', async () => {
   loadServiceLauncher();       // populate launcher widget
+  calRender();                 // render calendar
+  _todoRender();               // render todo list
 });
 </script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>

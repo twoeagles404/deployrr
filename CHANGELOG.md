@@ -6,6 +6,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.33] — 2026-03-17
+
+### Added
+- **Calendar widget** — new full dashboard widget (`dash-calendar`, span 12). Monthly grid view
+  with day-of-week headers, prev/next/today navigation, and an inline event form per day.
+  Events are colour-coded (blue/green/red/orange/purple), shown as pills on their day cells,
+  and stored in localStorage (`arrhub_calendar_events`) — persists across page reloads with no
+  server required.
+- **To-Do list widget** — new compact widget (`dash-todo`, span 4) with an inline text input,
+  Enter-key support, checkboxes to mark items done (crossed-out), delete buttons, and a pending
+  count badge in the header. Tasks stored in localStorage (`arrhub_todos`).
+- **Apps & Containers combined widget** — replaces the separate Service Launcher (span 12) and
+  Containers (span 4) widgets with a single `dash-apps` (span 8) widget. Two tabs:
+  🚀 Launcher shows running-container quick-launch tiles, 📦 Containers shows the live status
+  list. Container count badge updates in the tab button header.
+- **DaddyLive URL pattern selector** — new dropdown alongside the domain input in the IPTV
+  header (visible when DaddyLive is selected). Choose between four path formats:
+  `/stream/stream-N.php`, `/live/stream-N.php`, `/embed/stream-N.php`,
+  `/premium-streams/stream-N.php`. Selection persisted in localStorage.
+
+### Fixed
+- **Football team fixtures showing wrong competition matches** — the ESPN team schedule endpoint
+  was queried with three URL variants per season: no `seasontype` (all), `seasontype=2`
+  (regular season), and `seasontype=3` (cups/postseason). This caused Copa del Rey matches
+  vs. Segunda División teams (Elche, Levante, Real Oviedo) to appear in the La Liga fixture
+  panel. Fixed by using `seasontype=2` only so only the requested league's matches are returned.
+
+---
+
 ## [3.15.32] — 2026-03-17
 
 ### Fixed

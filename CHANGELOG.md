@@ -6,6 +6,44 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.36] — 2026-03-18
+
+### Fixed
+- **Dozzle deploy `[Errno 17] File exists: /var/run/docker.sock`** — deploy code called
+  `os.makedirs()` on every volume host path, including `/var/run/docker.sock` which is a
+  Unix socket, not a directory. Fixed to only call `makedirs` when the path does not yet
+  exist OR is already a directory; existing sockets/files are left untouched.
+- **CNN RSS showing 2023 news** — default CNN feed URL updated from HTTP to HTTPS
+  (`https://rss.cnn.com/rss/edition.rss`). WSJ World removed (paywalled, always returned stale
+  content); replaced with Reuters Top News and AP News as reliable free alternatives.
+  A migration automatically updates existing users' subscriptions on next load.
+- **Feeds tab slow to load** — all subscribed RSS and YouTube feed URLs are now pre-fetched
+  in parallel (background `fetch()` calls) as soon as the Feeds page opens, warming the
+  server-side cache. Switching between feed tabs is now near-instant.
+- **YouTube videos not playing** — `feedsOpenYT()` now resets the iframe `src` before
+  setting the new embed URL (forces reload) and adds the `origin` parameter for proper
+  embed permissions. Falls back to opening YouTube in a new tab if the modal is unavailable.
+- **YouTube Load More doing nothing** — YouTube RSS only provides 15 items per channel,
+  so "Load More" was a dead end. Replaced with an **"🎬 All" tab** that fetches every
+  subscribed channel in parallel and merges results sorted by date, giving a true combined
+  feed across all channels. Per-channel tabs are still available for individual filtering.
+- **Twitter Web Viewer "Application error"** — `twitterwebviewer.com` / `x.com` actively
+  block third-party embedding. The viewer panel now shows a clean "Open Profile on X"
+  link (no iframe attempt). The HTML bug where `display:none;...;display:flex` caused the
+  fallback overlay to always be visible has been fixed. Cards mode is unaffected.
+- **Football team fixtures showing only past matches** — "Recent Results" are now hidden
+  inside a collapsible `<details>` element. Upcoming fixtures are shown prominently at the
+  top by default; past results require an explicit click to expand.
+- **Recyclarr container card shows "—" for ports** — background-only containers (no web UI)
+  now display "No web UI" instead of a dash to make it clear the service is working
+  correctly and simply has no browser interface.
+
+### Changed
+- **LaunChArr catalog image** updated from `mickygx/launcharr:latest` to
+  `ghcr.io/twoeagles404/launcharr:latest` (official multi-architecture image).
+
+---
+
 ## [3.15.35] — 2026-03-17
 
 ### Fixed

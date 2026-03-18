@@ -856,11 +856,22 @@ def api_deploy_app():
                 host_path = parts[0]
                 container_path = parts[1]
                 mode = parts[2] if len(parts) > 2 else "rw"
-                os.makedirs(host_path, exist_ok=True)
-                try:
-                    os.chmod(host_path, 0o777)
-                except Exception:
-                    pass
+                # Only makedirs for paths that are intended as directories.
+                # Skip socket files, device nodes, or any existing non-directory
+                # (e.g. /var/run/docker.sock is a Unix socket — creating a dir there
+                # raises [Errno 17] File exists).
+                if not os.path.exists(host_path):
+                    try:
+                        os.makedirs(host_path, exist_ok=True)
+                        os.chmod(host_path, 0o777)
+                    except Exception:
+                        pass
+                elif os.path.isdir(host_path):
+                    try:
+                        os.chmod(host_path, 0o777)
+                    except Exception:
+                        pass
+                # else: path already exists as a file/socket — leave it alone
                 binds.append(f"{host_path}:{container_path}:{mode}")
 
         # Build environment
@@ -1082,7 +1093,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.35",
+            "version": "3.15.36",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -2294,11 +2305,17 @@ def _feeds_get_subs():
     """Return saved feed subscriptions from DB, with sensible defaults.
     Also migrates existing saves to include news feeds if missing."""
     _NEWS_DEFAULTS = [
-        {"id": "cnn",        "name": "CNN",         "url": "http://rss.cnn.com/rss/edition.rss"},
-        {"id": "wsj_world",  "name": "WSJ World",   "url": "https://feeds.a.dj.com/rss/RSSWorldNews.xml"},
+        {"id": "cnn",        "name": "CNN",         "url": "https://rss.cnn.com/rss/edition.rss"},
+        {"id": "reuters",    "name": "Reuters",     "url": "https://feeds.reuters.com/reuters/topNews"},
+        {"id": "apnews",     "name": "AP News",     "url": "https://feeds.apnews.com/apnews/topnews"},
         {"id": "bbc_main",   "name": "BBC News",    "url": "https://feeds.bbci.co.uk/news/rss.xml"},
         {"id": "aljazeera",  "name": "Al Jazeera",  "url": "https://www.aljazeera.com/xml/rss/all.xml"},
     ]
+    # URL corrections: migrate stale/broken URLs for existing users
+    _URL_FIXES = {
+        "cnn":       "https://rss.cnn.com/rss/edition.rss",          # was http
+        "wsj_world": None,  # WSJ paywalls RSS — remove if still present
+    }
     _DEFAULT = {
         "_type_meta": {
             "rss":     {"name": "RSS",     "icon": "📰"},
@@ -2336,13 +2353,25 @@ def _feeds_get_subs():
         return _DEFAULT
     try:
         subs = json.loads(raw)
-        # Migrate: add news feeds if not already present
         existing_ids = {s["id"] for s in subs.get("rss", [])}
         added = False
+        # Migrate: add missing news feeds
         for feed in _NEWS_DEFAULTS:
             if feed["id"] not in existing_ids:
                 subs.setdefault("rss", []).append(feed)
                 added = True
+        # Migrate: fix broken/stale URLs and remove paywalled feeds
+        new_rss = []
+        for feed in subs.get("rss", []):
+            fix = _URL_FIXES.get(feed["id"], "keep")
+            if fix is None:
+                added = True  # removed paywalled feed
+                continue
+            if fix != "keep" and feed["url"] != fix:
+                feed = dict(feed, url=fix)
+                added = True
+            new_rss.append(feed)
+        subs["rss"] = new_rss
         # Migrate: add twitter defaults if not present
         if "twitter" not in subs:
             subs["twitter"] = _DEFAULT["twitter"]
@@ -2415,6 +2444,7 @@ def api_feeds_delete_subscription(sub_type, sub_id):
         subs[sub_type] = [s for s in subs[sub_type] if s["id"] != sub_id]
         _db_set("feeds_subscriptions", json.dumps(subs))
     return jsonify({"ok": True})
+
 
 @app.route("/api/rss")
 def api_rss():
@@ -4842,7 +4872,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.35</div>
+      <div class="sb-version">v3.15.36</div>
     </div>
   </div>
 
@@ -6295,17 +6325,20 @@ body.sse-disconnected #app{padding-top:38px;}
             <div style="margin-top:6px">Click <strong>Manage</strong> → add a handle like <code>@username</code></div>
           </div>
         </div>
-        <!-- Web viewer mode (twitterwebviewer.com via proxy) -->
+        <!-- Open on X mode — X.com blocks embedding, so we show a direct-link panel -->
         <div id="feeds-twitter-viewer-mode" style="display:none">
-          <div id="feeds-twitter-webviewer-wrap" style="position:relative;width:100%;height:620px">
-            <iframe id="feeds-twitter-webviewer-iframe" src="" style="width:100%;height:100%;border:none;border-radius:var(--r);background:var(--bg2)" allowfullscreen
-              onload="feedsTwitterViewerLoaded(this)"
-              onerror="feedsTwitterViewerError(this)"></iframe>
-            <div id="feeds-twitter-webviewer-fallback" style="display:none;position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg2);border-radius:var(--r)">
-              <div style="font-size:40px">𝕏</div>
-              <div style="font-size:13px;color:var(--text2);text-align:center">Twitter/X cannot be embedded in a web frame.<br>Open it directly in a new tab.</div>
-              <a id="feeds-twitter-webviewer-extlink" href="#" target="_blank" rel="noopener" class="btn blue" style="padding:8px 18px;font-size:13px">↗ Open on X</a>
+          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg2);border-radius:var(--r);padding:48px 24px;border:1px solid var(--border)">
+            <div style="font-size:48px">𝕏</div>
+            <div style="font-size:14px;font-weight:600;color:var(--text)">Open on X / Twitter</div>
+            <div style="font-size:12px;color:var(--text2);text-align:center;max-width:340px;line-height:1.6">
+              X.com prevents embedding in third-party apps.<br>
+              Click below to open the selected profile directly.
             </div>
+            <a id="feeds-twitter-webviewer-extlink" href="#" target="_blank" rel="noopener"
+               style="background:#1d9bf0;color:#fff;padding:10px 28px;border-radius:999px;font-size:13px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:6px">
+              𝕏 Open Profile
+            </a>
+            <button onclick="twitterSetMode('cards')" style="background:none;border:none;color:var(--blue);font-size:11px;cursor:pointer;text-decoration:underline">← Back to Cards</button>
           </div>
         </div>
       </div>
@@ -7008,7 +7041,10 @@ function setCtrView(mode) {
 function _ctrCardHTML(c) {
     const sc = statusClass(c.status);
     const icon = ctrIcon(c.name);
-    const ports = c.ports && c.ports.length ? c.ports.join(', ') : '—';
+    // Containers with no ports (e.g. Recyclarr, Watchtower) are background services
+    const ports = c.ports && c.ports.length
+        ? c.ports.join(', ')
+        : '<span style="color:var(--text3);font-size:11px;font-style:italic">No web UI</span>';
     const uptime = c.uptime || '—';
     const isRunning = c.status === 'running';
     return `
@@ -8234,6 +8270,17 @@ async function loadFeedsTab() {
     // Inject custom page divs
     _feedsInjectCustomPageDivs();
     feedsNav('rss', document.getElementById('feeds-pill-rss'));
+    // Background: warm server-side cache for ALL subscribed RSS & YouTube feeds in parallel
+    // so switching tabs is instant instead of waiting for a fresh fetch each time.
+    const _warmUrls = [
+        ...(_feedsSubs.rss || []).map(s => s.url).filter(Boolean),
+        ...(_feedsSubs.youtube || []).map(s => s.url).filter(Boolean),
+    ];
+    if (_warmUrls.length) {
+        _warmUrls.forEach(url => {
+            fetch(API + '/api/rss/fetch?url=' + encodeURIComponent(url)).catch(() => {});
+        });
+    }
 }
 
 function _feedsInjectCustomPageDivs() {
@@ -8412,24 +8459,94 @@ function _feedsLoadYTPage() {
         grid.innerHTML = '<div class="empty"><div class="empty-icon">▶</div><div class="empty-text">No YouTube channels — add some in Manage</div></div>';
         return;
     }
-    tabs.innerHTML = channels.map(c =>
-        `<button class="filter-pill${c.id === _feedsYTActive ? ' active' : ''}"
-            onclick="_feedsSelectYT('${c.id}',this)">${c.name}</button>`
-    ).join('');
-    if (!_feedsYTActive || !channels.find(c => c.id === _feedsYTActive))
-        _feedsYTActive = channels[0].id;
-    tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
-    const ac = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (channels.find(c=>c.id===_feedsYTActive)?.name));
-    if (ac) ac.classList.add('active');
-    _feedsFetchAndRenderCards(channels.find(c => c.id === _feedsYTActive)?.url, grid, 'youtube');
+    // Build channel tabs — "All" first, then individual channels
+    tabs.innerHTML = `<button class="filter-pill${_feedsYTActive === '__all__' ? ' active' : ''}" onclick="_feedsSelectYT('__all__',this)">🎬 All</button>`
+        + channels.map(c =>
+            `<button class="filter-pill${c.id === _feedsYTActive ? ' active' : ''}"
+                onclick="_feedsSelectYT('${c.id}',this)">${c.name}</button>`
+        ).join('');
+    if (!_feedsYTActive) _feedsYTActive = '__all__';
+    if (_feedsYTActive === '__all__') _feedsLoadYTAll(grid);
+    else {
+        const ch = channels.find(c => c.id === _feedsYTActive);
+        if (ch) _feedsFetchAndRenderCards(ch.url, grid, 'youtube');
+    }
+}
+
+async function _feedsLoadYTAll(grid) {
+    // Fetch ALL subscribed channels in parallel and merge/sort by date
+    const channels = _feedsSubs.youtube || [];
+    if (!grid) return;
+    const moreBtnId = 'feeds-yt-more-btn';
+    grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+    try {
+        const results = await Promise.allSettled(
+            channels.map(c => fetch(API + `/api/rss/fetch?url=${encodeURIComponent(c.url)}`).then(r => r.json()))
+        );
+        let allItems = [];
+        results.forEach((res, i) => {
+            if (res.status === 'fulfilled') {
+                const items = res.value.items || [];
+                const chName = channels[i]?.name || '';
+                items.forEach(it => { it._channel = chName; });
+                allItems = allItems.concat(items);
+            }
+        });
+        // Sort by date descending (newest first)
+        allItems.sort((a, b) => {
+            const da = a.date ? new Date(a.date) : 0;
+            const db = b.date ? new Date(b.date) : 0;
+            return db - da;
+        });
+        if (!allItems.length) {
+            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">▶</div><div class="empty-text">No videos found</div></div>';
+            const mb = document.getElementById(moreBtnId); if(mb) mb.style.display='none';
+            return;
+        }
+        const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const enriched = allItems.map(item => {
+            const thumb = item.thumb;
+            const ytIdMatch = (item.link||'').match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/);
+            const ytId = ytIdMatch ? ytIdMatch[1] : null;
+            item._html = `
+            <a href="${item.link}" ${ytId ? `data-yt-id="${ytId}" onclick="feedsOpenYT('${ytId}',this.dataset.ytTitle||'');return false;"` : 'target="_blank" rel="noopener"'} data-yt-title="${safe(item.title)}"
+              style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer"
+              onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              <div style="position:relative;width:100%;padding-top:56.25%;background:var(--surface2);overflow:hidden">
+                ${thumb
+                  ? `<img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
+                         onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>▶</div>'">`
+                  : `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">▶</div>`}
+                ${ytId ? `<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:#ff0000;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700">▶ YT</div>` : ''}
+              </div>
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">
+                  ${item._channel ? `<span style="color:var(--blue);font-weight:600">${safe(item._channel)}</span> · ` : ''}${safe(item.date||'')}
+                </div>
+              </div>
+            </a>`;
+            return item;
+        });
+        _feedsAllItems[grid.id] = enriched;
+        _feedsOffset[grid.id] = _FEEDS_PAGE_SIZE;
+        _feedsRenderItems(grid, enriched, 0, _FEEDS_PAGE_SIZE, 'grid', false);
+        const mb = document.getElementById(moreBtnId);
+        if (mb) mb.style.display = enriched.length > _FEEDS_PAGE_SIZE ? '' : 'none';
+    } catch(e) {
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-text" style="color:var(--red)">Failed to load videos: ${e.message}</div></div>`;
+    }
 }
 
 function _feedsSelectYT(id, el) {
     _feedsYTActive = id;
     document.querySelectorAll('#feeds-yt-channel-tabs .filter-pill').forEach(p => p.classList.remove('active'));
     if (el) el.classList.add('active');
+    const grid = document.getElementById('feeds-yt-grid');
+    if (id === '__all__') { _feedsLoadYTAll(grid); return; }
     const ch = (_feedsSubs.youtube || []).find(c => c.id === id);
-    if (ch) _feedsFetchAndRenderCards(ch.url, document.getElementById('feeds-yt-grid'), 'youtube');
+    if (ch) _feedsFetchAndRenderCards(ch.url, grid, 'youtube');
 }
 
 // ── Hacker News ──────────────────────────────────────────────────────
@@ -8813,19 +8930,12 @@ function twitterSetMode(mode) {
     if (cardBtn)  { cardBtn.style.background = mode==='cards'  ? 'var(--accent,#2563eb)' : 'var(--bg3)'; cardBtn.style.color = mode==='cards'  ? '#fff' : 'var(--text2)'; cardBtn.style.border = mode==='cards'  ? 'none' : '1px solid var(--border)'; }
     if (viewBtn)  { viewBtn.style.background  = mode==='viewer' ? 'var(--accent,#2563eb)' : 'var(--bg3)'; viewBtn.style.color  = mode==='viewer' ? '#fff' : 'var(--text2)'; viewBtn.style.border  = mode==='viewer' ? 'none' : '1px solid var(--border)'; }
     if (mode === 'viewer') {
-        // Load the active handle in the web viewer iframe
+        // X.com blocks embedding — just set the direct link for the active handle
         const activePill = document.querySelector('#feeds-twitter-handle-tabs .filter-pill.active');
         if (activePill) {
-            const handle = (activePill.dataset.handle || activePill.textContent || '').replace(/^[\s\S]*?@?(\w+)\s*$/, '$1').replace(/^@/, '').trim();
-            const iframe = document.getElementById('feeds-twitter-webviewer-iframe');
-            const fallback = document.getElementById('feeds-twitter-webviewer-fallback');
-            const extLink  = document.getElementById('feeds-twitter-webviewer-extlink');
-            if (fallback) fallback.style.display = 'none';
-            if (iframe && handle) {
-                iframe.style.display = '';
-                iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
-            }
-            if (extLink) extLink.href = `https://x.com/${handle}`;
+            const handle = (activePill.dataset.handle || activePill.textContent || '').replace(/^@/, '').replace(/^[^@]*@?(\w+)\s*$/, '$1').trim();
+            const extLink = document.getElementById('feeds-twitter-webviewer-extlink');
+            if (extLink && handle) extLink.href = `https://x.com/${handle}`;
         }
     }
 }
@@ -8863,17 +8973,10 @@ function _feedsSelectTwitter(id, el) {
     const openLink = document.getElementById('feeds-twitter-open-link');
     if (openLink) openLink.href = `https://x.com/${(h && h.url ? h.url : '').replace(/^@/,'')}`;
     if (h && grid) _feedsFetchTwitterCards(h.url, grid, false);
-    // Also update web viewer iframe if in viewer mode
+    // Also update viewer panel link if in viewer mode
     if (_twitterViewMode === 'viewer' && h) {
         const handle = (h.url || '').replace(/^@/, '');
-        const iframe = document.getElementById('feeds-twitter-webviewer-iframe');
-        const fallback = document.getElementById('feeds-twitter-webviewer-fallback');
-        const extLink  = document.getElementById('feeds-twitter-webviewer-extlink');
-        if (fallback) fallback.style.display = 'none';
-        if (iframe && handle) {
-            iframe.style.display = '';
-            iframe.src = API + '/api/twitter/webviewer?handle=' + encodeURIComponent(handle);
-        }
+        const extLink = document.getElementById('feeds-twitter-webviewer-extlink');
         if (extLink) extLink.href = `https://x.com/${handle}`;
     }
 }
@@ -8930,33 +9033,26 @@ function feedsHNLoadMore() {
 
 // ── Media player modal (YouTube embed) ───────────────────────────────
 function feedsOpenYT(videoId, title) {
+    if (!videoId) return;
     const modal = document.getElementById('feeds-media-modal');
     const iframe = document.getElementById('feeds-media-iframe');
     const titleEl = document.getElementById('feeds-media-title');
     const extLink = document.getElementById('feeds-media-extlink');
-    if (!modal || !iframe) return;
-    iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`;
+    if (!modal || !iframe) {
+        // Fallback: open directly on YouTube
+        window.open('https://www.youtube.com/watch?v=' + videoId, '_blank');
+        return;
+    }
+    iframe.src = '';  // reset first to force reload
+    requestAnimationFrame(() => {
+        iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&origin=${encodeURIComponent(location.origin)}`;
+    });
     if (titleEl) titleEl.textContent = title || '';
-    if (extLink) extLink.href = `https://www.youtube.com/watch?v=${videoId}`;
+    if (extLink) { extLink.href = `https://www.youtube.com/watch?v=${videoId}`; extLink.textContent = '↗ Open on YouTube'; }
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
 }
-function feedsTwitterViewerLoaded(iframe) {
-    // Check if the page content indicates an error (Next.js app error)
-    try {
-        const doc = iframe.contentDocument || iframe.contentWindow?.document;
-        if (doc && doc.body && doc.body.innerText.includes('Application error')) {
-            feedsTwitterViewerError(iframe);
-        }
-    } catch(e) {
-        // Cross-origin: can't inspect — assume OK
-    }
-}
-function feedsTwitterViewerError(iframe) {
-    if (iframe) iframe.style.display = 'none';
-    const fallback = document.getElementById('feeds-twitter-webviewer-fallback');
-    if (fallback) { fallback.style.display = 'flex'; }
-}
+// feedsTwitterViewerLoaded / feedsTwitterViewerError removed — viewer now uses direct-link panel
 function feedsCloseMedia() {
     const modal = document.getElementById('feeds-media-modal');
     const iframe = document.getElementById('feeds-media-iframe');
@@ -9896,16 +9992,24 @@ async function _footballTeamLoadFixtures() {
         // Sort: upcoming ascending (soonest first), past descending (most recent first)
         upcoming.sort((a,b) => a.date - b.date);
         past.sort((a,b) => b.date - a.date);
-        // Limit past results shown to keep it tidy
-        const pastShown = past.slice(0, 10);
         let html = '';
         if (upcoming.length) {
             html += '<div style="font-size:11px;font-weight:600;color:var(--blue);margin:0 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">📅 Upcoming Fixtures ('+upcoming.length+')</div>';
             html += upcoming.map(e => e.row).join('');
+        } else {
+            html += '<div style="color:var(--text3);font-size:12px;padding:12px 0;text-align:center">No upcoming fixtures found — season may be complete or on a break.</div>';
         }
-        if (pastShown.length) {
-            html += '<div style="font-size:11px;font-weight:600;color:var(--text2);margin:'+(upcoming.length?'14px':'0')+' 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">✅ Recent Results ('+pastShown.length+(past.length>10?' of '+past.length:'')+')</div>';
-            html += pastShown.map(e => e.row).join('');
+        // Recent results collapsed behind a toggle — user asked for upcoming only by default
+        if (past.length) {
+            const pastShown = past.slice(0, 10);
+            const moreCount = past.length > 10 ? ` of ${past.length}` : '';
+            html += `<details style="margin-top:14px">
+              <summary style="font-size:11px;font-weight:600;color:var(--text2);cursor:pointer;padding:4px 0;border-bottom:1px solid var(--border);list-style:none;display:flex;align-items:center;gap:6px">
+                <span style="font-size:10px;color:var(--text3)">▶</span>
+                ✅ Recent Results (${pastShown.length}${moreCount})
+              </summary>
+              <div style="margin-top:8px">${pastShown.map(e => e.row).join('')}</div>
+            </details>`;
         }
         if (!html) html = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No events found.</div>';
         _fbClearLoading(el); el.innerHTML = html;

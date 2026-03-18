@@ -6,6 +6,42 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.37] — 2026-03-18
+
+### Fixed
+- **BinTV fullscreen shows partial screen** — `iptvFullscreen()` was calling
+  `requestFullscreen()` on the wrapper `div`, which kept the `top:-55px` header-crop offset
+  active, resulting in a partial-screen display. Fixed to fullscreen the `<iframe>` element
+  directly — the browser then renders the frame as a clean full-viewport context, bypassing
+  all parent CSS transforms and offsets.
+- **DaddyLive channels not showing at all** — DaddyLive sends `X-Frame-Options: DENY` so
+  streams cannot be embedded in an iframe. Channels now open in a **popup window** instead.
+  Clicking a channel shows a placeholder card with a "Re-open Popup" button. The Browse panel
+  button for DaddyLive now opens their homepage in a new tab. Multiview cells also render a
+  clickable popup-launcher instead of a blank iframe.
+- **DaddyLive domain presets outdated** — `daddy.best` added as the starred default domain.
+  A **fmhy.net ↗** link now appears next to the domain selector so users can quickly find the
+  latest working domain if a preset stops working.
+- **YouTube videos in Feeds playing audio only** — replaced the shared modal overlay with a
+  **dedicated inline player panel** (`feeds-yt-player-panel`) rendered directly inside the
+  Feeds tab. Clicking any YouTube video in Feeds now opens it in a 16:9 embed player inline on
+  the page. A close button and "↗ YouTube" link are included. Switching tabs is no longer
+  required.
+
+### Added
+- **CBS Sports Golazo highlights** (`@cbssportsgolazo`) — the Football Highlights tab now
+  shows a second section "▶ CBS Sports Golazo · YouTube" below the Scorebat match highlights.
+  A new server-side endpoint `/api/yt/channel_feed` resolves any YouTube `@handle` to its
+  channel ID by scraping the channel page, then fetches the RSS feed and returns the 15 most
+  recent videos. CBS Golazo videos open in a fullscreen embed overlay (same style as Scorebat
+  highlights). Results are cached for 10 minutes server-side.
+- **TheSportsDB as fixture source** — `/api/epl/matches` now tries TheSportsDB's free API
+  (no key required) as a second source between football-data.org and ESPN. TheSportsDB
+  provides richer **round/gameweek (GW N) data** that is now displayed on each fixture row.
+  Upcoming fixture window extended from 60 to **90 days** for better end-of-season coverage.
+
+---
+
 ## [3.15.36] — 2026-03-18
 
 ### Fixed

@@ -1093,7 +1093,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.36",
+            "version": "3.15.37",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -3073,6 +3073,52 @@ def api_epl_matches():
         except Exception:
             pass  # fall through to ESPN
 
+    # ── TheSportsDB fallback — free, no key needed, good round data ────────────
+    _TSDB_IDS = {
+        "eng.1": "4328", "esp.1": "4335", "ger.1": "4331",
+        "ita.1": "4332", "fra.1": "4334", "por.1": "4344",
+        "ned.1": "4337", "eur.1": "4480", "eur.2": "4481",
+    }
+    tsdb_id = _TSDB_IDS.get(league)
+    if tsdb_id:
+        tsdb_ep = "eventspastleague" if mtype == "results" else "eventsnextleague"
+        tsdb_url = f"https://www.thesportsdb.com/api/v1/json/3/{tsdb_ep}.php?id={tsdb_id}"
+        try:
+            req_t = _ur.Request(tsdb_url, headers={"User-Agent": ua})
+            with _ur.urlopen(req_t, timeout=10) as r_t:
+                tsdb_raw = _jr.loads(r_t.read())
+            tsdb_events = tsdb_raw.get("events") or []
+            if tsdb_events:
+                matches = []
+                for ev in tsdb_events:
+                    home_name = ev.get("strHomeTeam", "?")
+                    away_name = ev.get("strAwayTeam", "?")
+                    home_logo = ev.get("strHomeTeamBadge", "")
+                    away_logo = ev.get("strAwayTeamBadge", "")
+                    event_date = ev.get("strTimestamp") or ev.get("dateEvent", "")
+                    score_h = ev.get("intHomeScore")
+                    score_a = ev.get("intAwayScore")
+                    is_finished = (score_h is not None and score_a is not None)
+                    round_num   = ev.get("intRound", "")
+                    matches.append({
+                        "id":       ev.get("idEvent", ""),
+                        "home":     home_name,
+                        "homeCrest":home_logo,
+                        "away":     away_name,
+                        "awayCrest":away_logo,
+                        "date":     event_date,
+                        "status":   "FINISHED" if is_finished else "SCHEDULED",
+                        "scoreH":   int(score_h) if is_finished else None,
+                        "scoreA":   int(score_a) if is_finished else None,
+                        "matchday": round_num,
+                        "source":   "TheSportsDB",
+                    })
+                result = {"matches": matches, "source": "TheSportsDB"}
+                _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+                return jsonify(result)
+        except Exception:
+            pass  # fall through to ESPN
+
     # ── ESPN fallback — use correct date-range format ──────────────────
     # ESPN scoreboard supports dates=YYYYMMDD-YYYYMMDD (range), NOT multiple params
     try:
@@ -3081,7 +3127,7 @@ def api_epl_matches():
             end   = today.strftime("%Y%m%d")
         else:
             start = today.strftime("%Y%m%d")
-            end   = (today + _dt.timedelta(days=60)).strftime("%Y%m%d")
+            end   = (today + _dt.timedelta(days=90)).strftime("%Y%m%d")  # 90-day lookahead
         url = (f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
                f"/scoreboard?dates={start}-{end}&limit=200")
         req = _ur.Request(url, headers={"User-Agent": ua})
@@ -3255,6 +3301,67 @@ def api_epl_highlights():
         return jsonify(result)
     except Exception as e:
         return jsonify({"highlights": [], "error": str(e)[:120]})
+
+@app.route("/api/yt/channel_feed")
+def api_yt_channel_feed():
+    """Resolve a YouTube channel handle to its RSS feed and return recent videos.
+    Query params:
+      handle  – e.g. 'cbssportsgolazo'  (without the @ prefix)
+    """
+    import urllib.request as _ur, re as _re
+    from xml.etree import ElementTree as _ET
+    handle = request.args.get("handle", "").strip().lstrip("@")
+    if not handle:
+        return jsonify({"videos": [], "error": "handle required"})
+    cache_key = f"yt_channel_{handle}"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 600:
+        return jsonify(_epl_cache[cache_key]["data"])
+    try:
+        # Step 1: fetch the channel page to extract the channel ID
+        req = _ur.Request(
+            f"https://www.youtube.com/@{handle}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
+        with _ur.urlopen(req, timeout=15) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        m = (_re.search(r'"channelId":"([A-Za-z0-9_-]{24})"', html)
+             or _re.search(r'<meta itemprop="channelId" content="([^"]+)"', html)
+             or _re.search(r'"externalId":"([A-Za-z0-9_-]{24})"', html))
+        if not m:
+            return jsonify({"videos": [], "error": "Could not resolve channel ID for @" + handle})
+        channel_id = m.group(1)
+        # Step 2: fetch the RSS feed
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        req2 = _ur.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
+        with _ur.urlopen(req2, timeout=12) as r2:
+            xml = r2.read().decode("utf-8", errors="replace")
+        # Step 3: parse XML
+        root = _ET.fromstring(xml)
+        ns = {
+            "atom":  "http://www.w3.org/2005/Atom",
+            "yt":    "http://www.youtube.com/xml/schemas/2015",
+            "media": "http://search.yahoo.com/mrss/",
+        }
+        videos = []
+        for entry in root.findall("atom:entry", ns):
+            vid_id    = entry.findtext("yt:videoId", namespaces=ns) or ""
+            title_el  = entry.find("atom:title", ns)
+            title     = title_el.text if title_el is not None else ""
+            published = entry.findtext("atom:published", namespaces=ns) or ""
+            thumb     = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg" if vid_id else ""
+            if vid_id:
+                videos.append({
+                    "id":    vid_id,
+                    "title": title,
+                    "date":  published,
+                    "thumb": thumb,
+                    "url":   f"https://www.youtube.com/watch?v={vid_id}",
+                })
+        result = {"videos": videos[:15], "channel_id": channel_id, "handle": handle}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"videos": [], "error": str(e)[:150]})
 
 @app.route("/api/services/qbittorrent/torrents")  # legacy compat
 @app.route("/api/services/downloader/torrents")
@@ -4872,7 +4979,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.36</div>
+      <div class="sb-version">v3.15.37</div>
     </div>
   </div>
 
@@ -5996,17 +6103,21 @@ body.sse-disconnected #app{padding-top:38px;}
             <span style="font-size:10px;color:var(--text3)">Domain:</span>
             <select id="iptv-dl-domain-preset" onchange="iptvDaddylivePreset(this.value)"
               style="font-size:10px;padding:3px 5px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r)">
-              <option value="daddylive.lat">daddylive.lat ★</option>
+              <option value="daddy.best">daddy.best ★</option>
+              <option value="daddylive.lat">daddylive.lat</option>
               <option value="daddylive.eu">daddylive.eu</option>
               <option value="daddylive.me">daddylive.me</option>
               <option value="daddylive.sh">daddylive.sh</option>
               <option value="daddylive.tv">daddylive.tv</option>
               <option value="custom">Custom…</option>
             </select>
-            <input id="iptv-dl-domain" type="text" placeholder="daddylive.lat"
+            <input id="iptv-dl-domain" type="text" placeholder="daddy.best"
               style="font-size:10px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);width:110px;display:none"
               onchange="iptvSetDaddyliveDomain(this.value)"
               title="Custom DaddyLive domain"/>
+            <a href="https://fmhy.net" target="_blank" rel="noopener"
+              style="font-size:10px;color:var(--blue);text-decoration:none;white-space:nowrap"
+              title="Find current working DaddyLive domain on FMHY">fmhy.net ↗</a>
             <span style="font-size:10px;color:var(--text3)">Path:</span>
             <select id="iptv-dl-pattern" onchange="iptvSetDaddylivePattern(this.value)"
               style="font-size:10px;padding:3px 5px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r)">
@@ -6234,6 +6345,24 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <div id="feeds-pills-row" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <!-- pills are rendered dynamically by loadFeedsTab() -->
+        </div>
+      </div>
+
+      <!-- ── Inline YouTube Player (shown when a video is playing) ──── -->
+      <div id="feeds-yt-player-panel" style="display:none;margin-bottom:14px;border-radius:12px;overflow:hidden;background:#000;border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border)">
+          <div id="feeds-yt-player-title" style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 100px)"></div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <a id="feeds-yt-player-extlink" href="#" target="_blank" rel="noopener"
+               style="font-size:11px;color:var(--blue);text-decoration:none;padding:3px 8px;background:var(--bg3);border-radius:4px;border:1px solid var(--border)">↗ YouTube</a>
+            <button onclick="feedsCloseYTPlayer()" style="background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px" title="Close player">✕</button>
+          </div>
+        </div>
+        <div style="position:relative;width:100%;padding-top:56.25%;background:#000">
+          <iframe id="feeds-yt-player-frame" src="" frameborder="0"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowfullscreen
+            style="position:absolute;inset:0;width:100%;height:100%;border:none"></iframe>
         </div>
       </div>
 
@@ -9034,23 +9163,31 @@ function feedsHNLoadMore() {
 // ── Media player modal (YouTube embed) ───────────────────────────────
 function feedsOpenYT(videoId, title) {
     if (!videoId) return;
-    const modal = document.getElementById('feeds-media-modal');
-    const iframe = document.getElementById('feeds-media-iframe');
-    const titleEl = document.getElementById('feeds-media-title');
-    const extLink = document.getElementById('feeds-media-extlink');
-    if (!modal || !iframe) {
-        // Fallback: open directly on YouTube
-        window.open('https://www.youtube.com/watch?v=' + videoId, '_blank');
+    // Use inline player panel (stays within Feeds tab) — no modal overlay needed
+    const panel   = document.getElementById('feeds-yt-player-panel');
+    const frame   = document.getElementById('feeds-yt-player-frame');
+    const titleEl = document.getElementById('feeds-yt-player-title');
+    const extLink = document.getElementById('feeds-yt-player-extlink');
+    if (panel && frame) {
+        frame.src = '';
+        requestAnimationFrame(() => {
+            frame.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&origin=${encodeURIComponent(location.origin)}`;
+        });
+        if (titleEl) titleEl.textContent = title || '';
+        if (extLink) extLink.href = `https://www.youtube.com/watch?v=${videoId}`;
+        panel.style.display = '';
+        // Scroll player into view
+        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         return;
     }
-    iframe.src = '';  // reset first to force reload
-    requestAnimationFrame(() => {
-        iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&origin=${encodeURIComponent(location.origin)}`;
-    });
-    if (titleEl) titleEl.textContent = title || '';
-    if (extLink) { extLink.href = `https://www.youtube.com/watch?v=${videoId}`; extLink.textContent = '↗ Open on YouTube'; }
-    modal.style.display = 'flex';
-    document.body.style.overflow = 'hidden';
+    // Fallback: open directly on YouTube if panel not found
+    window.open('https://www.youtube.com/watch?v=' + videoId, '_blank');
+}
+function feedsCloseYTPlayer() {
+    const panel = document.getElementById('feeds-yt-player-panel');
+    const frame = document.getElementById('feeds-yt-player-frame');
+    if (frame) frame.src = '';
+    if (panel) panel.style.display = 'none';
 }
 // feedsTwitterViewerLoaded / feedsTwitterViewerError removed — viewer now uses direct-link panel
 function feedsCloseMedia() {
@@ -9739,7 +9876,7 @@ async function footballLoadStandings() {
 }
 
 async function _footballFetchMatches(league, type) {
-    // Use server-side proxy which does a 60-day lookahead for upcoming / 21-day for results
+    // Server-side proxy: tries football-data.org → TheSportsDB → ESPN (90-day lookahead for upcoming)
     const r = await fetch(API + '/api/epl/matches?type=' + encodeURIComponent(type) + '&league=' + encodeURIComponent(league));
     const raw = await r.json();
     return raw.matches || [];
@@ -9751,11 +9888,12 @@ function _footballMatchRow(m) {
     const isFinal = m.status === 'FINISHED';
     const score = m.scoreH != null ? m.scoreH+' - '+m.scoreA : 'vs';
     const homeW = isFinal && m.scoreH > m.scoreA, awayW = isFinal && m.scoreA > m.scoreH;
+    const roundBadge = m.matchday ? '<div style="font-size:9px;color:var(--text3);margin-bottom:2px">GW '+m.matchday+'</div>' : '';
     const centerEl = m.status === 'IN_PLAY'
         ? '<span style="background:#f44336;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">LIVE</span>'
         : isFinal
-            ? '<div style="font-weight:700;font-size:15px;letter-spacing:1px">'+score+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
-            : '<span style="font-size:10px;color:var(--text3)">'+dateStr+'</span>';
+            ? roundBadge+'<div style="font-weight:700;font-size:15px;letter-spacing:1px">'+score+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
+            : roundBadge+'<span style="font-size:10px;color:var(--text3)">'+dateStr+'</span>';
     let row = '<div style="display:flex;align-items:center;padding:10px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);gap:10px">';
     row += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-align:right">';
     row += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:13px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+m.home+'</span>';
@@ -9808,56 +9946,118 @@ async function footballLoadResults() {
     }
 }
 
+// ── Render a single highlight card (Scorebat embed) ──────────────────────────
+function _fbHighlightCard(h) {
+    const dt = h.date ? new Date(h.date) : null;
+    const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '';
+    let s = '<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="footballPlayHighlight(this)">';
+    if (h.thumb) {
+        s += '<div style="position:relative;padding-top:56.25%;background:#111">';
+        s += '<img src="'+h.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display=&quot;none&quot;">';
+        s += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(0,0,0,.7);border-radius:50%;display:flex;align-items:center;justify-content:center">';
+        s += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div>';
+    } else {
+        s += '<div style="position:relative;padding-top:56.25%;background:#111"><div style="display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px">⚽</div></div>';
+    }
+    s += '<div style="padding:10px 12px"><div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+h.title+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div>';
+    if (h.embed) s += '<div class="football-embed-data" style="display:none">'+h.embed.replace(/</g,'\\x3c').replace(/>/g,'\\x3e')+'</div>';
+    s += '</div>';
+    return s;
+}
+
+// ── Render a single YouTube card (CBS Sports Golazo / YouTube source) ─────────
+function _fbYTCard(v) {
+    const dt = v.date ? new Date(v.date) : null;
+    const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '';
+    const esc = s => s.replace(/'/g,"\\'");
+    let s = `<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="footballPlayYouTube('${esc(v.id)}','${esc(v.title)}')">`;
+    s += '<div style="position:relative;padding-top:56.25%;background:#111">';
+    if (v.thumb) {
+        s += '<img src="'+v.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display=\'none\'">';
+    }
+    s += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(220,0,0,.85);border-radius:50%;display:flex;align-items:center;justify-content:center">';
+    s += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>';
+    s += '<div style="position:absolute;top:6px;right:6px;background:rgba(220,0,0,.9);color:#fff;font-size:9px;font-weight:700;padding:2px 5px;border-radius:3px">YT</div>';
+    s += '</div>';
+    s += '<div style="padding:10px 12px"><div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+v.title+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div>';
+    s += '</div>';
+    return s;
+}
+
+function footballPlayYouTube(videoId, title) {
+    if (!videoId) return;
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:950;display:flex;align-items:center;justify-content:center;cursor:pointer';
+    overlay.onclick = () => overlay.remove();
+    overlay.innerHTML = '<div style="width:92%;max-width:920px;aspect-ratio:16/9;position:relative" onclick="event.stopPropagation()">'
+        + `<iframe src="https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0" `
+        + 'style="width:100%;height:100%;border:none;border-radius:8px" '
+        + 'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>'
+        + '<button onclick="this.parentNode.parentNode.remove()" style="position:absolute;top:-36px;right:0;background:none;border:none;color:#fff;font-size:24px;cursor:pointer">✕</button>'
+        + '</div>';
+    document.body.appendChild(overlay);
+}
+
 async function footballLoadHighlights() {
     const el = document.getElementById('football-highlights-grid');
     if (!el) return;
     _fbSetLoading(el, 'Loading highlights…');
     const info = FOOTBALL_LEAGUES[_footballLeague] || {};
     const keys = info.highlights || [];
-    try {
-        let highlights = [];
-        try {
-            const r = await fetch('https://www.scorebat.com/video-api/v3/feed/?token=free');
-            const allVids = await r.json();
-            const vids = Array.isArray(allVids) ? allVids : (allVids.response || []);
-            for (const v of vids) {
-                const comp = (v.competition || v.competitionName || '').toLowerCase();
-                if (!keys.some(k => comp.includes(k))) continue;
-                let embed = '';
-                for (const ev of (v.videos || [])) { if (ev.embed) { embed = ev.embed; break; } }
-                highlights.push({ title: v.title||'', thumb: v.thumbnail||'', embed, date: v.date||'' });
-                if (highlights.length >= 20) break;
+
+    // Fetch Scorebat and CBS Sports Golazo in parallel
+    const [scorebatResult, golazoResult] = await Promise.allSettled([
+        (async () => {
+            try {
+                const r = await fetch('https://www.scorebat.com/video-api/v3/feed/?token=free');
+                const allVids = await r.json();
+                const vids = Array.isArray(allVids) ? allVids : (allVids.response || []);
+                const out = [];
+                for (const v of vids) {
+                    const comp = (v.competition || v.competitionName || '').toLowerCase();
+                    if (!keys.some(k => comp.includes(k))) continue;
+                    let embed = '';
+                    for (const ev of (v.videos || [])) { if (ev.embed) { embed = ev.embed; break; } }
+                    out.push({ title: v.title||'', thumb: v.thumbnail||'', embed, date: v.date||'' });
+                    if (out.length >= 20) break;
+                }
+                return out;
+            } catch {
+                const r2 = await fetch('/api/epl/highlights');
+                const d2 = await r2.json();
+                return (d2.highlights || []).filter(h => {
+                    const comp = (h.competition || '').toLowerCase();
+                    return keys.some(k => comp.includes(k));
+                });
             }
-        } catch(e2) {
-            const r2 = await fetch('/api/epl/highlights');
-            const d2 = await r2.json();
-            highlights = (d2.highlights || []).filter(h => {
-                const comp = (h.competition || '').toLowerCase();
-                return keys.some(k => comp.includes(k));
-            });
-        }
-        if (!highlights.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">No highlights for '+info.name+' right now.</div>'; return; }
-        let html = '';
-        highlights.forEach(h => {
-            const dt = h.date ? new Date(h.date) : null;
-            const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '';
-            html += '<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="footballPlayHighlight(this)">';
-            if (h.thumb) {
-                html += '<div style="position:relative;padding-top:56.25%;background:#111">';
-                html += '<img src="'+h.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display=&quot;none&quot;">';
-                html += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(0,0,0,.7);border-radius:50%;display:flex;align-items:center;justify-content:center">';
-                html += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div>';
-            } else {
-                html += '<div style="position:relative;padding-top:56.25%;background:#111"><div style="display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px">⚽</div></div>';
-            }
-            html += '<div style="padding:10px 12px"><div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+h.title+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div>';
-            if (h.embed) html += '<div class="football-embed-data" style="display:none">'+h.embed.replace(/</g,'\\x3c').replace(/>/g,'\\x3e')+'</div>';
-            html += '</div>';
-        });
-        _fbClearLoading(el); el.innerHTML = html;
-    } catch(e) {
-        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center;grid-column:1/-1">Failed to load highlights: '+e.message+'</div>';
+        })(),
+        fetch('/api/yt/channel_feed?handle=cbssportsgolazo').then(r => r.json()).catch(() => ({ videos: [] }))
+    ]);
+
+    const highlights  = scorebatResult.status === 'fulfilled' ? (scorebatResult.value  || []) : [];
+    const golazoVids  = golazoResult.status  === 'fulfilled' ? (golazoResult.value?.videos || []) : [];
+
+    if (!highlights.length && !golazoVids.length) {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">No highlights for '+info.name+' right now.</div>';
+        return;
     }
+
+    let html = '';
+
+    // ── Scorebat section ──────────────────────────────────────────────────────
+    if (highlights.length) {
+        html += '<div style="grid-column:1/-1;font-size:12px;font-weight:700;color:var(--text2);padding:4px 0 2px;border-bottom:1px solid var(--border);margin-bottom:4px">⚽ Match Highlights (Scorebat)</div>';
+        highlights.forEach(h => { html += _fbHighlightCard(h); });
+    }
+
+    // ── CBS Sports Golazo YouTube section ─────────────────────────────────────
+    if (golazoVids.length) {
+        html += '<div style="grid-column:1/-1;font-size:12px;font-weight:700;color:var(--text2);padding:8px 0 2px;border-bottom:1px solid var(--border);margin-bottom:4px;margin-top:8px">'
+             + '▶ CBS Sports Golazo <span style="color:var(--text3);font-weight:400;font-size:10px">· YouTube</span></div>';
+        golazoVids.forEach(v => { html += _fbYTCard(v); });
+    }
+
+    _fbClearLoading(el); el.innerHTML = html;
 }
 
 async function footballLoadNews() {
@@ -10064,10 +10264,10 @@ let _iptvTZOffset    = parseInt(localStorage.getItem('iptv_tz_offset') || '0', 1
 
 // ── DaddyLive domain — changes frequently; user can override in Settings ──
 // Stream URL: <domain>/stream/stream-<id>.php
-let _daddyliveDomain   = localStorage.getItem('iptv_daddylive_domain')   || 'daddylive.lat';
+let _daddyliveDomain   = localStorage.getItem('iptv_daddylive_domain')   || 'daddy.best';
 let _daddylivePattern  = localStorage.getItem('iptv_daddylive_pattern')  || 'stream';
 function iptvSetDaddyliveDomain(d) {
-    _daddyliveDomain = (d || 'daddylive.me').replace(/^https?:\/\//, '').replace(/\/$/, '');
+    _daddyliveDomain = (d || 'daddy.best').replace(/^https?:\/\//, '').replace(/\/$/, '');
     localStorage.setItem('iptv_daddylive_domain', _daddyliveDomain);
 }
 function iptvSetDaddylivePattern(p) {
@@ -10343,27 +10543,52 @@ function iptvPlayChannel(id, name, rowEl) {
     const nowPlaying  = document.getElementById('iptv-now-playing');
     const nowSource   = document.getElementById('iptv-now-source');
 
+    if (nowPlaying) nowPlaying.textContent = name;
+    const sourceNames = { moviebite: 'MovieBite', bintv: 'BinTV', daddylive: `DaddyLive (${_daddyliveDomain})` };
+    if (nowSource)  nowSource.textContent  = `${sourceNames[_iptvSource]||'Stream'} · ${name}`;
+
+    const popoutBtn = document.getElementById('iptv-popout-btn');
+
+    // ── DaddyLive blocks iframe embedding via X-Frame-Options ───────────────
+    // Open in a popup window instead; show a placeholder in the player area.
+    if (_iptvSource === 'daddylive') {
+        const dlUrl = _daddyliveStreamUrl(id);
+        window.open(dlUrl, 'daddylive_player', 'width=1024,height=640,resizable=yes,scrollbars=yes');
+        if (popoutBtn) popoutBtn.dataset.url = dlUrl;
+        if (frame) frame.style.display = 'none';
+        if (placeholder) {
+            placeholder.innerHTML = `
+              <div style="font-size:42px">📺</div>
+              <div style="font-size:14px;font-weight:600;color:var(--text);margin-top:4px">${name}</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:6px">DaddyLive blocks embedding — stream opened in a popup window</div>
+              <div style="font-size:11px;color:var(--text3);margin-top:10px">
+                Domain not working? Visit
+                <a href="https://fmhy.net" target="_blank" rel="noopener" style="color:var(--blue)">fmhy.net</a>
+                to find the latest working DaddyLive domain, then update it above.
+              </div>
+              <button onclick="window.open('${dlUrl}','daddylive_player','width=1024,height=640,resizable=yes')"
+                class="btn-primary" style="margin-top:14px;padding:7px 18px;font-size:13px">▶ Re-open Popup</button>
+            `;
+            placeholder.style.display = '';
+        }
+        return;
+    }
+
     if (frame) {
         const streamUrls = {
             moviebite: `https://live.moviebite.cc/channels/${id}`,
             bintv:     `https://www.bintv.net/channel/${id}`,
-            daddylive: _daddyliveStreamUrl(id)
         };
-        frame.src = streamUrls[_iptvSource] || streamUrls.moviebite;
+        frame.src = streamUrls[_iptvSource] || `https://live.moviebite.cc/channels/${id}`;
         frame.style.display = '';
     }
     if (placeholder) placeholder.style.display = 'none';
-    if (nowPlaying)  nowPlaying.textContent = name;
-    const sourceNames = { moviebite: 'MovieBite', bintv: 'BinTV', daddylive: `DaddyLive (${_daddyliveDomain}/${_daddylivePattern})` };
-    if (nowSource)   nowSource.textContent  = `${sourceNames[_iptvSource]||'Stream'} · ${name}`;
 
-    const popoutBtn = document.getElementById('iptv-popout-btn');
     const popUrls = {
         moviebite: `https://live.moviebite.cc/channels/${id}`,
         bintv:     `https://www.bintv.net/channel/${id}`,
-        daddylive: _daddyliveStreamUrl(id)
     };
-    if (popoutBtn) popoutBtn.dataset.url = popUrls[_iptvSource] || popUrls.moviebite;
+    if (popoutBtn) popoutBtn.dataset.url = popUrls[_iptvSource] || `https://live.moviebite.cc/channels/${id}`;
 }
 
 function iptvPopout() {
@@ -10372,16 +10597,16 @@ function iptvPopout() {
 }
 
 function iptvFullscreen() {
-    const wrap  = document.getElementById('iptv-player-wrap');
+    // Always fullscreen the iframe directly — fullscreening the wrapper div
+    // keeps the top:-55px crop offset active, causing a partial-screen result.
+    // When the iframe itself goes fullscreen the browser gives it a clean
+    // full-viewport context, bypassing any parent CSS transforms/offsets.
     const frame = document.getElementById('iptv-player-frame');
-    // Prefer to fullscreen the wrap div; iframe fullscreen works on some browsers
-    const el = (wrap && wrap.requestFullscreen) ? wrap : frame;
-    if (!el) return;
-    if      (el.requestFullscreen)       el.requestFullscreen();
-    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-    else if (el.mozRequestFullScreen)    el.mozRequestFullScreen();
-    else if (el.msRequestFullscreen)     el.msRequestFullscreen();
-    else if (frame && frame.requestFullscreen) frame.requestFullscreen();
+    if (!frame) return;
+    if      (frame.requestFullscreen)       frame.requestFullscreen();
+    else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
+    else if (frame.mozRequestFullScreen)    frame.mozRequestFullScreen();
+    else if (frame.msRequestFullscreen)     frame.msRequestFullscreen();
 }
 
 function iptvPlayHLS() {
@@ -10463,7 +10688,15 @@ function iptvRenderMV() {
         return `
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
           ${ch
-            ? `<iframe src="${_iptvSource==='daddylive'?'https://'+_daddyliveDomain+'/stream/stream-'+ch.id+'.php':_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe>`
+            ? (_iptvSource==='daddylive'
+                ? `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:4px;color:var(--text3);font-size:10px;padding:8px;text-align:center;cursor:pointer"
+                     onclick="window.open(_daddyliveStreamUrl('${ch.id}'),'dl_mv_${ch.id}','width=1024,height=640,resizable=yes')">
+                     <div style="font-size:22px">📺</div>
+                     <div style="font-weight:600;color:var(--text);font-size:11px">${ch.name}</div>
+                     <div>DaddyLive — click to open popup</div>
+                   </div>`
+                : `<iframe src="${_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe>`
+              )
             : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
                  <div style="font-size:28px">📺</div>
                  <div style="font-size:11px">Click to assign channel</div>
@@ -10541,7 +10774,12 @@ function iptvBrowseChannels() {
     const isVisible = panel.style.display === 'flex';
     if (isVisible) { iptvHideBrowse(); return; }  // toggle off if already open
     if (iframe && !iframe.src) {
-        const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/', daddylive: `https://${_daddyliveDomain}/` };
+        // DaddyLive blocks iframe embedding — open their site in a new tab instead
+        if (_iptvSource === 'daddylive') {
+            window.open(`https://${_daddyliveDomain}/`, '_blank', 'noopener');
+            return;
+        }
+        const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/' };
         iframe.src = urls[_iptvSource] || urls.moviebite;
     }
     panel.style.display = 'flex';

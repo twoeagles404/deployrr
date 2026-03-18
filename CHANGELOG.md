@@ -6,6 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.32] — 2026-03-17
+
+### Fixed
+- **Dashboard card overflow** — CSS Grid children default to `min-width: auto`, causing content
+  (text, gauges, tables) to overflow their column width. Added `min-width: 0; width: 100%;
+  box-sizing: border-box` to `.dash-cell` and `#tab-overview .panel`. Docker/Network I/O sections
+  inside `#dash-infra` also received `min-width: 0; overflow: hidden` to prevent inner flex rows
+  from blowing out the cell. Gauge row changed to `minmax(160px,1fr)` so gauges never squash
+  below a usable size.
+- **BinTV channels not loading** — `_BINTV_CHANNELS` was an empty array; selecting the BinTV
+  source rendered nothing. Added 26 hardcoded UK/sports channels (Sky Sports, BT Sport,
+  Eurosport, BBC One/Two, ITV, Channel 4, TNT Sports, etc.) with correct BinTV slugs.
+  Added `iptvLoadSourceChannels()` dispatcher that bypasses the fetch path for BinTV/DaddyLive
+  and populates `_iptvChannels` directly, then calls `iptvBuildCatPills()` and
+  `iptvFilterChannels()`.
+- **DaddyLive channels not loading** — same root cause as BinTV. Added 50 hardcoded DaddyLive
+  channels (numeric IDs 1–50, covering Sky Sports, TNT Sports, BT Sport, beIN Sports, ESPN,
+  Fox Sports, CNN, BBC, ITV and more). `iptvSetSource()` now calls `iptvLoadSourceChannels()`
+  instead of the dead code path.
+- **DaddyLive hardcoded domain** — stream URLs were built against `daddylive.cv` which rotates
+  frequently. Domain is now stored in `localStorage` (`iptv_daddylive_domain`, default
+  `daddylive.me`) and exposed via a small input field in the IPTV header so the user can update
+  it without a code change.
+- **Football fixtures showing nothing (ESPN date-range bug)** — the ESPN scoreboard endpoint was
+  called with up to 60 separate `dates=YYYYMMDD` query parameters; the API honours only one
+  `dates` value so only today's matches were ever returned, leaving the fixtures pane blank for
+  future and past dates. Fixed by using the documented single-range format `dates=YYYYMMDD-YYYYMMDD`.
+- **Football fixtures — football-data.org integration** — `/api/epl/matches` now tries
+  football-data.org (API v4) first when a key is stored in Settings. Supports all major leagues
+  via code map (`PL`, `PD`, `BL1`, `SA`, `FL1`, `PPL`, …). Falls back to ESPN automatically
+  when no key is set or the league is not mapped.
+
+---
+
 ## [3.15.31] — 2026-03-17
 
 ### Changed

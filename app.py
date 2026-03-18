@@ -1053,7 +1053,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.31",
+            "version": "3.15.32",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -2955,24 +2955,76 @@ def api_epl_standings():
 
 @app.route("/api/epl/matches")
 def api_epl_matches():
-    """Fetch upcoming and recent matches from ESPN free API (supports any league)."""
-    import urllib.request as _ur, json as _jr
+    """Fetch upcoming/recent matches. Tries football-data.org (if key set) then ESPN."""
+    import urllib.request as _ur, json as _jr, datetime as _dt
     mtype  = request.args.get("type", "upcoming")  # upcoming | results
     league = request.args.get("league", "eng.1").strip()
     cache_key = f"epl_matches_{mtype}_{league}"
     if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 600:
         return jsonify(_epl_cache[cache_key]["data"])
+
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    today = _dt.date.today()
+
+    # ── football-data.org league code map ──────────────────────────────
+    _FDO_CODES = {
+        "eng.1": "PL",  "esp.1": "PD",   "ger.1": "BL1",
+        "ita.1": "SA",  "fra.1": "FL1",  "por.1": "PPL",
+        "ned.1": "DED", "bel.1": "BSA",  "eur.1": "CL",
+        "eur.2": "EL",  "int.world": "WC",
+    }
+
+    # ── Try football-data.org first if API key is configured ───────────
+    fdo_key = _db_get("football_api_key", "")
+    if fdo_key:
+        try:
+            fdo_code = _FDO_CODES.get(league)
+            if fdo_code:
+                status_filter = "FINISHED" if mtype == "results" else "SCHEDULED,LIVE"
+                fdo_url = f"https://api.football-data.org/v4/competitions/{fdo_code}/matches?status={status_filter}&limit=50"
+                fdo_req = _ur.Request(fdo_url, headers={"X-Auth-Token": fdo_key, "User-Agent": ua})
+                with _ur.urlopen(fdo_req, timeout=10) as r:
+                    fdo_data = _jr.loads(r.read())
+                matches = []
+                for m in fdo_data.get("matches", []):
+                    home_team = m.get("homeTeam", {})
+                    away_team = m.get("awayTeam", {})
+                    score = m.get("score", {})
+                    full = score.get("fullTime", {})
+                    is_finished = m.get("status") == "FINISHED"
+                    is_live     = m.get("status") in ("IN_PLAY", "PAUSED", "HALFTIME")
+                    home_goals = full.get("home")
+                    away_goals = full.get("away")
+                    matches.append({
+                        "id":       str(m.get("id", "")),
+                        "home":     home_team.get("shortName", home_team.get("name", "?")),
+                        "homeCrest":home_team.get("crest", ""),
+                        "away":     away_team.get("shortName", away_team.get("name", "?")),
+                        "awayCrest":away_team.get("crest", ""),
+                        "date":     m.get("utcDate", ""),
+                        "status":   "IN_PLAY" if is_live else ("FINISHED" if is_finished else "SCHEDULED"),
+                        "scoreH":   home_goals,
+                        "scoreA":   away_goals,
+                        "matchday": m.get("matchday"),
+                        "source":   "football-data.org",
+                    })
+                result = {"matches": matches, "source": "football-data.org"}
+                _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+                return jsonify(result)
+        except Exception:
+            pass  # fall through to ESPN
+
+    # ── ESPN fallback — use correct date-range format ──────────────────
+    # ESPN scoreboard supports dates=YYYYMMDD-YYYYMMDD (range), NOT multiple params
     try:
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        import datetime as _dt
-        today = _dt.date.today()
         if mtype == "results":
-            # Fetch results from last 21 days
-            dates_param = "&".join(f"dates={(today - _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(21))
+            start = (today - _dt.timedelta(days=30)).strftime("%Y%m%d")
+            end   = today.strftime("%Y%m%d")
         else:
-            # Fetch upcoming fixtures for next 60 days to capture full season run-in
-            dates_param = "&".join(f"dates={(today + _dt.timedelta(days=i)).strftime('%Y%m%d')}" for i in range(60))
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?{dates_param}&limit=100"
+            start = today.strftime("%Y%m%d")
+            end   = (today + _dt.timedelta(days=60)).strftime("%Y%m%d")
+        url = (f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
+               f"/scoreboard?dates={start}-{end}&limit=200")
         req = _ur.Request(url, headers={"User-Agent": ua})
         with _ur.urlopen(req, timeout=12) as r:
             data = _jr.loads(r.read())
@@ -2984,32 +3036,32 @@ def api_epl_matches():
             away = next((c for c in competitors if c.get("homeAway") == "away"), {})
             home_team = home.get("team", {})
             away_team = away.get("team", {})
-            status_obj = comp.get("status", {}).get("type", {})
-            status_name = status_obj.get("name", "")  # STATUS_SCHEDULED, STATUS_FINAL, STATUS_IN_PROGRESS
+            status_obj  = comp.get("status", {}).get("type", {})
+            status_name = status_obj.get("name", "")
             is_finished = status_name == "STATUS_FINAL"
-            is_live = status_name == "STATUS_IN_PROGRESS" or status_name == "STATUS_HALFTIME"
-            # Filter based on request type
+            is_live     = status_name in ("STATUS_IN_PROGRESS", "STATUS_HALFTIME")
             if mtype == "results" and not is_finished:
                 continue
             if mtype == "upcoming" and is_finished:
                 continue
             matches.append({
-                "id": event.get("id"),
-                "home": home_team.get("shortDisplayName", home_team.get("displayName", "?")),
-                "homeCrest": home_team.get("logo", ""),
-                "away": away_team.get("shortDisplayName", away_team.get("displayName", "?")),
-                "awayCrest": away_team.get("logo", ""),
-                "date": event.get("date", ""),
-                "status": "IN_PLAY" if is_live else ("FINISHED" if is_finished else "SCHEDULED"),
-                "scoreH": int(home.get("score", 0)) if is_finished or is_live else None,
-                "scoreA": int(away.get("score", 0)) if is_finished or is_live else None,
+                "id":       event.get("id"),
+                "home":     home_team.get("shortDisplayName", home_team.get("displayName", "?")),
+                "homeCrest":home_team.get("logo", ""),
+                "away":     away_team.get("shortDisplayName", away_team.get("displayName", "?")),
+                "awayCrest":away_team.get("logo", ""),
+                "date":     event.get("date", ""),
+                "status":   "IN_PLAY" if is_live else ("FINISHED" if is_finished else "SCHEDULED"),
+                "scoreH":   int(home.get("score", 0)) if (is_finished or is_live) else None,
+                "scoreA":   int(away.get("score", 0)) if (is_finished or is_live) else None,
                 "matchday": None,
+                "source":   "ESPN",
             })
-        result = {"matches": matches}
+        result = {"matches": matches, "source": "ESPN"}
         _epl_cache[cache_key] = {"data": result, "ts": time.time()}
         return jsonify(result)
     except Exception as e:
-        return jsonify({"matches": [], "error": str(e)[:120]})
+        return jsonify({"matches": [], "error": str(e)[:200]})
 
 @app.route("/api/football/team_fixtures")
 def api_football_team_fixtures():
@@ -3760,10 +3812,13 @@ html { scroll-behavior: smooth; }
 .dash-cell[data-span="6"] { grid-column:span 6;  }
 .dash-cell[data-span="4"] { grid-column:span 4;  }
 .dash-cell[data-span="3"] { grid-column:span 3;  }
-/* Base cell — position:relative so remove-btn can be absolute inside */
+/* Base cell — min-width/height:0 CRITICAL: prevents grid children overflowing their lane */
 .dash-cell{
   position:relative;
+  min-width:0;
   min-height:0;
+  width:100%;
+  box-sizing:border-box;
 }
 .dash-cell > .panel,
 .dash-cell > .metric-grid,
@@ -3974,6 +4029,10 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
   border-radius:16px;
   box-shadow:0 2px 20px rgba(0,0,0,0.15);
   transition:transform .2s ease, box-shadow .2s ease;
+  overflow:hidden;         /* prevent content spilling outside rounded corners */
+  min-width:0;             /* prevent flex/grid child blowout */
+  width:100%;
+  box-sizing:border-box;
 }
 #tab-overview .panel:hover{
   transform:translateY(-1px);
@@ -4720,7 +4779,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.31</div>
+      <div class="sb-version">v3.15.32</div>
     </div>
   </div>
 
@@ -4900,7 +4959,7 @@ body.sse-disconnected #app{padding-top:38px;}
         <!-- ⓪ System Gauges widget -->
         <div class="dash-cell" id="dash-gauges" data-span="8" data-widget="gauges">
           <button class="widget-remove-btn" onclick="removeWidget('gauges')" title="Hide widget">✕</button>
-            <div class="metric-grid" id="gauge-row" style="margin:0;padding:10px 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+            <div class="metric-grid" id="gauge-row" style="margin:0;padding:10px 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;width:100%;box-sizing:border-box;min-width:0">
 
               <!-- ── CPU ── -->
               <div class="metric-card" style="align-items:center;text-align:center;padding:16px 12px;gap:8px">
@@ -5195,10 +5254,10 @@ body.sse-disconnected #app{padding-top:38px;}
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                 Docker &amp; Network
               </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;min-width:0;width:100%">
 
                 <!-- Docker section -->
-                <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+                <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:0;overflow:hidden">
                   <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:8px;display:flex;align-items:center;gap:6px">
                     <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                     Docker Engine
@@ -5236,7 +5295,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
 
                 <!-- Network I/O section -->
-                <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+                <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:0;overflow:hidden">
                   <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:8px;display:flex;align-items:center;gap:6px">
                     <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
                     Network I/O
@@ -5771,6 +5830,13 @@ body.sse-disconnected #app{padding-top:38px;}
             <option value="bintv">BinTV</option>
             <option value="daddylive">DaddyLive</option>
           </select>
+          <div id="iptv-dl-domain-wrap" style="display:none;align-items:center;gap:4px">
+            <span style="font-size:10px;color:var(--text3)">Domain:</span>
+            <input id="iptv-dl-domain" type="text" placeholder="daddylive.me"
+              style="font-size:10px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);width:130px"
+              onchange="iptvSetDaddyliveDomain(this.value)"
+              title="DaddyLive domain — changes frequently. Try: daddylive.me  daddylive.eu  daddylive.sh"/>
+          </div>
           <button onclick="iptvBrowseChannels()" class="btn" style="padding:6px 14px;font-size:12px" title="Browse channels in a panel">🔍 Browse</button>
           <button onclick="iptvShowAddChannel()" class="btn-primary" style="padding:6px 14px;font-size:12px">＋ Channel</button>
           <button class="btn-primary" onclick="iptvReload()">↺ Refresh</button>
@@ -9686,8 +9752,100 @@ let _iptvInited      = false;
 let _iptvSource      = localStorage.getItem('iptv_source') || 'moviebite';
 let _iptvTZOffset    = parseInt(localStorage.getItem('iptv_tz_offset') || '0', 10);
 
-// BinTV channel list (https://www.bintv.net/)
-const _BINTV_CHANNELS = [];
+// ── DaddyLive domain — changes frequently; user can override in Settings ──
+// Stream URL: <domain>/stream/stream-<id>.php
+let _daddyliveDomain = localStorage.getItem('iptv_daddylive_domain') || 'daddylive.me';
+function iptvSetDaddyliveDomain(d) {
+    _daddyliveDomain = (d || 'daddylive.me').replace(/^https?:\/\//, '').replace(/\/$/, '');
+    localStorage.setItem('iptv_daddylive_domain', _daddyliveDomain);
+}
+
+// ── BinTV hard-coded channel list ────────────────────────────────────
+// Slugs from https://www.bintv.net/  (format: /channel/<slug>)
+const _BINTV_CHANNELS = [
+    { id: 'sky-sports-main-event',      name: 'Sky Sports Main Event',   group: 'Sports'      },
+    { id: 'sky-sports-premier-league',  name: 'Sky Sports Premier League',group: 'Sports'     },
+    { id: 'sky-sports-football',        name: 'Sky Sports Football',      group: 'Sports'      },
+    { id: 'sky-sports-cricket',         name: 'Sky Sports Cricket',       group: 'Sports'      },
+    { id: 'sky-sports-f1',             name: 'Sky Sports F1',            group: 'Sports'      },
+    { id: 'sky-sports-golf',           name: 'Sky Sports Golf',          group: 'Sports'      },
+    { id: 'sky-sports-action',         name: 'Sky Sports Action',        group: 'Sports'      },
+    { id: 'sky-sports-arena',          name: 'Sky Sports Arena',         group: 'Sports'      },
+    { id: 'sky-sports-mix',            name: 'Sky Sports Mix',           group: 'Sports'      },
+    { id: 'sky-sports-news',           name: 'Sky Sports News',          group: 'Sports'      },
+    { id: 'bt-sport-1',               name: 'TNT Sports 1',             group: 'Sports'      },
+    { id: 'bt-sport-2',               name: 'TNT Sports 2',             group: 'Sports'      },
+    { id: 'bt-sport-3',               name: 'TNT Sports 3',             group: 'Sports'      },
+    { id: 'bt-sport-4',               name: 'TNT Sports 4',             group: 'Sports'      },
+    { id: 'espn-uk',                  name: 'ESPN UK',                  group: 'Sports'      },
+    { id: 'eurosport-1',              name: 'Eurosport 1',              group: 'Sports'      },
+    { id: 'eurosport-2',              name: 'Eurosport 2',              group: 'Sports'      },
+    { id: 'bbc-one',                  name: 'BBC One',                  group: 'Entertainment'},
+    { id: 'bbc-two',                  name: 'BBC Two',                  group: 'Entertainment'},
+    { id: 'itv',                      name: 'ITV',                      group: 'Entertainment'},
+    { id: 'channel-4',               name: 'Channel 4',                group: 'Entertainment'},
+    { id: 'channel-5',               name: 'Channel 5',                group: 'Entertainment'},
+    { id: 'sky-one',                  name: 'Sky One',                  group: 'Entertainment'},
+    { id: 'sky-news',                 name: 'Sky News',                 group: 'News'         },
+    { id: 'bbc-news',                 name: 'BBC News',                 group: 'News'         },
+    { id: 'cnn-international',        name: 'CNN International',        group: 'News'         },
+    { id: 'al-jazeera',              name: 'Al Jazeera',               group: 'News'         },
+];
+
+// ── DaddyLive hard-coded channel list ────────────────────────────────
+// Stream IDs from daddylive.me/stream/stream-<id>.php
+const _DADDYLIVE_CHANNELS = [
+    { id: '1',  name: 'Sky Sports Main Event',    group: 'Sports'  },
+    { id: '2',  name: 'Sky Sports Premier League', group: 'Sports' },
+    { id: '3',  name: 'Sky Sports Football',       group: 'Sports'  },
+    { id: '4',  name: 'Sky Sports Cricket',        group: 'Sports'  },
+    { id: '5',  name: 'Sky Sports F1',            group: 'Sports'  },
+    { id: '6',  name: 'Sky Sports Golf',          group: 'Sports'  },
+    { id: '7',  name: 'Sky Sports Action',        group: 'Sports'  },
+    { id: '8',  name: 'Sky Sports Arena',         group: 'Sports'  },
+    { id: '9',  name: 'Sky Sports News',          group: 'Sports'  },
+    { id: '10', name: 'Sky Sports Mix',           group: 'Sports'  },
+    { id: '11', name: 'TNT Sports 1',            group: 'Sports'  },
+    { id: '12', name: 'TNT Sports 2',            group: 'Sports'  },
+    { id: '13', name: 'TNT Sports 3',            group: 'Sports'  },
+    { id: '14', name: 'TNT Sports 4',            group: 'Sports'  },
+    { id: '15', name: 'ESPN US',                 group: 'Sports'  },
+    { id: '16', name: 'ESPN2 US',                group: 'Sports'  },
+    { id: '17', name: 'ESPN3 US',                group: 'Sports'  },
+    { id: '18', name: 'Eurosport 1',             group: 'Sports'  },
+    { id: '19', name: 'Eurosport 2',             group: 'Sports'  },
+    { id: '20', name: 'DAZN 1',                  group: 'Sports'  },
+    { id: '21', name: 'DAZN 2',                  group: 'Sports'  },
+    { id: '22', name: 'Fox Sports 1',            group: 'Sports'  },
+    { id: '23', name: 'Fox Sports 2',            group: 'Sports'  },
+    { id: '24', name: 'NBC Sports',              group: 'Sports'  },
+    { id: '25', name: 'beIN Sports 1',           group: 'Sports'  },
+    { id: '26', name: 'beIN Sports 2',           group: 'Sports'  },
+    { id: '27', name: 'beIN Sports 3',           group: 'Sports'  },
+    { id: '28', name: 'Movistar LaLiga',         group: 'Sports'  },
+    { id: '29', name: 'Movistar Champions',      group: 'Sports'  },
+    { id: '30', name: 'Canal+ Sport',            group: 'Sports'  },
+    { id: '31', name: 'SuperSport 1',            group: 'Sports'  },
+    { id: '32', name: 'SuperSport 2',            group: 'Sports'  },
+    { id: '33', name: 'SuperSport Football',     group: 'Sports'  },
+    { id: '34', name: 'Sport TV1',               group: 'Sports'  },
+    { id: '35', name: 'Sport TV2',               group: 'Sports'  },
+    { id: '36', name: 'MUTV',                    group: 'Sports'  },
+    { id: '37', name: 'Chelsea TV',              group: 'Sports'  },
+    { id: '38', name: 'Liverpool TV',            group: 'Sports'  },
+    { id: '39', name: 'Eleven Sports 1',         group: 'Sports'  },
+    { id: '40', name: 'Eleven Sports 2',         group: 'Sports'  },
+    { id: '41', name: 'CNN International',       group: 'News'    },
+    { id: '42', name: 'BBC News',                group: 'News'    },
+    { id: '43', name: 'Sky News',                group: 'News'    },
+    { id: '44', name: 'Al Jazeera English',      group: 'News'    },
+    { id: '45', name: 'Fox News',                group: 'News'    },
+    { id: '46', name: 'MSNBC',                   group: 'News'    },
+    { id: '47', name: 'Euronews',                group: 'News'    },
+    { id: '48', name: 'BBC One',                 group: 'UK TV'   },
+    { id: '49', name: 'BBC Two',                 group: 'UK TV'   },
+    { id: '50', name: 'ITV',                     group: 'UK TV'   },
+];
 
 function iptvSetSource(src) {
     _iptvSource = src;
@@ -9695,14 +9853,9 @@ function iptvSetSource(src) {
     const sel = document.getElementById('iptv-source-select');
     if (sel) sel.value = src;
     _iptvChannels = [];
-    if (src === 'bintv' || src === 'daddylive') {
-        iptvReload();
-        const label = src === 'bintv' ? 'BinTV' : 'DaddyLive';
-        showToast(`${label} selected — click Browse to find channels`, 'info', 3000);
-        // Do NOT auto-open the browse overlay; user clicks Browse when they want it
-    } else {
-        iptvReload();
-    }
+    _iptvInited = false;   // force re-init so new source channels load
+    _iptvInitUI();         // show/hide domain input
+    iptvInit();
 }
 
 function iptvSetTZOffset(val) {
@@ -9716,6 +9869,11 @@ function _iptvInitUI() {
     if (srcSel) srcSel.value = _iptvSource;
     const tzSel = document.getElementById('iptv-tz-offset');
     if (tzSel) tzSel.value = String(_iptvTZOffset);
+    // Show domain input only for DaddyLive
+    const dlWrap = document.getElementById('iptv-dl-domain-wrap');
+    if (dlWrap) dlWrap.style.display = _iptvSource === 'daddylive' ? 'flex' : 'none';
+    const dlInput = document.getElementById('iptv-dl-domain');
+    if (dlInput) dlInput.value = _daddyliveDomain;
 }
 
 function iptvSetView(v) {
@@ -9735,9 +9893,18 @@ async function iptvInit() {
     if (_iptvInited && _iptvChannels.length) return;
     _iptvInited = true;
     _iptvInitUI();
-    if (_iptvSource === 'bintv' || _iptvSource === 'daddylive') {
-        _iptvChannels = [];
-        iptvRenderList();
+    await iptvLoadSourceChannels();
+}
+
+async function iptvLoadSourceChannels() {
+    if (_iptvSource === 'bintv') {
+        _iptvChannels = _BINTV_CHANNELS.map(c => ({...c, logo:''}));
+        iptvBuildCatPills();
+        iptvFilterChannels();
+    } else if (_iptvSource === 'daddylive') {
+        _iptvChannels = _DADDYLIVE_CHANNELS.map(c => ({...c, logo:''}));
+        iptvBuildCatPills();
+        iptvFilterChannels();
     } else {
         await iptvFetchChannels();
     }
@@ -9830,22 +9997,22 @@ function iptvPlayChannel(id, name, rowEl) {
     if (frame) {
         const streamUrls = {
             moviebite: `https://live.moviebite.cc/channels/${id}`,
-            bintv: `https://www.bintv.net/channel/${id}`,
-            daddylive: `https://daddylive.cv/stream/stream-${id}.php`
+            bintv:     `https://www.bintv.net/channel/${id}`,
+            daddylive: `https://${_daddyliveDomain}/stream/stream-${id}.php`
         };
         frame.src = streamUrls[_iptvSource] || streamUrls.moviebite;
         frame.style.display = '';
     }
     if (placeholder) placeholder.style.display = 'none';
     if (nowPlaying)  nowPlaying.textContent = name;
-    const sourceNames = { moviebite: 'MovieBite', bintv: 'BinTV', daddylive: 'DaddyLive' };
+    const sourceNames = { moviebite: 'MovieBite', bintv: 'BinTV', daddylive: `DaddyLive (${_daddyliveDomain})` };
     if (nowSource)   nowSource.textContent  = `${sourceNames[_iptvSource]||'Stream'} · ${name}`;
 
     const popoutBtn = document.getElementById('iptv-popout-btn');
     const popUrls = {
         moviebite: `https://live.moviebite.cc/channels/${id}`,
-        bintv: `https://www.bintv.net/channel/${id}`,
-        daddylive: `https://daddylive.cv/stream/stream-${id}.php`
+        bintv:     `https://www.bintv.net/channel/${id}`,
+        daddylive: `https://${_daddyliveDomain}/stream/stream-${id}.php`
     };
     if (popoutBtn) popoutBtn.dataset.url = popUrls[_iptvSource] || popUrls.moviebite;
 }
@@ -9934,7 +10101,7 @@ function iptvRenderMV() {
         return `
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
           ${ch
-            ? `<iframe src="${_iptvSource==='daddylive'?'https://daddylive.cv/stream/stream-'+ch.id+'.php':_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe>`
+            ? `<iframe src="${_iptvSource==='daddylive'?'https://'+_daddyliveDomain+'/stream/stream-'+ch.id+'.php':_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://live.moviebite.cc/channels/'+ch.id}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe>`
             : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
                  <div style="font-size:28px">📺</div>
                  <div style="font-size:11px">Click to assign channel</div>
@@ -10012,7 +10179,7 @@ function iptvBrowseChannels() {
     const isVisible = panel.style.display === 'flex';
     if (isVisible) { iptvHideBrowse(); return; }  // toggle off if already open
     if (iframe && !iframe.src) {
-        const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/', daddylive: 'https://daddylive.cv/channel' };
+        const urls = { moviebite: 'https://live.moviebite.cc/channels', bintv: 'https://www.bintv.net/', daddylive: `https://${_daddyliveDomain}/` };
         iframe.src = urls[_iptvSource] || urls.moviebite;
     }
     panel.style.display = 'flex';

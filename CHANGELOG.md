@@ -6,6 +6,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.15.35] — 2026-03-17
+
+### Fixed
+- **CPU/Memory gauge text still not centred** — `translateY(-18px)` was still off-centre
+  because the chart used a 270° speedometer arc. Switched both gauges to a 360° full-donut
+  (`circumference:360, rotation:-90`). Removed all `translateY` offset from the overlay; text
+  now sits perfectly centred using `inset:0 / display:flex / align-items:center /
+  justify-content:center`.
+- **Dashboard storage showing duplicate entries** — Docker bind-mounts (resolv.conf, hostname,
+  hosts, app.py) all share the same underlying block device and reported identical sizes.
+  Added Python-side deduplication in `/api/storage`: skip explicit `/etc/*` bind-mounts via
+  `_SKIP_MOUNTS`, filter virtual filesystems via `_SKIP_FSTYPES` (tmpfs, overlay, devtmpfs,
+  etc.), and deduplicate remaining partitions by `(device, total_bytes)` key.
+- **Dashboard storage values shown below the circle** — Compact donut grid now renders each
+  filesystem as a `position:relative` 64×64 wrapper with an absolute-positioned `<span>`
+  overlay centered inside each donut ring. Scroll container capped at `max-height:300px`.
+- **Football fixtures showing past matches instead of future** — Season-year calculation
+  `today.year + 1 if today.month >= 8 else today.year` returned 2026 in March 2026, but
+  ESPN indexes the 2025-26 season under start-year 2025. Fixed to
+  `sy = today.year if today.month >= 8 else today.year - 1` so the correct ESPN season
+  data is requested during Jan–Jul of each year.
+- **DaddyLive not working** — Default domain changed from `daddylive.me` to `daddylive.lat`.
+  Plain text domain input replaced with a preset dropdown (daddylive.lat ★, .eu, .me, .sh,
+  .tv, Custom…) with `iptvDaddylivePreset()` to switch instantly or reveal a custom-domain
+  input field.
+
+### Added
+- **IPTV BinTV fullscreen support** — Added `⛶ Fullscreen` button to the IPTV player
+  controls bar. `iptvFullscreen()` function requests fullscreen on the player wrapper (or
+  the iframe directly as fallback) with cross-browser support (standard, webkit, moz, ms).
+
+---
+
 ## [3.15.34] — 2026-03-17
 
 ### Fixed

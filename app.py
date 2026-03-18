@@ -255,18 +255,31 @@ def api_stream():
 def api_storage():
     """Disk usage and I/O statistics."""
     try:
+        # Docker bind-mounts for metadata files all point to the same device.
+        # Skip known metadata paths and deduplicate by (device, total_bytes).
+        _SKIP_MOUNTS  = {'/etc/resolv.conf','/etc/hostname','/etc/hosts','/etc/mtab','/etc/localtime','/etc/timezone'}
+        _SKIP_FSTYPES = {'tmpfs','devtmpfs','squashfs','overlay','none','proc','sysfs','devpts','cgroup','cgroup2','mqueue','hugetlbfs','pstore','securityfs','debugfs','tracefs','bpf','autofs'}
+        _seen_devs: set = set()
         filesystems = []
-        for part in psutil.disk_partitions():
+        for part in psutil.disk_partitions(all=True):
+            if part.mountpoint in _SKIP_MOUNTS:
+                continue
+            if part.fstype in _SKIP_FSTYPES:
+                continue
             try:
                 usage = psutil.disk_usage(part.mountpoint)
+                dev_key = (part.device or part.mountpoint, usage.total)
+                if dev_key in _seen_devs:
+                    continue
+                _seen_devs.add(dev_key)
                 filesystems.append({
                     "mountpoint": part.mountpoint,
-                    "device": part.device,
-                    "total": usage.total,
-                    "used": usage.used,
-                    "free": usage.free,
-                    "percent": usage.percent,
-                    "fstype": part.fstype
+                    "device":     part.device,
+                    "total":      usage.total,
+                    "used":       usage.used,
+                    "free":       usage.free,
+                    "percent":    usage.percent,
+                    "fstype":     part.fstype
                 })
             except (PermissionError, OSError):
                 pass
@@ -1069,7 +1082,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.34",
+            "version": "3.15.35",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -3089,9 +3102,11 @@ def api_football_team_fixtures():
         return jsonify({"error": "team_id required"}), 400
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     today = _dt.date.today()
-    # ESPN uses END-year of season: 2025-26 = 2026. Try current year and adjacent years.
-    sy = today.year + 1 if today.month >= 8 else today.year
-    season_candidates = list(dict.fromkeys([sy, sy - 1, sy + 1]))  # deduplicated, primary first
+    # Soccer seasons run Aug → May. ESPN indexes by START year.
+    # Jan-Jul 2026 → 2025-26 season → start year 2025
+    # Aug-Dec 2026 → 2026-27 season → start year 2026
+    sy = today.year if today.month >= 8 else today.year - 1
+    season_candidates = list(dict.fromkeys([sy, sy + 1, sy - 1]))  # current first
     # League competition name keywords — used to filter out cup/non-league matches after fetch
     _COMP_KW = {
         "eng.1": ["premier league", "premier", "barclays"],
@@ -4827,7 +4842,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.34</div>
+      <div class="sb-version">v3.15.35</div>
     </div>
   </div>
 
@@ -5017,7 +5032,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
                 <div style="position:relative;width:160px;height:160px">
                   <canvas id="cpu-gauge-canvas" width="160" height="160"></canvas>
-                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-18px);pointer-events:none">
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
                     <span id="cpu-gauge-text" style="font-size:32px;font-weight:700;font-family:var(--mono);color:#3fb950;line-height:1">0%</span>
                     <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">Usage</span>
                   </div>
@@ -5034,7 +5049,7 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
                 <div style="position:relative;width:160px;height:160px">
                   <canvas id="mem-gauge-canvas" width="160" height="160"></canvas>
-                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(-18px);pointer-events:none">
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
                     <span id="mem-gauge-text" style="font-size:32px;font-weight:700;font-family:var(--mono);color:#bc8cff;line-height:1">0%</span>
                     <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">RAM</span>
                   </div>
@@ -5949,10 +5964,19 @@ body.sse-disconnected #app{padding-top:38px;}
           </select>
           <div id="iptv-dl-domain-wrap" style="display:none;align-items:center;gap:4px;flex-wrap:wrap">
             <span style="font-size:10px;color:var(--text3)">Domain:</span>
-            <input id="iptv-dl-domain" type="text" placeholder="daddylive.me"
-              style="font-size:10px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);width:120px"
+            <select id="iptv-dl-domain-preset" onchange="iptvDaddylivePreset(this.value)"
+              style="font-size:10px;padding:3px 5px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r)">
+              <option value="daddylive.lat">daddylive.lat ★</option>
+              <option value="daddylive.eu">daddylive.eu</option>
+              <option value="daddylive.me">daddylive.me</option>
+              <option value="daddylive.sh">daddylive.sh</option>
+              <option value="daddylive.tv">daddylive.tv</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input id="iptv-dl-domain" type="text" placeholder="daddylive.lat"
+              style="font-size:10px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);width:110px;display:none"
               onchange="iptvSetDaddyliveDomain(this.value)"
-              title="DaddyLive domain — changes frequently. Try: daddylive.me  daddylive.eu  daddylive.sh"/>
+              title="Custom DaddyLive domain"/>
             <span style="font-size:10px;color:var(--text3)">Path:</span>
             <select id="iptv-dl-pattern" onchange="iptvSetDaddylivePattern(this.value)"
               style="font-size:10px;padding:3px 5px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r)">
@@ -5998,6 +6022,7 @@ body.sse-disconnected #app{padding-top:38px;}
               </div>
               <div style="display:flex;gap:6px">
                 <button class="btn" style="font-size:11px;padding:3px 10px" onclick="iptvAddToMultiview()" title="Add to multiview">⊞ Multiview</button>
+                <button class="btn" style="font-size:11px;padding:3px 10px" onclick="iptvFullscreen()" title="Fullscreen">⛶ Fullscreen</button>
                 <button class="btn" style="font-size:11px;padding:3px 10px" id="iptv-popout-btn" onclick="iptvPopout()" title="Open in new tab">↗ Pop-out</button>
               </div>
             </div>
@@ -6707,18 +6732,18 @@ function _makeGaugeChart(canvasId, color) {
         data: {
             datasets: [{
                 data: [0, 100],
-                backgroundColor: [color, 'rgba(48,54,61,0.8)'],
+                backgroundColor: [color, 'rgba(48,54,61,0.6)'],
                 borderWidth: 0,
-                borderRadius: 4,
+                borderRadius: 6,
                 hoverOffset: 0
             }]
         },
         options: {
             responsive: false,
-            cutout: '68%',
-            circumference: 270,
-            rotation: 225,
-            animation: { duration: 400 },
+            cutout: '72%',
+            circumference: 360,
+            rotation: -90,
+            animation: { duration: 500, easing: 'easeOutQuart' },
             plugins: { legend: { display: false }, tooltip: { enabled: false } }
         }
     });
@@ -7443,36 +7468,46 @@ async function loadDashStorage() {
             el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:16px">No filesystem data</div>';
             return;
         }
-        // Filter out tmpfs / devtmpfs / loop devices
         const fsList = d.filesystems.filter(fs =>
             !['tmpfs','devtmpfs','squashfs','overlay','none'].includes(fs.fstype || '') &&
             !((fs.device || '').startsWith('/dev/loop'))
         );
+        el.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;padding:4px 2px;overflow-y:auto;max-height:300px';
+        // Destroy existing charts before rebuild
+        if (!window._dashDiskCharts) window._dashDiskCharts = {};
+        Object.values(window._dashDiskCharts).forEach(c => { try { c.destroy(); } catch(e){} });
+        window._dashDiskCharts = {};
         el.innerHTML = fsList.map(fs => {
-            const pct = Math.round(fs.percent || 0);
-            const mount = fs.mountpoint || fs.device || '?';
-            const clr = pct < 70 ? 'var(--green)' : pct < 90 ? 'var(--yellow,#e3b341)' : 'var(--red,#f85149)';
-            const clr2 = pct < 70 ? 'var(--green2)' : pct < 90 ? 'rgba(227,179,65,.15)' : 'rgba(248,81,73,.12)';
-            const used = fmtBytes(fs.used || 0);
-            const total = fmtBytes(fs.total || 0);
-            const free = fmtBytes((fs.total || 0) - (fs.used || 0));
-            const shortMount = mount.length > 22 ? '…' + mount.slice(-20) : mount;
-            return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 12px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-                <span style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono)" title="${mount}">${shortMount}</span>
-                <span style="font-size:12px;font-weight:700;color:${clr};background:${clr2};border-radius:5px;padding:1px 7px">${pct}%</span>
+            const pct  = Math.round(fs.percent || 0);
+            const mount = (fs.mountpoint || fs.device || '?');
+            const label = mount.length > 12 ? mount.split('/').pop() || mount.slice(-10) : mount;
+            const safeId = 'ds-' + mount.replace(/[^a-zA-Z0-9]/g,'_');
+            const clr = pct < 70 ? '#3fb950' : pct < 90 ? '#e3b341' : '#f85149';
+            return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:var(--bg3);border:1px solid var(--border);border-radius:8px" title="${mount}&#10;${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}">
+              <div style="position:relative;width:64px;height:64px">
+                <canvas id="${safeId}" width="64" height="64"></canvas>
+                <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+                  <span style="font-size:13px;font-weight:700;font-family:var(--mono);color:${clr}">${pct}%</span>
+                </div>
               </div>
-              <div style="height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-bottom:5px">
-                <div style="height:100%;width:${pct}%;background:${clr};border-radius:3px;transition:width .6s"></div>
-              </div>
-              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)">
-                <span>${used} used</span><span>${free} free / ${total}</span>
-              </div>
+              <div style="font-size:9px;color:var(--text2);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:76px" title="${mount}">${label}</div>
             </div>`;
         }).join('');
-    } catch(e) {
-        if (el) el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:16px">Unable to load storage</div>';
-    }
+        // Draw donuts
+        fsList.forEach(fs => {
+            const pct  = Math.round(fs.percent || 0);
+            const mount = fs.mountpoint || fs.device || '?';
+            const safeId = 'ds-' + mount.replace(/[^a-zA-Z0-9]/g,'_');
+            const canvas = document.getElementById(safeId);
+            if (!canvas || typeof Chart === 'undefined') return;
+            const clr = pct < 70 ? '#3fb950' : pct < 90 ? '#e3b341' : '#f85149';
+            window._dashDiskCharts[safeId] = new Chart(canvas.getContext('2d'), {
+                type: 'doughnut',
+                data: { datasets: [{ data: [pct, 100-pct], backgroundColor: [clr, 'rgba(48,54,61,0.6)'], borderWidth: 0, borderRadius: 4, hoverOffset: 0 }] },
+                options: { cutout:'70%', circumference:360, rotation:-90, responsive:false, animation:{duration:600}, plugins:{legend:{display:false},tooltip:{enabled:false}} }
+            });
+        });
+    } catch(e) {}
 }
 
 // ── Network (with bandwidth line charts) ─────────────────────────────
@@ -9925,7 +9960,7 @@ let _iptvTZOffset    = parseInt(localStorage.getItem('iptv_tz_offset') || '0', 1
 
 // ── DaddyLive domain — changes frequently; user can override in Settings ──
 // Stream URL: <domain>/stream/stream-<id>.php
-let _daddyliveDomain   = localStorage.getItem('iptv_daddylive_domain')   || 'daddylive.me';
+let _daddyliveDomain   = localStorage.getItem('iptv_daddylive_domain')   || 'daddylive.lat';
 let _daddylivePattern  = localStorage.getItem('iptv_daddylive_pattern')  || 'stream';
 function iptvSetDaddyliveDomain(d) {
     _daddyliveDomain = (d || 'daddylive.me').replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -9935,6 +9970,20 @@ function iptvSetDaddylivePattern(p) {
     _daddylivePattern = p || 'stream';
     localStorage.setItem('iptv_daddylive_pattern', _daddylivePattern);
 }
+
+function iptvDaddylivePreset(val) {
+    const customInput = document.getElementById('iptv-dl-domain');
+    if (val === 'custom') {
+        if (customInput) customInput.style.display = '';
+    } else {
+        if (customInput) customInput.style.display = 'none';
+        iptvSetDaddyliveDomain(val);
+        // Sync preset dropdown to selected value
+        const preset = document.getElementById('iptv-dl-domain-preset');
+        if (preset) preset.value = val;
+    }
+}
+
 function _daddyliveStreamUrl(id) {
     const patterns = {
         'stream':  `/stream/stream-${id}.php`,
@@ -10061,6 +10110,15 @@ function _iptvInitUI() {
     if (dlInput) dlInput.value = _daddyliveDomain;
     const dlPattern = document.getElementById('iptv-dl-pattern');
     if (dlPattern) dlPattern.value = _daddylivePattern;
+    const dlPreset = document.getElementById('iptv-dl-domain-preset');
+    if (dlPreset) {
+        // Select matching preset or 'custom'
+        const opts = Array.from(dlPreset.options).map(o => o.value);
+        dlPreset.value = opts.includes(_daddyliveDomain) ? _daddyliveDomain : 'custom';
+        const customInput = document.getElementById('iptv-dl-domain');
+        if (customInput) customInput.style.display = dlPreset.value === 'custom' ? '' : 'none';
+        if (customInput && dlPreset.value === 'custom') customInput.value = _daddyliveDomain;
+    }
 }
 
 function iptvSetView(v) {
@@ -10207,6 +10265,19 @@ function iptvPlayChannel(id, name, rowEl) {
 function iptvPopout() {
     const url = document.getElementById('iptv-popout-btn')?.dataset.url;
     if (url) window.open(url, '_blank');
+}
+
+function iptvFullscreen() {
+    const wrap  = document.getElementById('iptv-player-wrap');
+    const frame = document.getElementById('iptv-player-frame');
+    // Prefer to fullscreen the wrap div; iframe fullscreen works on some browsers
+    const el = (wrap && wrap.requestFullscreen) ? wrap : frame;
+    if (!el) return;
+    if      (el.requestFullscreen)       el.requestFullscreen();
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else if (el.mozRequestFullScreen)    el.mozRequestFullScreen();
+    else if (el.msRequestFullscreen)     el.msRequestFullscreen();
+    else if (frame && frame.requestFullscreen) frame.requestFullscreen();
 }
 
 function iptvPlayHLS() {

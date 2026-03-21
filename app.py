@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.15.21 · Full deployment, update management, and real-time monitoring
+Version: 3.16.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -1032,7 +1032,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.15.21",
+            "version": "3.16.0",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1093,7 +1093,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.15.37",
+            "version": "3.16.0",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1463,7 +1463,7 @@ def api_stack_add():
 @app.route("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.15.21"})
+    return jsonify({"update_available": False, "version": "3.16.0"})
 
 @app.route("/api/update/all", methods=["POST"])
 def api_update_all():
@@ -4979,7 +4979,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.15.37</div>
+      <div class="sb-version">v3.16.0</div>
     </div>
   </div>
 
@@ -6074,7 +6074,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.15.21</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.16.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -11712,7 +11712,7 @@ function _applyBg(url, blur, overlay) {
 })();
 
 // ── Dashboard uses CSS Grid — no drag-and-drop ────────────────────────────
-// _gs and _gsEditing stubs: dashboard is now CSS Grid, GridStack removed in v3.15.21
+// _gs and _gsEditing stubs: dashboard is now CSS Grid, GridStack removed in v3.16.0
 // These prevent ReferenceErrors from legacy widget helper functions below.
 let _gs = null;
 let _gsEditing = false;

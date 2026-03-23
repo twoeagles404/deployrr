@@ -1,10 +1,11 @@
 # 👻 ArrHub
 
 > A dead-simple, fully open-source homelab Docker deployment tool.
-> One `curl | sudo bash` install. Pure Bash TUI + real-time Flask WebUI. **101 apps across 17 categories.** MIT licensed.
+> One `curl | sudo bash` install. Pure Bash TUI + real-time FastAPI WebUI. **101 apps across 17 categories.** MIT licensed.
+> Apple Glassmorphism UI · Swipeable Media Suite Card · HLS.js Player · Umbrel-style Arr Auto-Wiring
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.12.0-blue)](https://github.com/twoeagles404/arrhub/releases)
+[![Version](https://img.shields.io/badge/version-3.17.12-blue)](https://github.com/twoeagles404/arrhub/releases)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-twoeagles404%2Farrhub-blue)](https://github.com/twoeagles404/arrhub/pkgs/container/arrhub)
 
 ---
@@ -14,23 +15,30 @@
 - **One-command install** — `curl -fsSL ... | sudo bash`, zero manual steps
 - **101 apps** across 17 categories — ARR Suite, Media Servers, Monitoring, Security, and more
 - **Pure Bash TUI** — run `media` to launch the interactive deployment wizard
-- **Flask WebUI** on port `:9999` — real-time SSE dashboard with dark UI
+- **FastAPI WebUI** on port `:9999` — real-time SSE dashboard with Apple glassmorphism UI
+- **Apple Glassmorphism UI** — `backdrop-filter: blur(40px) saturate(180%)` panels, ambient radial gradient orbs, Apple HIG color palette throughout the dashboard
+- **Swipeable Media Suite Card** — Radarr, Sonarr, Downloads, Plex, and Seerr in one unified card; swipe or click arrows to navigate between services, dot indicators, touch support
+- **Collapsible Right Sidebar** — slide-in panel with weather, quick links, live CPU/RAM mini-bars, uptime, and notes; toggle via topbar button; live SSE metrics update while open
 - **Live monitoring** — CPU, RAM, load, network, storage via Server-Sent Events every 2s
 - **Container management** — start, stop, restart, remove, logs, ⬆ Update & Recreate, per-container CPU/MEM charts
 - **Deploy tab** — browse full catalog, filter by category, search, sort, one-click deploy with favorites
 - **Stack Manager** — view per-app compose files and deployment history
 - **Updates tab** — check for image updates, pull latest with one click
 - **Backup tab** — one-click config backup and restore
-- **RSS & Live News** — CNN, BBC, Al Jazeera, Sky News, Sports, Tech, Science, YouTube feeds + 6 YouTube live news streams (BBC, Al Jazeera, Sky News, Bloomberg, DW, France 24); collapsible per-category in the All tab
-- **Draggable dashboard** — Overview panels are drag-and-drop resizable widgets (GridStack); click "Edit Layout" to rearrange and resize; layout saved per-browser
+- **RSS & Feeds** — Reddit (with OAuth for NSFW), YouTube, HackerNews, Twitter/X via proxy, RSS sources; collapsible per-category in the All tab
+- **Football Hub** — Live Premier League table, team fixture panels with upcoming + past results, team news; covers PL, La Liga, Bundesliga, Serie A, Ligue 1, MLS, Champions League, Europa League, World Cup, Copa America, AFCON
+- **IPTV Player** — HLS.js-powered player with adaptive quality (Auto/360p/720p/1080p), M3U8 playlist parsing (s.id, MoViTV/StrymTV), CORS proxy for external playlists, low-latency mode
+- **Clean CSS Grid dashboard** — Overview panels in a fixed Glance-style 2-column grid; Gauges, Weather (7-day forecast), System Info, Swipeable Media Suite, Infrastructure, Logs, Containers, Service Launcher
+- **Glance-style weather** — 7-day forecast grid with emoji icons, hi/lo temps per day
+- **Twitter/X feed** — Server-side proxy via twitterwebviewer.com strips X-Frame-Options; toggle Cards/Web Viewer mode
 - **Themes & appearance** — 5 built-in themes (Dark, Light, Nord, Catppuccin, Dracula), 6 accent colors, custom background image with blur/overlay; persisted to localStorage
-- **Service cards** — Radarr upcoming movies, Sonarr upcoming episodes, Plex active streams, Seerr/Overseerr requests on the Overview page
 - **Alerts bar** — automatic warnings for down containers and high disk usage
 - **Toast notifications** — inline feedback for every action (deploy, stop, restart, update)
 - **Mobile responsive** — bottom nav, hamburger sidebar, touch-friendly at any screen size
 - **Favorites** — star apps in the catalog; pinned to top of Deploy tab (localStorage)
 - **Port conflict detection** — auto-reassigns ports before deploying
-- **Settings tab** — config dir, media dir, timezone, PUID/PGID, service API keys, appearance
+- **Umbrel-style Arr Auto-Wiring** — TUI automatically connects Prowlarr → Radarr/Sonarr/Lidarr and registers download clients after deployment; re-trigger anytime via `A` in the main menu
+- **Settings tab** — config dir, media dir, timezone, PUID/PGID, service API keys, Reddit OAuth credentials, weather location, appearance
 - **Tailscale integration** — install from PVE host shell (recommended) or inside LXC; connect, manage mesh VPN from the TUI
 - **No auth required** — designed for trusted LAN use (optional bearer token available)
 - **SQLite persistence** — settings and deploy history at `/data/arrhub.db`
@@ -249,7 +257,7 @@ docker run -e ARRHUB_TOKEN=your-secret-token ...
 arrhub/
 ├── install.sh           ← One-command installer (builds image locally)
 ├── arrhub.sh            ← Bash TUI (run via `media`)
-├── app.py               ← Flask WebUI (all HTML/CSS/JS embedded, served on :9999)
+├── app.py               ← FastAPI WebUI (all HTML/CSS/JS embedded, served on :9999)
 ├── Dockerfile           ← Multi-stage build: docker CLI + python:3.12-slim
 ├── apps/
 │   └── catalog.json     ← Master app catalog (101 apps)
@@ -267,7 +275,7 @@ Each app deploys to its own compose file at `/docker/<appname>/docker-compose.ym
 Run the WebUI locally without Docker for fast iteration:
 
 ```bash
-pip3 install flask docker psutil flask-sock requests pyyaml gunicorn
+pip3 install fastapi 'uvicorn[standard]' docker psutil requests pyyaml
 
 ARRHUB_DB=/tmp/arrhub-dev.db ARRHUB_NO_AUTH=true python3 app.py
 ```

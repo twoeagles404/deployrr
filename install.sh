@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# ArrHub — Master Installer v3.10.0
+# ArrHub — Master Installer v3.17.12
 # =============================================================================
 #
 # ONE-COMMAND INSTALL (dev branch — always uses latest dev code):
@@ -26,13 +26,13 @@ GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
 # CI validates this plain line — keep it matching the actual branch name.
-GITHUB_BRANCH="main"
+GITHUB_BRANCH="dev"
 # Allow env-var override for testing:  ARRHUB_BRANCH=main sudo bash install.sh
 GITHUB_BRANCH="${ARRHUB_BRANCH:-${GITHUB_BRANCH}}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="3.13.0"
+VERSION="3.17.12"
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Install paths ─────────────────────────────────────────────────────────────
@@ -64,6 +64,7 @@ hdr() {
     printf "\n"
     printf "${G}${B}                             v${VERSION}${N}\n"
     printf "${C}                        101 apps · Pure Bash · MIT License${N}\n"
+    printf "${C}              Apple Glass UI · Swipe Cards · Umbrel Auto-Wire${N}\n"
     printf "\n"
     printf "${C}${B}%s${N}\n" "$(printf '═%.0s' {1..64})"
     echo
@@ -263,7 +264,7 @@ download_file "arrhub.sh" \
     "$([[ -f "${SELF_DIR}/arrhub.sh" ]] && echo "${SELF_DIR}/arrhub.sh" || echo "")"
 chmod +x "${DEST}/arrhub.sh"
 
-# ── app.py — Flask WebUI backend
+# ── app.py — FastAPI WebUI backend
 download_file "app.py" \
     "app.py" \
     "${DEST}/arrhub-webui/app.py" \
@@ -346,6 +347,7 @@ if [[ "${DOCKER_OK}" == "true" ]]; then
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${DEST}/apps:/opt/arrhub/apps:ro" \
             -v "${DEST}/data:/data" \
+            -v "${DEST}/arrhub-webui/app.py:/app/app.py:ro" \
             --pid=host \
             "${WEBUI_LOCAL_TAG}" >> "${LOG}" 2>&1
         then

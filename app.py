@@ -2,11 +2,11 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.10.0 · Full deployment, update management, and real-time monitoring
+Version: 3.17.12 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
-  pip install flask psutil requests docker
+  pip install fastapi uvicorn[standard] psutil requests docker
 
 """
 import json, os, re, subprocess, shutil, time, glob, threading, xml.etree.ElementTree as ET, sqlite3, socket
@@ -15,9 +15,17 @@ from datetime import datetime, timezone, timedelta
 from functools import wraps
 import psutil
 import requests
-from flask import Flask, jsonify, request, Response
+from fastapi import FastAPI, Request, Body
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
+import uvicorn
 
-app = Flask(__name__)
+app = FastAPI(title='ArrHub Monitor', version='3.17.12')
+
+# ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
+def jsonify(data, status: int = 200):
+    """Compat shim — mimics Flask's jsonify(), returns FastAPI JSONResponse."""
+    return JSONResponse(content=data, status_code=status)
+
 
 # ── Docker (optional) ────────────────────────────────────────────────────────
 try:
@@ -49,9 +57,15 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=8)
 _weather_cache = {"data": None, "ts": 0}
 _rss_cache = {}
 _catalog_cache = {"data": None, "ts": 0}
+_logs_cache    = {"data": None, "ts": 0}   # short-lived; refreshed every 10 s
+_network_cache = {"data": None, "ts": 0}   # refreshed every 30 s
+_overview_static_cache = {"data": None, "ts": 0}  # hostname/kernel/arch — rarely change
 CACHE_WEATHER = 1800  # 30 minutes
 CACHE_RSS = 900       # 15 minutes
 CACHE_CATALOG = 300   # 5 minutes
+CACHE_LOGS = 10       # 10 seconds
+CACHE_NETWORK = 30    # 30 seconds
+CACHE_STATIC = 300    # 5 minutes for hostname/kernel info
 
 # ── Catalog ───────────────────────────────────────────────────────────────────
 # Check multiple locations: volume mount first, then local (for development/baked-in)
@@ -157,18 +171,37 @@ def require_auth(f):
 # API ENDPOINTS
 # =============================================================================
 
-@app.route("/")
+@app.get("/")
 def index():
-    return _HTML_SPA
+    return HTMLResponse(content=_HTML_SPA)
 
-@app.route("/api/overview")
+@app.get("/api/overview")
 def api_overview():
-    """System overview: CPU, memory, load average, uptime."""
+    """System overview: CPU, memory, load average, uptime.
+    Static fields (hostname, kernel, arch) are cached for 5 min.
+    cpu_percent uses non-blocking interval=0 after a warm-up read."""
     try:
-        cpu_pct = psutil.cpu_percent(interval=0.1)
+        # Static info — rarely changes; cache for 5 minutes
+        now = time.time()
+        static = _overview_static_cache.get("data")
+        if not static or now - _overview_static_cache.get("ts", 0) > CACHE_STATIC:
+            static = {
+                "hostname": os.uname().nodename,
+                "os":       os.uname().sysname,
+                "kernel":   os.uname().release,
+                "arch":     os.uname().machine,
+                "python":   "3.12",
+                "cpu_count": psutil.cpu_count(),
+            }
+            _overview_static_cache["data"] = static
+            _overview_static_cache["ts"] = now
+
+        # Non-blocking cpu_percent — first call seeds the counter, returns 0.0
+        # Subsequent calls (SSE already calls this every 2 s) return a real value
+        cpu_pct = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
         load = os.getloadavg() if hasattr(os, 'getloadavg') else (0, 0, 0)
-        uptime = time.time() - psutil.boot_time()
+        uptime = now - psutil.boot_time()
 
         # Temperature
         temps = {}
@@ -179,31 +212,24 @@ def api_overview():
             pass
 
         return jsonify({
-            "hostname": os.uname().nodename,
-            "os": os.uname().sysname,
-            "kernel": os.uname().release,
-            "arch": os.uname().machine,
-            "python": "3.12",
-            "cpu_count": psutil.cpu_count(),
-            "cpu_percent": cpu_pct,
-            "mem_percent": mem.percent,
+            **static,
+            "cpu_percent": round(cpu_pct, 1),
+            "mem_percent": round(mem.percent, 1),
             "mem_used": mem.used,
             "mem_total": mem.total,
             "memory": {
-                "total": mem.total,
-                "used": mem.used,
-                "percent": mem.percent,
-                "available": mem.available
+                "total": mem.total, "used": mem.used,
+                "percent": round(mem.percent, 1), "available": mem.available
             },
-            "load_avg": {"1m": load[0], "5m": load[1], "15m": load[2]},
+            "load_avg": {"1m": round(load[0], 2), "5m": round(load[1], 2), "15m": round(load[2], 2)},
             "uptime_seconds": uptime,
             "uptime_display": _format_uptime(uptime),
-            "temperatures": temps
+            "temperatures": temps,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/stream")
+@app.get("/api/stream")
 def api_stream():
     """SSE stream: pushes overview metrics every 2 seconds."""
     def generate():
@@ -230,25 +256,41 @@ def api_stream():
                 break
             except Exception:
                 time.sleep(2)
-    return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
-@app.route("/api/storage")
+@app.get("/api/storage")
 def api_storage():
     """Disk usage and I/O statistics."""
     try:
+        # Docker bind-mounts for metadata files all point to the same device.
+        # Skip known metadata paths and deduplicate by (device, total_bytes).
+        _SKIP_MOUNTS  = {'/etc/resolv.conf','/etc/hostname','/etc/hosts','/etc/mtab','/etc/localtime','/etc/timezone'}
+        _SKIP_FSTYPES = {'tmpfs','devtmpfs','squashfs','overlay','none','proc','sysfs','devpts','cgroup','cgroup2','mqueue','hugetlbfs','pstore','securityfs','debugfs','tracefs','bpf','autofs'}
+        _seen_devs: set = set()
         filesystems = []
-        for part in psutil.disk_partitions():
+        for part in psutil.disk_partitions(all=True):
+            if part.mountpoint in _SKIP_MOUNTS:
+                continue
+            if part.fstype in _SKIP_FSTYPES:
+                continue
             try:
                 usage = psutil.disk_usage(part.mountpoint)
+                dev_key = (part.device or part.mountpoint, usage.total)
+                if dev_key in _seen_devs:
+                    continue
+                _seen_devs.add(dev_key)
                 filesystems.append({
                     "mountpoint": part.mountpoint,
-                    "device": part.device,
-                    "total": usage.total,
-                    "used": usage.used,
-                    "free": usage.free,
-                    "percent": usage.percent,
-                    "fstype": part.fstype
+                    "device":     part.device,
+                    "total":      usage.total,
+                    "used":       usage.used,
+                    "free":       usage.free,
+                    "percent":    usage.percent,
+                    "fstype":     part.fstype
                 })
             except (PermissionError, OSError):
                 pass
@@ -266,11 +308,14 @@ def api_storage():
             "io": io_data
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/network")
+@app.get("/api/network")
 def api_network():
-    """Network interfaces and statistics."""
+    """Network interfaces and statistics — cached for 30 s."""
+    _now = time.time()
+    if _network_cache["data"] and _now - _network_cache["ts"] < CACHE_NETWORK:
+        return jsonify(_network_cache["data"])
     try:
         interfaces = []
         addrs_by_name = psutil.net_if_addrs()
@@ -310,14 +355,22 @@ def api_network():
             },
             "connections": connections
         })
+        _network_cache["data"] = {"interfaces": interfaces, "io": {
+            "bytes_sent": net_io.bytes_sent, "bytes_recv": net_io.bytes_recv,
+            "packets_sent": net_io.packets_sent, "packets_recv": net_io.packets_recv,
+            "errin": net_io.errin, "errout": net_io.errout,
+            "dropin": net_io.dropin, "dropout": net_io.dropout,
+        }, "connections": connections}
+        _network_cache["ts"] = _now
+        return jsonify(_network_cache["data"])
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/containers")
+@app.get("/api/containers")
 def api_containers():
     """List all containers with status, uptime, and port info."""
     if not DOCKER_OK:
-        return jsonify({"containers": [], "error": "Docker not available"}), 500
+        return jsonify({"containers": [], "error": "Docker not available"}, 500)
 
     try:
         containers = _dc.containers.list(all=True)
@@ -353,13 +406,13 @@ def api_containers():
             })
         return jsonify({"containers": result})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/container/<cname>/<action>", methods=["POST"])
+@app.post("/api/container/{cname}/{action}")
 def api_container_action(cname, action):
     """Container action: start, stop, restart, remove, logs."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     try:
         container = _dc.containers.get(cname)
@@ -377,21 +430,21 @@ def api_container_action(cname, action):
             container.remove(force=True)
             return jsonify({"status": "removed"})
         else:
-            return jsonify({"error": "Unknown action"}), 400
+            return jsonify({"error": "Unknown action"}, 400)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/container/<cname>/update", methods=["POST"])
+@app.post("/api/container/{cname}/update")
 @require_auth
 def api_container_update(cname):
     """Pull latest image for a container and recreate it with the same config."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
     try:
         container = _dc.containers.get(cname)
         image_name = container.image.tags[0] if container.image.tags else None
         if not image_name:
-            return jsonify({"error": "No image tag found — cannot pull"}), 400
+            return jsonify({"error": "No image tag found — cannot pull"}, 400)
 
         # Capture current config before stopping
         cfg = container.attrs.get("HostConfig", {})
@@ -440,26 +493,26 @@ def api_container_update(cname):
             "container_id": new_container.short_id,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/container/<cname>/logs")
+@app.get("/api/container/{cname}/logs")
 def api_container_logs(cname):
     """Get container logs."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     try:
         container = _dc.containers.get(cname)
         logs = container.logs(tail=100).decode('utf-8', errors='replace')
         return jsonify({"logs": logs})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/container/<cname>/stats")
+@app.get("/api/container/{cname}/stats")
 def api_container_stats(cname):
     """Get live CPU and memory stats for a single container."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
     try:
         container = _dc.containers.get(cname)
         raw = container.stats(stream=False)
@@ -480,15 +533,16 @@ def api_container_stats(cname):
             "mem_limit_mb": round(mem_limit / 1e6, 1),
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/hardware")
+@app.get("/api/hardware")
 def api_hardware():
     """Hardware information: CPU, memory, board, GPU."""
     try:
         cpu_info = {
             "count": psutil.cpu_count(),
-            "freq": psutil.cpu_freq()._asdict() if psutil.cpu_freq() else {}
+            "freq": psutil.cpu_freq()._asdict() if psutil.cpu_freq() else {},
+            "percent": psutil.cpu_percent(interval=0.2)
         }
 
         memory = psutil.virtual_memory()
@@ -509,14 +563,19 @@ def api_hardware():
             }
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/logs")
-def api_logs():
-    """System logs from Docker containers, ArrHub logs, and host."""
+@app.get("/api/logs")
+def api_logs(request: Request):
+    """System logs from Docker containers, ArrHub logs, and host. Cached 10 s for generic requests."""
+    lines_count = int(request.query_params.get('lines', '100') or '100')
+    unit = request.query_params.get('unit', '')
+    # Only cache the generic multi-container request (no unit filter)
+    _now = time.time()
+    if not unit and _logs_cache["data"] and _now - _logs_cache["ts"] < CACHE_LOGS:
+        cached = _logs_cache["data"]
+        return jsonify({"lines": cached[-lines_count:]})
     try:
-        lines_count = request.args.get('lines', 100, type=int)
-        unit = request.args.get('unit', '')
 
         log_lines = []
 
@@ -582,27 +641,66 @@ def api_logs():
         if not log_lines:
             log_lines = ["No logs available. Container logs will appear here when Docker is running."]
 
-        # Sort and return last N
+        # Sort and cache
         log_lines.sort()
-        log_lines = log_lines[-lines_count:]
+        if not unit:
+            _logs_cache["data"] = log_lines
+            _logs_cache["ts"] = _now
 
-        return jsonify({"lines": log_lines})
+        return jsonify({"lines": log_lines[-lines_count:]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/catalog")
+@app.get("/api/dashboard")
+def api_dashboard():
+    """Combined dashboard endpoint — returns logs + network in one round-trip.
+    Called by the overview page every 30 s instead of two separate requests."""
+    _now = time.time()
+    # Logs (cached separately)
+    if not _logs_cache["data"] or _now - _logs_cache["ts"] >= CACHE_LOGS:
+        # Populate logs cache inline so dashboard always shows logs
+        try:
+            fresh = []
+            if DOCKER_OK:
+                for _lc in _dc.containers.list():
+                    try:
+                        _ll = _lc.logs(tail=8, timestamps=True).decode('utf-8', errors='replace')
+                        for _line in _ll.strip().split('\n'):
+                            if _line.strip():
+                                fresh.append(f"[{_lc.name}] {_line}")
+                    except Exception:
+                        pass
+            if fresh:
+                fresh.sort()
+                _logs_cache["data"] = fresh
+                _logs_cache["ts"] = _now
+        except Exception:
+            pass
+    log_lines = _logs_cache["data"][-12:] if _logs_cache["data"] else []
+    # Network IO (cached separately)
+    if _network_cache["data"] and _now - _network_cache["ts"] < CACHE_NETWORK:
+        net_io = _network_cache["data"].get("io", {})
+    else:
+        try:
+            nio = psutil.net_io_counters()
+            net_io = {"bytes_sent": nio.bytes_sent, "bytes_recv": nio.bytes_recv}
+        except Exception:
+            net_io = {}
+    return jsonify({"logs": log_lines, "net_io": net_io, "ts": int(_now)})
+
+@app.get("/api/catalog")
 def api_catalog():
     """Get application catalog."""
     return jsonify({"apps": list(APP_REGISTRY.values())})
 
-@app.route("/api/catalog/apps")
-def api_catalog_apps():
+@app.get("/api/catalog/apps")
+def api_catalog_apps(request: Request):
     """Get all apps from catalog.json, optionally filtered by category or search."""
     catalog = _load_catalog()
     apps = catalog.get("apps", [])
 
-    q = request.args.get("q", "").lower()
-    cat = request.args.get("category", "")
+    q = request.query_params.get("q", "").lower()
+    cat = request.query_params.get("category", "")
 
     if q:
         apps = [a for a in apps if q in a.get("name","").lower() or q in a.get("description","").lower() or q in a.get("id","").lower()]
@@ -624,7 +722,7 @@ def api_catalog_apps():
     categories = sorted(set(a.get("category","") for a in catalog.get("apps", [])))
     return jsonify({"apps": apps, "categories": categories, "total": len(apps)})
 
-@app.route("/api/catalog/categories")
+@app.get("/api/catalog/categories")
 def api_catalog_categories():
     """Get all unique categories from catalog."""
     catalog = _load_catalog()
@@ -668,20 +766,20 @@ def _resolve_port_mapping(mapping: str) -> tuple:
         return f"{new_port}:{container_port}", host_port, new_port, True
     return mapping, host_port, host_port, False
 
-@app.route("/api/deploy", methods=["POST"])
+@app.post("/api/deploy")
 @require_auth
-def api_deploy_app():
+def api_deploy_app(body: dict = Body(default={})):
     """Deploy an app by generating and running its compose snippet."""
-    data = request.json or {}
+    data = body
     app_id = data.get("app_id")
 
     if not app_id:
-        return jsonify({"error": "Missing app_id"}), 400
+        return jsonify({"error": "Missing app_id"}, 400)
 
     catalog = _load_catalog()
     app_data = next((a for a in catalog.get("apps", []) if a["id"] == app_id), None)
     if not app_data:
-        return jsonify({"error": f"App '{app_id}' not found in catalog"}), 404
+        return jsonify({"error": f"App '{app_id}' not found in catalog"}, 404)
 
     config_dir = _db_get("config_dir", "/docker")
     media_dir = _db_get("media_dir", "/mnt/media")
@@ -723,7 +821,7 @@ def api_deploy_app():
         f.write(compose_content)
 
     if not DOCKER_OK:
-        return jsonify({"error": "Docker is not available. Ensure the Docker socket is mounted."}), 500
+        return jsonify({"error": "Docker is not available. Ensure the Docker socket is mounted."}, 500)
 
     try:
         image_name = app_data["image"]
@@ -732,7 +830,7 @@ def api_deploy_app():
         try:
             _dc.images.pull(image_name)
         except Exception as pull_err:
-            return jsonify({"error": f"Failed to pull image {image_name}: {str(pull_err)}"}), 500
+            return jsonify({"error": f"Failed to pull image {image_name}: {str(pull_err)}"}, 500)
 
         # Remove existing container with the same name
         try:
@@ -769,11 +867,22 @@ def api_deploy_app():
                 host_path = parts[0]
                 container_path = parts[1]
                 mode = parts[2] if len(parts) > 2 else "rw"
-                os.makedirs(host_path, exist_ok=True)
-                try:
-                    os.chmod(host_path, 0o777)
-                except Exception:
-                    pass
+                # Only makedirs for paths that are intended as directories.
+                # Skip socket files, device nodes, or any existing non-directory
+                # (e.g. /var/run/docker.sock is a Unix socket — creating a dir there
+                # raises [Errno 17] File exists).
+                if not os.path.exists(host_path):
+                    try:
+                        os.makedirs(host_path, exist_ok=True)
+                        os.chmod(host_path, 0o777)
+                    except Exception:
+                        pass
+                elif os.path.isdir(host_path):
+                    try:
+                        os.chmod(host_path, 0o777)
+                    except Exception:
+                        pass
+                # else: path already exists as a file/socket — leave it alone
                 binds.append(f"{host_path}:{container_path}:{mode}")
 
         # Build environment
@@ -828,9 +937,9 @@ def api_deploy_app():
                 conn.commit()
         except Exception:
             pass
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/deploy/history")
+@app.get("/api/deploy/history")
 def api_deploy_history_alias():
     """Get deployment history."""
     try:
@@ -843,9 +952,9 @@ def api_deploy_history_alias():
             for r in rows
         ]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/history")
+@app.get("/api/history")
 def api_deploy_history():
     """Get deployment history."""
     try:
@@ -858,13 +967,13 @@ def api_deploy_history():
             for r in rows
         ]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/ports/map")
+@app.get("/api/ports/map")
 def api_ports_map():
     """Get a complete map of all port assignments across all containers."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     port_map = []
     used_ports = set()
@@ -898,7 +1007,7 @@ def api_ports_map():
                         "image": c.image.tags[0] if c.image.tags else "unknown",
                     })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
     # Sort by host port (None last)
     port_map.sort(key=lambda x: (x["host_port"] is None, x["host_port"] or 99999))
@@ -909,7 +1018,7 @@ def api_ports_map():
         "total_bindings": len([p for p in port_map if p["host_port"]]),
     })
 
-@app.route("/api/stack/compose")
+@app.get("/api/stack/compose")
 def api_stack_compose():
     """Get the current docker-compose.yml content."""
     config_dir = _db_get("config_dir", "/docker")
@@ -921,9 +1030,9 @@ def api_stack_compose():
             return jsonify({"content": content, "path": compose_path, "exists": True})
         return jsonify({"content": "", "path": compose_path, "exists": False})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/settings", methods=["GET"])
+@app.get("/api/settings")
 def api_settings_get():
     """Get current settings."""
     return jsonify({
@@ -934,42 +1043,110 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.13.0",
+            "version": "3.17.12",
             # Service integration keys — returned so the UI can re-populate fields on revisit
-            "radarr_url":     _db_get("radarr_url", ""),
-            "radarr_api_key": _db_get("radarr_api_key", ""),
-            "sonarr_url":     _db_get("sonarr_url", ""),
-            "sonarr_api_key": _db_get("sonarr_api_key", ""),
+            "radarr_url":        _db_get("radarr_url", ""),
+            "radarr_api_key":    _db_get("radarr_api_key", ""),
+            "sonarr_url":        _db_get("sonarr_url", ""),
+            "sonarr_api_key":    _db_get("sonarr_api_key", ""),
+            "qbittorrent_url":   _db_get("qbittorrent_url", ""),
+            "qbittorrent_user":  _db_get("qbittorrent_user", "admin"),
+            "qbittorrent_pass":  _db_get("qbittorrent_pass", ""),
+            "downloader_type":   _db_get("downloader_type", "qbittorrent"),
+            "transmission_url":  _db_get("transmission_url", ""),
+            "transmission_user": _db_get("transmission_user", ""),
+            "transmission_pass": _db_get("transmission_pass", ""),
+            "deluge_url":        _db_get("deluge_url", ""),
+            "deluge_pass":       _db_get("deluge_pass", ""),
             "plex_url":       _db_get("plex_url", ""),
             "plex_token":     _db_get("plex_token", ""),
             "seerr_url":      _db_get("seerr_url", ""),
             "seerr_api_key":  _db_get("seerr_api_key", ""),
+            "football_api_key": _db_get("football_api_key", ""),
+            "weather_city":     _db_get("weather_city", ""),
+            "weather_country":  _db_get("weather_country", ""),
+            "reddit_client_id":     _db_get("reddit_client_id", ""),
+            "reddit_client_secret": _db_get("reddit_client_secret", ""),
+            "reddit_username":      _db_get("reddit_username", ""),
+            "reddit_password":      _db_get("reddit_password", ""),
         }
     })
 
-@app.route("/api/settings", methods=["POST"])
+@app.post("/api/settings")
 @require_auth
-def api_settings_set():
+def api_settings_set(body: dict = Body(default={})):
     """Save settings."""
-    data = request.json or {}
+    data = body
     allowed = [
         "config_dir", "media_dir", "tz", "puid", "pgid",
         # Service integration keys
         "radarr_url", "radarr_api_key",
         "sonarr_url", "sonarr_api_key",
+        "qbittorrent_url", "qbittorrent_user", "qbittorrent_pass",
+        "downloader_type", "transmission_url", "transmission_user", "transmission_pass",
+        "deluge_url", "deluge_pass",
         "plex_url", "plex_token",
         "seerr_url", "seerr_api_key",
+        "football_api_key",
+        "weather_city", "weather_country",
+        "reddit_client_id", "reddit_client_secret", "reddit_username", "reddit_password",
     ]
     for key in allowed:
         if key in data:
             _db_set(key, data[key])
     return jsonify({"status": "saved"})
 
-@app.route("/api/updates")
+@app.get("/api/config/export")
+def api_config_export():
+    """Export all settings from the database as a JSON backup."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        payload = {
+            "arrhub_backup": True,
+            "version": "3.17.12",
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "settings": {k: v for k, v in rows},
+        }
+        return Response(
+            content=json.dumps(payload, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="arrhub-config-{time.strftime("%Y%m%d")}.json'},
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}, 500)
+
+@app.post("/api/config/import")
+@require_auth
+def api_config_import(body: dict = Body(default={})):
+    """Restore settings from a JSON backup (writes every key/value pair)."""
+    data = body
+    if not data.get("arrhub_backup"):
+        return jsonify({"error": "Not a valid ArrHub backup file"}, 400)
+    settings = data.get("settings", {})
+    if not settings:
+        return jsonify({"error": "No settings found in backup"}, 400)
+    # Skip internal/runtime keys that should not be restored
+    _skip = {"_schema_version", "session_secret"}
+    count = 0
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            for key, value in settings.items():
+                if isinstance(key, str) and key not in _skip:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                        (key, str(value) if value is not None else "")
+                    )
+                    count += 1
+        return jsonify({"ok": True, "restored": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}, 500)
+
+@app.get("/api/updates")
 def api_updates():
     """Check which containers have image updates available."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
     updates = []
     try:
         containers = _dc.containers.list()
@@ -983,13 +1160,13 @@ def api_updates():
             })
         return jsonify({"updates": updates, "checked_at": datetime.now().isoformat()})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/updates/check")
+@app.get("/api/updates/check")
 def api_updates_check():
     """Check which containers have image updates available."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
     results = []
     try:
         containers = _dc.containers.list()
@@ -1003,26 +1180,26 @@ def api_updates_check():
             })
         return jsonify({"containers": results, "checked_at": datetime.now().isoformat()})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/updates/pull/<cname>", methods=["POST"])
+@app.post("/api/updates/pull/{cname}")
 @require_auth
 def api_update_container(cname):
     """Pull latest image for a container and recreate it."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
     try:
         container = _dc.containers.get(cname)
         image = container.image.tags[0] if container.image.tags else None
         if not image:
-            return jsonify({"error": "No image tag found"}), 400
+            return jsonify({"error": "No image tag found"}, 400)
         _dc.images.pull(image)
         container.restart()
         return jsonify({"status": "updated", "name": cname, "image": image})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/backup/create", methods=["POST"])
+@app.post("/api/backup/create")
 @require_auth
 def api_backup_create():
     """Create a backup of the config directory."""
@@ -1040,11 +1217,11 @@ def api_backup_create():
         if result.returncode == 0:
             size = os.path.getsize(backup_path)
             return jsonify({"status": "success", "name": backup_name, "path": backup_path, "size": size})
-        return jsonify({"error": result.stderr}), 500
+        return jsonify({"error": result.stderr}, 500)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/backups")
+@app.get("/api/backups")
 def api_backups():
     """List available backups."""
     backup_dir = "/data/backups"
@@ -1061,7 +1238,7 @@ def api_backups():
                 })
     return jsonify({"backups": backups})
 
-@app.route("/api/backup/list")
+@app.get("/api/backup/list")
 def api_backup_list():
     """List available backups."""
     backup_dir = "/data/backups"
@@ -1079,7 +1256,7 @@ def api_backup_list():
     return jsonify({"backups": backups})
 
 
-@app.route("/api/stacks")
+@app.get("/api/stacks")
 def api_stacks():
     """Get available docker-compose stacks."""
     stacks = []
@@ -1143,26 +1320,26 @@ def api_stacks():
 
     return jsonify({"stacks": stacks})
 
-@app.route("/api/stack/<name>/compose")
+@app.get("/api/stack/{name}/compose")
 def api_stack_compose_named(name):
     """Get compose file content for a stack."""
     config_dir = _db_get("config_dir", "/docker")
     compose_path = os.path.join(config_dir, name, "docker-compose.yml")
     if not os.path.isfile(compose_path):
-        return jsonify({"error": "Compose file not found"}), 404
+        return jsonify({"error": "Compose file not found"}, 404)
     try:
         with open(compose_path) as f:
             content = f.read()
         return jsonify({"name": name, "path": compose_path, "content": content})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/stack/<name>/up", methods=["POST"])
+@app.post("/api/stack/{name}/up")
 def api_stack_up(name):
     """Start a stack — uses Docker SDK to start containers belonging to this stack.
     Falls back to `docker compose` CLI if the binary is available."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     config_dir = _db_get("config_dir", "/docker")
     compose_path = os.path.join(config_dir, name, "docker-compose.yml")
@@ -1184,7 +1361,7 @@ def api_stack_up(name):
 
     # ── SDK fallback: start containers that belong to this project ────────────
     if not os.path.isfile(compose_path):
-        return jsonify({"error": "Compose file not found and docker CLI unavailable"}), 404
+        return jsonify({"error": "Compose file not found and docker CLI unavailable"}, 404)
     try:
         started, errors = [], []
         for c in _dc.containers.list(all=True):
@@ -1201,14 +1378,14 @@ def api_stack_up(name):
             "errors": errors
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/stack/<name>/down", methods=["POST"])
+@app.post("/api/stack/{name}/down")
 def api_stack_down(name):
     """Stop a stack — uses Docker SDK to stop containers belonging to this stack.
     Falls back to `docker compose` CLI if the binary is available."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     config_dir = _db_get("config_dir", "/docker")
     compose_path = os.path.join(config_dir, name, "docker-compose.yml")
@@ -1247,17 +1424,17 @@ def api_stack_down(name):
             "errors": errors
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/stack/<name>/pull", methods=["POST"])
+@app.post("/api/stack/{name}/pull")
 def api_stack_pull(name):
     """Pull latest images for a stack without restarting it."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
     config_dir = _db_get("config_dir", "/docker")
     compose_path = os.path.join(config_dir, name, "docker-compose.yml")
     if not os.path.isfile(compose_path):
-        return jsonify({"error": f"Compose file not found: {compose_path}"}), 404
+        return jsonify({"error": f"Compose file not found: {compose_path}"}, 404)
     try:
         result = subprocess.run(
             [_DOCKER_BIN, "compose", "-f", compose_path, "pull"],
@@ -1269,20 +1446,20 @@ def api_stack_pull(name):
             "stderr": result.stderr[-2000:]
         })
     except FileNotFoundError:
-        return jsonify({"error": "docker CLI not found"}), 500
+        return jsonify({"error": "docker CLI not found"}, 500)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/stack/add", methods=["POST"])
-def api_stack_add():
+@app.post("/api/stack/add")
+def api_stack_add(body: dict = Body(default={})):
     """Add a new docker-compose stack."""
     try:
-        data = request.json
+        data = body
         stack_name = data.get("name")
         stack_content = data.get("content")
 
         if not stack_name or not stack_content:
-            return jsonify({"error": "Missing name or content"}), 400
+            return jsonify({"error": "Missing name or content"}, 400)
 
         stack_dir = "/app/stacks"
         os.makedirs(stack_dir, exist_ok=True)
@@ -1293,18 +1470,18 @@ def api_stack_add():
 
         return jsonify({"status": "added", "path": stack_path})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/update/check")
+@app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.1.0"})
+    return jsonify({"update_available": False, "version": "3.17.12"})
 
-@app.route("/api/update/all", methods=["POST"])
+@app.post("/api/update/all")
 def api_update_all():
     """Update all containers."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     try:
         containers = _dc.containers.list()
@@ -1317,9 +1494,9 @@ def api_update_all():
                 pass
         return jsonify({"updated": updated})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/backup", methods=["POST"])
+@app.post("/api/backup")
 def api_backup():
     """Create system backup."""
     try:
@@ -1331,24 +1508,24 @@ def api_backup():
 
         return jsonify({"status": "backed up", "path": backup_path})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/restore", methods=["POST"])
-def api_restore():
+@app.post("/api/restore")
+def api_restore(body: dict = Body(default={})):
     """Restore from backup."""
     try:
-        data = request.json
+        data = body
         backup_path = data.get("path")
 
         if not backup_path:
-            return jsonify({"error": "Missing backup path"}), 400
+            return jsonify({"error": "Missing backup path"}, 400)
 
         subprocess.run(["tar", "-xzf", backup_path, "-C", "/"], timeout=60)
         return jsonify({"status": "restored"})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/system/backups")
+@app.get("/api/system/backups")
 def api_system_backups():
     """List available backups."""
     backups = []
@@ -1363,20 +1540,42 @@ def api_system_backups():
         pass
     return jsonify({"backups": backups})
 
-@app.route("/api/weather")
+@app.get("/api/weather")
 def api_weather():
     """Get 5-day weather forecast."""
     global _weather_cache
 
     try:
-        # Check cache
-        if _weather_cache["data"] and (time.time() - _weather_cache["ts"]) < CACHE_WEATHER:
+        # Check cache (bust if location changed)
+        weather_city = _get_setting("weather_city", "").strip()
+        weather_country = _get_setting("weather_country", "").strip()
+        cache_key = f"{weather_city}|{weather_country}"
+        if _weather_cache["data"] and (time.time() - _weather_cache["ts"]) < CACHE_WEATHER and _weather_cache.get("loc_key") == cache_key:
             return jsonify(_weather_cache["data"])
 
-        # Get location from ipapi.co
-        geo_resp = requests.get("https://ipapi.co/json/", timeout=5)
-        geo = geo_resp.json()
-        lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
+        # Determine coordinates
+        if weather_city:
+            # Geocode city using open-meteo geocoding API
+            import urllib.request as _ur, json as _jr
+            q = weather_city + (f",{weather_country}" if weather_country else "")
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(q)}&count=1"
+            geo_resp = requests.get(geo_url, timeout=5)
+            geo_data = geo_resp.json()
+            results = geo_data.get("results", [])
+            if results:
+                lat = results[0].get("latitude", 0)
+                lon = results[0].get("longitude", 0)
+                location_name = results[0].get("name", weather_city)
+                country_name = results[0].get("country", weather_country)
+            else:
+                return jsonify({"error": f"Could not find location: {q}"}, 404)
+        else:
+            # Fallback: Get location from ipapi.co
+            geo_resp = requests.get("https://ipapi.co/json/", timeout=5)
+            geo = geo_resp.json()
+            lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
+            location_name = geo.get("city", "Unknown")
+            country_name = geo.get("country_name", "")
 
         # Get weather from open-meteo.
         # current= gives real-time humidity/wind; daily= gives 5-day forecast.
@@ -1394,7 +1593,7 @@ def api_weather():
         # Extract current conditions (humidity, wind, feels-like)
         current = weather.get("current", {})
         result = {
-            "location": f"{geo.get('city', 'Unknown')}, {geo.get('country_name', '')}",
+            "location": f"{location_name}, {country_name}",
             "humidity": current.get("relative_humidity_2m"),
             "wind_mph": round(current.get("wind_speed_10m", 0), 1),
             "feels_like": current.get("apparent_temperature"),
@@ -1416,15 +1615,16 @@ def api_weather():
 
         _weather_cache["data"] = result
         _weather_cache["ts"] = time.time()
+        _weather_cache["loc_key"] = cache_key
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/docker/info")
+@app.get("/api/docker/info")
 def api_docker_info():
     """Docker system information."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
     try:
         info = _dc.info()
         images = len(_dc.images.list())
@@ -1457,9 +1657,9 @@ def api_docker_info():
             "disk_usage": disk_usage
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/rss/feeds")
+@app.get("/api/rss/feeds")
 def api_rss_feeds():
     """Return RSS feed categories and sources (no fetching — client fetches via /api/rss/fetch)."""
     feeds = {
@@ -1503,6 +1703,14 @@ def api_rss_feeds():
             {"name": "Forbes", "url": "https://www.forbes.com/real-time/feed2/", "icon": "💰"},
             {"name": "Economist", "url": "https://www.economist.com/the-world-this-week/rss.xml", "icon": "💹"},
         ],
+        "Reddit": [
+            {"name": "r/selfhosted", "url": "https://www.reddit.com/r/selfhosted/.rss", "icon": "🤖"},
+            {"name": "r/homelab", "url": "https://www.reddit.com/r/homelab/.rss", "icon": "🖥️"},
+            {"name": "r/ProxmoxVE", "url": "https://www.reddit.com/r/Proxmox/.rss", "icon": "📦"},
+            {"name": "r/docker", "url": "https://www.reddit.com/r/docker/.rss", "icon": "🐳"},
+            {"name": "r/linux", "url": "https://www.reddit.com/r/linux/.rss", "icon": "🐧"},
+            {"name": "r/netsec", "url": "https://www.reddit.com/r/netsec/.rss", "icon": "🔐"},
+        ],
         "YouTube": [
             {"name": "Linus Tech Tips", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw", "icon": "▶️"},
             {"name": "Fireship", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA", "icon": "🔥"},
@@ -1510,30 +1718,303 @@ def api_rss_feeds():
             {"name": "TechLinked", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCeeFfhMcJa1kjtfZAGskOCA", "icon": "🔗"},
         ],
     }
+    # Append user custom feeds as their own category
+    custom = _load_custom_feeds()
+    if custom.get("feeds"):
+        my_rss = [f for f in custom["feeds"] if f.get("type") != "reddit"]
+        my_reddit = [f for f in custom["feeds"] if f.get("type") == "reddit"]
+        if my_rss:
+            feeds["My Feeds"] = my_rss
+        if my_reddit:
+            # Merge into Reddit category
+            feeds.setdefault("Reddit", [])
+            for f in my_reddit:
+                if not any(x["name"] == f["name"] for x in feeds["Reddit"]):
+                    feeds["Reddit"].append(f)
     return jsonify({"categories": feeds})
 
-@app.route("/api/rss/fetch")
-def api_rss_fetch():
+CUSTOM_FEEDS_PATH = "/app/custom_feeds.json"
+
+def _load_custom_feeds():
+    """Load user-defined custom feeds from JSON."""
+    if os.path.exists(CUSTOM_FEEDS_PATH):
+        try:
+            with open(CUSTOM_FEEDS_PATH) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"feeds": []}
+
+def _save_custom_feeds(data):
+    """Persist user-defined custom feeds."""
+    os.makedirs(os.path.dirname(CUSTOM_FEEDS_PATH) or ".", exist_ok=True)
+    with open(CUSTOM_FEEDS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+@app.get("/api/rss/custom")
+def api_rss_custom_get():
+    return jsonify(_load_custom_feeds())
+
+@app.post("/api/rss/custom")
+def api_rss_custom_post(body: dict = Body(default={})):
+    try:
+        data = _load_custom_feeds()
+        new_feed = body
+        if not new_feed.get("name") or not new_feed.get("url"):
+            return jsonify({"error": "name and url required"}, 400)
+        # Remove any existing feed with same name
+        data["feeds"] = [f for f in data["feeds"] if f.get("name") != new_feed["name"]]
+        data["feeds"].append(new_feed)
+        _save_custom_feeds(data)
+        return jsonify({"status": "saved"})
+    except Exception as e:
+        return jsonify({"error": str(e)}, 500)
+
+@app.delete("/api/rss/custom/{name}")
+def api_rss_custom_delete(name):
+    try:
+        data = _load_custom_feeds()
+        data["feeds"] = [f for f in data["feeds"] if f.get("name") != name]
+        _save_custom_feeds(data)
+        return jsonify({"status": "deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}, 500)
+
+@app.get("/api/twitter/webviewer")
+def api_twitter_webviewer(request: Request):
+    """Proxy twitterwebviewer.com, stripping X-Frame-Options so we can embed it."""
+    import re as _re_tw
+    handle = request.query_params.get("handle", "").strip()
+    # Strip any leading non-word prefix (e.g. "𝕏 @", "X @", emoji + space)
+    handle = _re_tw.sub(r'^[^\w]+', '', handle).strip().lstrip("@")
+    if not handle:
+        return HTMLResponse(content="handle required", status_code=400)
+    import urllib.request as _ur
+    # twitterwebviewer.com URL format
+    target_url = f"https://twitterwebviewer.com/?user={handle}"
+    try:
+        req = _ur.Request(target_url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://twitterwebviewer.com/",
+        })
+        with _ur.urlopen(req, timeout=15) as r:
+            content = r.read()
+            content_type = r.headers.get("Content-Type", "text/html; charset=utf-8")
+        # Rewrite relative URLs and base href so resources load from twitterwebviewer.com
+        html = content.decode("utf-8", errors="replace")
+        if "<base " not in html.lower():
+            html = html.replace("<head>", '<head><base href="https://twitterwebviewer.com/">', 1)
+            html = html.replace("<HEAD>", '<HEAD><base href="https://twitterwebviewer.com/">', 1)
+        # Do NOT set X-Frame-Options so our iframe can load it
+        return HTMLResponse(content=html, status_code=200)
+    except Exception as e:
+        return HTMLResponse(content=f"<html><body style='font-family:sans-serif;padding:20px;background:#111;color:#ccc'><p>Could not load twitterwebviewer.com: {str(e)}</p><p><a href='https://twitterwebviewer.com/?user={handle}' target='_blank' style='color:#1d9bf0'>Open directly ↗</a></p></body></html>", status_code=200)
+
+@app.get("/api/twitter/feed")
+def api_twitter_feed(request: Request):
+    """Fetch a Twitter/X handle's recent posts via public nitter RSS instances."""
+    import urllib.request as _ur
+    handle = request.query_params.get("handle", "").strip().lstrip("@")
+    if not handle:
+        return jsonify({"error": "Missing handle", "items": []}, 400)
+    cache_key = f"twitter_nitter_{handle}"
+    if cache_key in _rss_cache and time.time() - _rss_cache[cache_key].get("ts", 0) < 300:
+        return jsonify(_rss_cache[cache_key]["data"])
+    nitter_instances = [
+        "https://nitter.privacydev.net",
+        "https://nitter.poast.org",
+        "https://nitter.cz",
+        "https://nitter.1d4.us",
+        "https://nitter.lunar.icu",
+    ]
+    last_err = "All nitter instances failed"
+    for instance in nitter_instances:
+        try:
+            rss_url = f"{instance}/{handle}/rss"
+            req = _ur.Request(rss_url, headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
+                "Cache-Control": "no-cache",
+            })
+            with _ur.urlopen(req, timeout=8) as resp:
+                raw = resp.read()
+            import xml.etree.ElementTree as _ET2, html as _hm2, re as _re2
+            root = _ET2.fromstring(raw)
+            ns = {"atom": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
+            items = []
+            for item in root.findall(".//item")[:20]:
+                title_el = item.find("title")
+                link_el  = item.find("link")
+                date_el  = item.find("pubDate")
+                desc_el  = item.find("description")
+                title = (title_el.text or "").strip() if title_el is not None else ""
+                link  = (link_el.text  or "").strip() if link_el  is not None else "#"
+                # Fix nitter links to point to real twitter.com
+                link = link.replace(instance, "https://twitter.com").replace("//twitter.com/", "//x.com/")
+                date  = (date_el.text  or "")[:16]  if date_el  is not None else ""
+                desc  = ""
+                if desc_el is not None and desc_el.text:
+                    desc = _re2.sub(r"<[^>]+>", " ", _hm2.unescape(desc_el.text))
+                    desc = _re2.sub(r"\s+", " ", desc).strip()[:200]
+                # Strip html from title too
+                title = _re2.sub(r"<[^>]+>", " ", _hm2.unescape(title)).strip()
+                if not title:
+                    title = desc[:80] or "Tweet"
+                items.append({"title": title, "link": link, "date": date, "excerpt": desc})
+            result = {"items": items, "instance": instance}
+            _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+            resp_obj = jsonify(result)
+            resp_obj.headers["Cache-Control"] = "no-cache"
+            return resp_obj
+        except Exception as e:
+            last_err = str(e)
+            continue
+    return jsonify({"error": last_err, "items": []})
+
+@app.get("/api/rss/fetch")
+def api_rss_fetch(request: Request):
     """Proxy-fetch and parse an RSS/Atom feed URL to avoid CORS.
     Returns enriched items: title, link, date, excerpt, and thumbnail URL.
     Supports RSS 2.0, Atom, and YouTube Atom feeds.
     """
     import html as _html_mod
     import re as _re
-    url = request.args.get("url", "")
+    url = request.query_params.get("url", "")
     if not url:
-        return jsonify({"error": "Missing url"}), 400
+        return jsonify({"error": "Missing url"}, 400)
 
-    # Per-feed response cache to avoid hammering external servers
+    # Per-feed response cache — short TTL to keep content fresh
+    bust = request.query_params.get("bust", "0")  # ?bust=1 forces bypass
     cache_key = "rss_fetch_" + url
-    if cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 300:
+    if bust == "0" and cache_key in _rss_cache and (time.time() - _rss_cache[cache_key].get("ts", 0)) < 120:
         return jsonify(_rss_cache[cache_key]["data"])
 
     try:
-        import urllib.request
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.5; +https://github.com/twoeagles404/arrhub)"}
+        import urllib.request, re as _re, html as _html_mod, datetime as _dt
+        is_reddit = "reddit.com" in url
+
+        # ── Reddit: use JSON API (much more reliable than RSS from servers) ──
+        if is_reddit:
+            m = _re.search(r'reddit\.com/r/([A-Za-z0-9_]+)', url)
+            if m:
+                subreddit = m.group(1)
+                json_url = f"https://www.reddit.com/r/{subreddit}.json?limit=25&raw_json=1&include_over_18=1"
+                req_json = urllib.request.Request(json_url, headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.reddit.com/",
+                    "Cookie": "over18=1; reddit_session=; redesign_optout=true",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                    "DNT": "1",
+                })
+                with urllib.request.urlopen(req_json, timeout=15) as resp_j:
+                    rdata = json.loads(resp_j.read())
+                posts = rdata.get("data", {}).get("children", [])
+                reddit_items = []
+                for post in posts[:25]:
+                    pd = post.get("data", {})
+                    title = pd.get("title", "Untitled")
+                    permalink = "https://www.reddit.com" + pd.get("permalink", "#")
+                    post_url = pd.get("url", permalink)
+                    created = pd.get("created_utc")
+                    date = _dt.datetime.utcfromtimestamp(created).strftime("%Y-%m-%d %H:%M") if created else ""
+
+                    # ── Detect post type ────────────────────────────────────
+                    post_hint = pd.get("post_hint", "")
+                    is_video = pd.get("is_video", False)
+                    is_gallery = pd.get("is_gallery", False)
+                    domain = pd.get("domain", "")
+                    # v.redd.it, youtube, streamable, etc.
+                    is_video_link = is_video or post_hint == "rich:video" or "v.redd.it" in domain or "youtube.com" in domain or "youtu.be" in domain or "streamable.com" in domain
+                    is_image = post_hint == "image" or (post_url or "").lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".gifv"))
+                    is_gif = (post_url or "").lower().endswith((".gif", ".gifv")) or "i.imgur.com" in domain
+
+                    # ── Thumbnail — best quality source first ────────────────
+                    thumb = None
+                    # 1. Preview images (highest quality, handles most types)
+                    try:
+                        imgs = pd["preview"]["images"]
+                        if imgs:
+                            # Try mp4 preview for GIFs (avoids huge GIF files)
+                            if is_gif:
+                                try:
+                                    thumb = imgs[0]["variants"]["mp4"]["source"]["url"].replace("&amp;", "&")
+                                except Exception:
+                                    pass
+                            if not thumb:
+                                thumb = imgs[0]["source"]["url"].replace("&amp;", "&")
+                    except Exception:
+                        pass
+                    # 2. Reddit video thumbnail
+                    if not thumb and is_video:
+                        try:
+                            thumb = pd["media"]["reddit_video"]["fallback_url"].replace("&amp;", "&").split("?")[0].rsplit("/", 1)[0] + "/DASH_480.mp4"
+                        except Exception:
+                            pass
+                    # 3. Gallery first image
+                    if not thumb and is_gallery:
+                        try:
+                            first_id = list(pd["media_metadata"].keys())[0]
+                            m = pd["media_metadata"][first_id]
+                            thumb = m["s"]["u"].replace("&amp;", "&")
+                        except Exception:
+                            pass
+                    # 4. Direct image URL
+                    if not thumb and is_image:
+                        thumb = post_url
+                    # 5. Fallback thumbnail
+                    if not thumb:
+                        tn = pd.get("thumbnail", "")
+                        if tn and tn.startswith("http") and tn not in ("self", "default", "spoiler"):
+                            thumb = tn
+
+                    # ── Video URL for direct-play embed ─────────────────────
+                    video_url = None
+                    if is_video:
+                        try:
+                            video_url = pd["media"]["reddit_video"]["fallback_url"].replace("&amp;", "&")
+                        except Exception:
+                            pass
+
+                    excerpt = (pd.get("selftext") or "")[:200]
+                    flair = pd.get("link_flair_text") or ""
+                    subreddit_name = pd.get("subreddit_name_prefixed", "")
+                    score = pd.get("score", 0)
+                    num_comments = pd.get("num_comments", 0)
+
+                    reddit_items.append({
+                        "title": title,
+                        "link": permalink,
+                        "post_url": post_url,
+                        "date": date,
+                        "thumb": thumb,
+                        "excerpt": excerpt,
+                        "post_type": "video" if is_video_link else ("gif" if is_gif else ("gallery" if is_gallery else ("image" if is_image else "text"))),
+                        "video_url": video_url,
+                        "flair": flair,
+                        "score": score,
+                        "num_comments": num_comments,
+                        "subreddit": subreddit_name,
+                    })
+                result = {"items": reddit_items}
+                _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                return jsonify(result)
+
+        # ── Non-Reddit: standard RSS/Atom fetch ───────────────────────────
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read()
 
         root = ET.fromstring(raw)
@@ -1587,35 +2068,86 @@ def api_rss_fetch():
             date = (date_el.text or "")[:16] if date_el is not None else ""
 
             # Thumbnail — priority order:
-            # 1. <media:thumbnail url="...">
-            # 2. <media:content url="..." medium="image">
-            # 3. <enclosure url="..." type="image/...">
-            # 4. First <img> in <description> or <content:encoded>
-            # 5. YouTube video thumbnail via videoId
+            # 1. media:thumbnail (various namespace URIs)
+            # 2. media:content — try ALL, prefer one with image medium/type
+            # 3. enclosure with image MIME
+            # 4. First <img> in description / content:encoded (handles feeds that embed HTML)
+            # 5. YouTube thumbnail from videoId in link
+            # 6. Regex scan the raw XML string for any media thumbnail URL (last resort)
             thumb = None
-            mt = item.find("media:thumbnail", ns)
-            if mt is not None:
-                thumb = mt.get("url")
+            # 1. media:thumbnail (various namespace URIs)
+            for _mt_tag in [
+                "media:thumbnail",
+                "{http://search.yahoo.com/mrss/}thumbnail",
+                "{http://search.yahoo.com/mrss}thumbnail",
+            ]:
+                _mt = item.find(_mt_tag) if _mt_tag.startswith("{") else item.find(_mt_tag, ns)
+                if _mt is not None and _mt.get("url"):
+                    thumb = _mt.get("url"); break
+            # 2. media:content — try ALL, prefer one with image medium/type
             if not thumb:
-                mc = item.find("media:content", ns)
-                if mc is not None and ("image" in (mc.get("medium","") + mc.get("type",""))):
-                    thumb = mc.get("url")
+                for _mc_tag in [
+                    "media:content",
+                    "{http://search.yahoo.com/mrss/}content",
+                    "{http://search.yahoo.com/mrss}content",
+                ]:
+                    _mcs = item.findall(_mc_tag) if _mc_tag.startswith("{") else item.findall(_mc_tag, ns)
+                    # prefer explicitly-typed image, fall back to any with a URL
+                    _best = None
+                    for _mc in _mcs:
+                        _u = _mc.get("url","")
+                        if not _u: continue
+                        _med = _mc.get("medium","") + _mc.get("type","")
+                        if "image" in _med:
+                            _best = _u; break
+                        if _best is None:
+                            _best = _u
+                    if _best:
+                        thumb = _best; break
+            # 3. enclosure with image MIME
             if not thumb:
                 enc = item.find("enclosure")
                 if enc is not None and "image" in (enc.get("type","") or ""):
                     thumb = enc.get("url")
+            # 4. First <img> in description / content:encoded (handles feeds that embed HTML)
             if not thumb:
-                for tag in ["content:encoded", "description"]:
-                    raw_el = item.find(tag, ns) or item.find(tag)
-                    if raw_el is not None and raw_el.text:
-                        thumb = _first_img(raw_el.text)
-                        if thumb:
-                            break
+                for _tag in ["content:encoded", "description"]:
+                    _raw_el = item.find(_tag, ns) or item.find(_tag)
+                    if _raw_el is not None and _raw_el.text:
+                        _img = _first_img(_raw_el.text)
+                        if _img and _img.startswith("http"):
+                            thumb = _img; break
+            # 5. YouTube thumbnail from videoId in link
             if not thumb:
-                # YouTube fallback: extract videoId from link
                 yt_match = _re.search(r"[?&]v=([A-Za-z0-9_-]{11})", link)
                 if yt_match:
                     thumb = f"https://i.ytimg.com/vi/{yt_match.group(1)}/mqdefault.jpg"
+            # 6. Regex scan the raw XML string for any media thumbnail URL (last resort)
+            if not thumb:
+                try:
+                    _item_str = ET.tostring(item, encoding="unicode")
+                    _rm = _re.search(r'(?:thumbnail|media:content)[^>]+url=["\']([^"\']{10,})["\']', _item_str, _re.I)
+                    if _rm:
+                        _u = _rm.group(1)
+                        if _u.startswith("http"):
+                            thumb = _u
+                except Exception:
+                    pass
+            # 7. Try extracting from full item XML — broader namespace patterns
+            if not thumb:
+                import re as _re_thumb
+                _raw_item = ET.tostring(item, encoding='unicode', method='xml') if hasattr(item, 'tag') else ''
+                # Match any url= attribute in media-related tags
+                for _tp in [
+                    r'<media:thumbnail[^>]+url=["\']([^"\']{10,})["\']',
+                    r'<media:content[^>]+url=["\']([^"\']{10,})["\']',
+                    r'<enclosure[^>]+url=["\']([^"\']{10,})["\']',
+                    r'url=["\']([^"\']*(?:\.jpg|\.jpeg|\.png|\.webp)[^"\']*)["\']',
+                ]:
+                    _tm = _re_thumb.search(_tp, _raw_item, _re_thumb.I)
+                    if _tm and _tm.group(1).startswith('http'):
+                        thumb = _tm.group(1)
+                        break
 
             # Excerpt — from <description> or <content:encoded>
             excerpt = ""
@@ -1642,11 +2174,392 @@ def api_rss_fetch():
 
         result = {"items": items}
         _rss_cache[cache_key] = {"data": result, "ts": time.time()}
-        return jsonify(result)
+        resp = jsonify(result)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
     except Exception as e:
-        return jsonify({"error": str(e), "items": []}), 200
+        return jsonify({"error": str(e), "items": []}, 200)
 
-@app.route("/api/rss")
+def _iptv_get_custom():
+    raw = _db_get("iptv_custom_channels", None)
+    if raw:
+        try: return json.loads(raw)
+        except Exception: pass
+    return []
+
+@app.get("/api/iptv/channels")
+def api_iptv_channels():
+    """Return merged fallback + user-added channels."""
+    custom = _iptv_get_custom()
+    # Merge: custom channels first, then fallback (skip duplicates by id)
+    custom_ids = {c["id"] for c in custom}
+    merged = custom + [c for c in _IPTV_FALLBACK_CHANNELS if c["id"] not in custom_ids]
+    return jsonify({"channels": merged, "count": len(merged)})
+
+@app.post("/api/iptv/channels/custom")
+def api_iptv_add_custom_channel(body: dict = Body(default={})):
+    data = body
+    ch_id   = (data.get("id") or "").strip()
+    ch_name = (data.get("name") or "").strip()
+    ch_group = (data.get("group") or "Custom").strip()
+    if not ch_id or not ch_name:
+        return jsonify({"error": "Missing id or name"}, 400)
+    channels = _iptv_get_custom()
+    if not any(c["id"] == ch_id for c in channels):
+        channels.append({"id": ch_id, "name": ch_name, "group": ch_group, "logo": "", "custom": True})
+        _db_set("iptv_custom_channels", json.dumps(channels))
+    return jsonify({"ok": True})
+
+@app.delete("/api/iptv/channels/custom/{ch_id}")
+def api_iptv_delete_custom_channel(ch_id):
+    channels = _iptv_get_custom()
+    channels = [c for c in channels if c["id"] != ch_id]
+    _db_set("iptv_custom_channels", json.dumps(channels))
+    return jsonify({"ok": True})
+
+@app.get("/api/iptv/schedule")
+def api_iptv_schedule(request: Request):
+    """Proxy live-sports schedule from streamed.su."""
+    endpoint = request.query_params.get("type", "live")  # live | all
+    url = f"https://streamed.su/api/matches/{endpoint}"
+    try:
+        import requests as _req
+        r = _req.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.15)"}, timeout=4)
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error": str(e), "matches": []}, 200)
+
+@app.get("/api/iptv/sportsbite/matches")
+def api_iptv_sportsbite_matches(request: Request):
+    """Proxy live/upcoming sports matches from api.watchfooty.ru for the SportsBite player.
+    ?sport=football|basketball|hockey|etc  (omit for all live matches)
+    ?type=live|today  (default: live)
+    """
+    sport = request.query_params.get("sport", "").strip().lower()
+    mtype = request.query_params.get("type", "live").strip().lower()
+    path  = f"/api/v1/matches/{sport}" if sport else f"/api/v1/matches/{mtype}"
+    wf_url = f"https://api.watchfooty.ru{path}"
+    try:
+        r = requests.get(wf_url, timeout=8,
+                         headers={"User-Agent": "Mozilla/5.0 (compatible; ArrHub/1.0)",
+                                  "Referer": "https://sportsbite.cv/"})
+        r.raise_for_status()
+        raw = r.json()
+        channels = []
+        for m in raw:
+            title = (m.get("title") or "").strip()
+            if not title:
+                continue
+            league = m.get("league") or ""
+            sport_name = (m.get("sport") or "sports").capitalize()
+            status = m.get("status", "")   # "in" = live, "ns" = not started, etc.
+            poster = m.get("poster", "")
+            logo = f"https://api.watchfooty.ru{poster}" if poster else ""
+            date_str = (m.get("date") or "")[:16].replace("T", " ")
+            channels.append({
+                "id":      title,           # title becomes the URL slug (encodeURIComponent in JS)
+                "name":    title,
+                "group":   sport_name,
+                "league":  league,
+                "status":  status,
+                "date":    date_str,
+                "logo":    logo,
+            })
+        return jsonify({"channels": channels, "count": len(channels)})
+    except Exception as e:
+        return jsonify({"error": str(e), "channels": []})
+
+@app.get("/api/iptv/m3u_proxy")
+def api_iptv_m3u_proxy(request: Request):
+    """Fetch and parse an M3U/M3U8 playlist URL, return channel list.
+    This bypasses CORS restrictions for playlist fetching."""
+    url = request.query_params.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "url required", "channels": []}, 400)
+    try:
+        import requests as _req
+        r = _req.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; ArrHub/3.16; IPTV)",
+            "Accept": "*/*",
+        }, timeout=15, allow_redirects=True)
+        r.raise_for_status()
+        content = r.text
+        channels = []
+        lines = content.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith("#EXTINF:"):
+                # Parse attributes from #EXTINF line
+                name = ""
+                group = ""
+                logo = ""
+                # Extract tvg-name
+                import re as _re
+                nm = _re.search(r'tvg-name="([^"]*)"', line)
+                if nm:
+                    name = nm.group(1)
+                # Extract group-title
+                gm = _re.search(r'group-title="([^"]*)"', line)
+                if gm:
+                    group = gm.group(1)
+                # Extract tvg-logo
+                lm = _re.search(r'tvg-logo="([^"]*)"', line)
+                if lm:
+                    logo = lm.group(1)
+                # Fallback: name after last comma
+                if not name and "," in line:
+                    name = line.rsplit(",", 1)[-1].strip()
+                # Next non-empty line should be the stream URL
+                j = i + 1
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                if j < len(lines):
+                    stream_url = lines[j].strip()
+                    if stream_url and not stream_url.startswith("#"):
+                        channels.append({
+                            "id": stream_url,
+                            "name": name or f"Channel {len(channels)+1}",
+                            "group": group or "General",
+                            "logo": logo,
+                            "url": stream_url,
+                            "type": "hls_direct",
+                        })
+                    i = j + 1
+                    continue
+            i += 1
+        return jsonify({"channels": channels, "total": len(channels), "source_url": url})
+    except Exception as e:
+        return jsonify({"error": str(e), "channels": []}, 200)
+
+# Channel list — streams via tv.moviebite.cc/channels/{slug}
+_IPTV_FALLBACK_CHANNELS = [
+    # ── News ────────────────────────────────────────────────────────────────
+    {"id":"CNN",            "name":"CNN",                  "group":"News",          "logo":""},
+    {"id":"FOX-NEWS",       "name":"Fox News",             "group":"News",          "logo":""},
+    {"id":"MSNBC",          "name":"MSNBC",                "group":"News",          "logo":""},
+    {"id":"CNBC",           "name":"CNBC",                 "group":"News",          "logo":""},
+    {"id":"NBC-NEWS",       "name":"NBC News",             "group":"News",          "logo":""},
+    {"id":"ABC-NEWS",       "name":"ABC News",             "group":"News",          "logo":""},
+    {"id":"CBS-NEWS",       "name":"CBS News",             "group":"News",          "logo":""},
+    {"id":"BBC-NEWS",       "name":"BBC News",             "group":"News",          "logo":""},
+    {"id":"SKY-NEWS",       "name":"Sky News",             "group":"News",          "logo":""},
+    {"id":"BLOOMBERG",      "name":"Bloomberg TV",         "group":"News",          "logo":""},
+    {"id":"AL-JAZEERA",     "name":"Al Jazeera English",   "group":"News",          "logo":""},
+    {"id":"CNN-INT",        "name":"CNN International",    "group":"News",          "logo":""},
+    {"id":"DW-NEWS",        "name":"DW News",              "group":"News",          "logo":""},
+    {"id":"EURONEWS",       "name":"Euronews English",     "group":"News",          "logo":""},
+    # ── Sports ──────────────────────────────────────────────────────────────
+    {"id":"ESPN",           "name":"ESPN",                 "group":"Sports",        "logo":""},
+    {"id":"ESPN2",          "name":"ESPN2",                "group":"Sports",        "logo":""},
+    {"id":"ESPN-NEWS",      "name":"ESPN News",            "group":"Sports",        "logo":""},
+    {"id":"FS1",            "name":"Fox Sports 1",         "group":"Sports",        "logo":""},
+    {"id":"FS2",            "name":"Fox Sports 2",         "group":"Sports",        "logo":""},
+    {"id":"NBA-TV",         "name":"NBA TV",               "group":"Sports",        "logo":""},
+    {"id":"NFL-NETWORK",    "name":"NFL Network",          "group":"Sports",        "logo":""},
+    {"id":"MLB-NETWORK",    "name":"MLB Network",          "group":"Sports",        "logo":""},
+    {"id":"GOLF-CHANNEL",   "name":"Golf Channel",         "group":"Sports",        "logo":""},
+    {"id":"SKY-SPORTS",     "name":"Sky Sports Main",      "group":"Sports",        "logo":""},
+    {"id":"SKY-SPORTS-NEWS","name":"Sky Sports News",      "group":"Sports",        "logo":""},
+    {"id":"SKY-SPORTS-F1",  "name":"Sky Sports F1",        "group":"Sports",        "logo":""},
+    {"id":"BEIN-SPORTS-1",  "name":"beIN Sports 1",        "group":"Sports",        "logo":""},
+    {"id":"BEIN-SPORTS-2",  "name":"beIN Sports 2",        "group":"Sports",        "logo":""},
+    {"id":"EUROSPORT-1",    "name":"Eurosport 1",          "group":"Sports",        "logo":""},
+    {"id":"DAZN-1",         "name":"DAZN 1",               "group":"Sports",        "logo":""},
+    {"id":"TNT-SPORTS-1",   "name":"TNT Sports 1",         "group":"Sports",        "logo":""},
+    {"id":"TNT-SPORTS-2",   "name":"TNT Sports 2",         "group":"Sports",        "logo":""},
+    # ── Entertainment ───────────────────────────────────────────────────────
+    {"id":"TNT",            "name":"TNT",                  "group":"Entertainment", "logo":""},
+    {"id":"AMC",            "name":"AMC",                  "group":"Entertainment", "logo":""},
+    {"id":"FX",             "name":"FX",                   "group":"Entertainment", "logo":""},
+    {"id":"SYFY",           "name":"Syfy",                 "group":"Entertainment", "logo":""},
+    {"id":"COMEDY-CENTRAL", "name":"Comedy Central",       "group":"Entertainment", "logo":""},
+    {"id":"DISCOVERY",      "name":"Discovery Channel",    "group":"Entertainment", "logo":""},
+    {"id":"DISCOVERY-SCI",  "name":"Discovery Science",    "group":"Entertainment", "logo":""},
+    {"id":"HISTORY",        "name":"History Channel",      "group":"Entertainment", "logo":""},
+    {"id":"TLC",            "name":"TLC",                  "group":"Entertainment", "logo":""},
+    {"id":"NATGEO",         "name":"National Geographic",  "group":"Entertainment", "logo":""},
+    {"id":"NATGEO-WILD",    "name":"Nat Geo Wild",         "group":"Entertainment", "logo":""},
+    {"id":"ANIMAL-PLANET",  "name":"Animal Planet",        "group":"Entertainment", "logo":""},
+    {"id":"CARTOON-NETWORK","name":"Cartoon Network",      "group":"Entertainment", "logo":""},
+    {"id":"NICKELODEON",    "name":"Nickelodeon",          "group":"Entertainment", "logo":""},
+    {"id":"DISNEY-CHANNEL", "name":"Disney Channel",       "group":"Entertainment", "logo":""},
+    {"id":"NASA-TV",        "name":"NASA TV",              "group":"Entertainment", "logo":""},
+    {"id":"E-ENTERTAINMENT","name":"E! Entertainment",     "group":"Entertainment", "logo":""},
+    {"id":"BRAVO",          "name":"Bravo",                "group":"Entertainment", "logo":""},
+    # ── Movies ──────────────────────────────────────────────────────────────
+    {"id":"HBO",            "name":"HBO",                  "group":"Movies",        "logo":""},
+    {"id":"SHOWTIME",       "name":"Showtime",             "group":"Movies",        "logo":""},
+    {"id":"STARZ",          "name":"Starz",                "group":"Movies",        "logo":""},
+    {"id":"CINEMAX",        "name":"Cinemax",              "group":"Movies",        "logo":""},
+    {"id":"SKY-CINEMA",     "name":"Sky Cinema Premiere",  "group":"Movies",        "logo":""},
+    # ── Music ───────────────────────────────────────────────────────────────
+    {"id":"MTV",            "name":"MTV",                  "group":"Music",         "logo":""},
+    {"id":"VH1",            "name":"VH1",                  "group":"Music",         "logo":""},
+    {"id":"BET",            "name":"BET",                  "group":"Music",         "logo":""},
+    {"id":"FUSE",           "name":"Fuse TV",              "group":"Music",         "logo":""},
+    # ── International ───────────────────────────────────────────────────────
+    {"id":"BBC-ONE",        "name":"BBC One",              "group":"International", "logo":""},
+    {"id":"BBC-TWO",        "name":"BBC Two",              "group":"International", "logo":""},
+    {"id":"ITV",            "name":"ITV",                  "group":"International", "logo":""},
+    {"id":"CHANNEL-4",      "name":"Channel 4 UK",         "group":"International", "logo":""},
+    {"id":"ARD",            "name":"ARD Germany",          "group":"International", "logo":""},
+    {"id":"ZDF",            "name":"ZDF Germany",          "group":"International", "logo":""},
+    {"id":"RAI-1",          "name":"RAI 1 Italy",          "group":"International", "logo":""},
+    {"id":"TF1",            "name":"TF1 France",           "group":"International", "logo":""},
+    {"id":"CBC-CANADA",     "name":"CBC Canada",           "group":"International", "logo":""},
+    {"id":"CTV-CANADA",     "name":"CTV Canada",           "group":"International", "logo":""},
+    {"id":"TSN-1",          "name":"TSN 1",                "group":"International", "logo":""},
+]
+
+# ── Feeds subscription store ────────────────────────────────────────────
+def _feeds_get_subs():
+    """Return saved feed subscriptions from DB, with sensible defaults.
+    Also migrates existing saves to include news feeds if missing."""
+    _NEWS_DEFAULTS = [
+        {"id": "cnn",        "name": "CNN",         "url": "https://rss.cnn.com/rss/edition.rss"},
+        {"id": "reuters",    "name": "Reuters",     "url": "https://feeds.reuters.com/reuters/topNews"},
+        {"id": "apnews",     "name": "AP News",     "url": "https://feeds.apnews.com/apnews/topnews"},
+        {"id": "bbc_main",   "name": "BBC News",    "url": "https://feeds.bbci.co.uk/news/rss.xml"},
+        {"id": "aljazeera",  "name": "Al Jazeera",  "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+    ]
+    # URL corrections: migrate stale/broken URLs for existing users
+    _URL_FIXES = {
+        "cnn":       "https://rss.cnn.com/rss/edition.rss",          # was http
+        "wsj_world": None,  # WSJ paywalls RSS — remove if still present
+    }
+    _DEFAULT = {
+        "_type_meta": {
+            "rss":     {"name": "RSS",     "icon": "📰"},
+            "reddit":  {"name": "Reddit",  "icon": "🤖"},
+            "youtube": {"name": "YouTube", "icon": "▶"},
+            "twitter": {"name": "Twitter", "icon": "𝕏"},
+        },
+        "rss": [
+            {"id": "selfhst",    "name": "selfh.st",       "url": "https://selfh.st/rss/"},
+            {"id": "lsio",       "name": "linuxserver.io",  "url": "https://blog.linuxserver.io/feed/"},
+            {"id": "theverge",   "name": "The Verge",       "url": "https://www.theverge.com/rss/index.xml"},
+            {"id": "hn",         "name": "Hacker News",     "url": "https://hnrss.org/frontpage"},
+            {"id": "arstechnica","name": "Ars Technica",    "url": "https://feeds.arstechnica.com/arstechnica/index"},
+        ] + _NEWS_DEFAULTS,
+        "reddit": [
+            {"id": "homelab",    "name": "r/homelab",       "url": "https://www.reddit.com/r/homelab/.rss"},
+            {"id": "selfhosted", "name": "r/selfhosted",    "url": "https://www.reddit.com/r/selfhosted/.rss"},
+            {"id": "proxmox",    "name": "r/Proxmox",       "url": "https://www.reddit.com/r/Proxmox/.rss"},
+            {"id": "docker",     "name": "r/docker",        "url": "https://www.reddit.com/r/docker/.rss"},
+        ],
+        "youtube": [
+            {"id": "UCR-DXc1voovS8nhAvccRZhg", "name": "Jeff Geerling",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCR-DXc1voovS8nhAvccRZhg"},
+            {"id": "UCsBjURrPoezykLs9EqgamOA", "name": "Fireship",       "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA"},
+            {"id": "UCVS-4mLrAKFNZWoZ4eHiYbA", "name": "NetworkChuck",  "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCVS-4mLrAKFNZWoZ4eHiYbA"},
+        ],
+        "twitter": [
+            {"id": "jeffgeerling",  "name": "@JeffGeerling",  "url": "JeffGeerling"},
+            {"id": "networkchuck",  "name": "@NetworkChuck",  "url": "NetworkChuck"},
+            {"id": "theprimagen",   "name": "@ThePrimeagen",  "url": "ThePrimeagen"},
+            {"id": "linustech",     "name": "@LinusTech",     "url": "LinusTech"},
+        ]
+    }
+    raw = _db_get("feeds_subscriptions", None)
+    if not raw:
+        return _DEFAULT
+    try:
+        subs = json.loads(raw)
+        existing_ids = {s["id"] for s in subs.get("rss", [])}
+        added = False
+        # Migrate: add missing news feeds
+        for feed in _NEWS_DEFAULTS:
+            if feed["id"] not in existing_ids:
+                subs.setdefault("rss", []).append(feed)
+                added = True
+        # Migrate: fix broken/stale URLs and remove paywalled feeds
+        new_rss = []
+        for feed in subs.get("rss", []):
+            fix = _URL_FIXES.get(feed["id"], "keep")
+            if fix is None:
+                added = True  # removed paywalled feed
+                continue
+            if fix != "keep" and feed["url"] != fix:
+                feed = dict(feed, url=fix)
+                added = True
+            new_rss.append(feed)
+        subs["rss"] = new_rss
+        # Migrate: add twitter defaults if not present
+        if "twitter" not in subs:
+            subs["twitter"] = _DEFAULT["twitter"]
+            if "_type_meta" in subs:
+                subs["_type_meta"]["twitter"] = {"name": "Twitter", "icon": "𝕏"}
+            added = True
+        if added:
+            _db_set("feeds_subscriptions", json.dumps(subs))
+        return subs
+    except Exception:
+        return _DEFAULT
+
+@app.get("/api/feeds/subscriptions")
+def api_feeds_get_subscriptions():
+    return jsonify(_feeds_get_subs())
+
+@app.post("/api/feeds/categories")
+def api_feeds_add_category(body: dict = Body(default={})):
+    """Create a new custom feed category type."""
+    data = body
+    cat_id   = (data.get("id") or "").strip().lower().replace(" ", "_")
+    cat_name = (data.get("name") or "").strip()
+    cat_icon = (data.get("icon") or "📡").strip()
+    if not cat_id or not cat_name:
+        return jsonify({"error": "Missing id or name"}, 400)
+    if cat_id in ("rss", "reddit", "youtube", "_type_meta"):
+        return jsonify({"error": "Reserved category name"}, 400)
+    subs = _feeds_get_subs()
+    meta = subs.setdefault("_type_meta", {})
+    if cat_id not in meta:
+        meta[cat_id] = {"name": cat_name, "icon": cat_icon}
+    if cat_id not in subs:
+        subs[cat_id] = []
+    _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
+@app.delete("/api/feeds/categories/{cat_id}")
+def api_feeds_delete_category(cat_id):
+    """Delete a custom feed category type and all its subscriptions."""
+    if cat_id in ("rss", "reddit", "youtube"):
+        return jsonify({"error": "Cannot delete built-in categories"}, 400)
+    subs = _feeds_get_subs()
+    subs.get("_type_meta", {}).pop(cat_id, None)
+    subs.pop(cat_id, None)
+    _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
+@app.post("/api/feeds/subscriptions")
+def api_feeds_add_subscription(body: dict = Body(default={})):
+    data = body
+    sub_type = data.get("type", "")
+    sub_id   = (data.get("id") or "").strip()
+    sub_name = (data.get("name") or "").strip()
+    sub_url  = (data.get("url") or "").strip()
+    if not sub_type or not sub_id or not sub_name or not sub_url:
+        return jsonify({"error": "Missing fields"}, 400)
+    subs = _feeds_get_subs()
+    # Ensure the type exists in subs (custom types may not have been initialised yet)
+    if sub_type not in subs:
+        subs[sub_type] = []
+    if not any(s["id"] == sub_id for s in subs[sub_type]):
+        subs[sub_type].append({"id": sub_id, "name": sub_name, "url": sub_url})
+        _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
+@app.delete("/api/feeds/subscriptions/{sub_type}/{sub_id:path}")
+def api_feeds_delete_subscription(sub_type, sub_id):
+    subs = _feeds_get_subs()
+    if sub_type in subs:
+        subs[sub_type] = [s for s in subs[sub_type] if s["id"] != sub_id]
+        _db_set("feeds_subscriptions", json.dumps(subs))
+    return jsonify({"ok": True})
+
+
+@app.get("/api/rss")
 def api_rss():
     """Fetch RSS feeds."""
     global _rss_cache
@@ -1662,7 +2575,7 @@ def api_rss():
             "r/homelab": "https://www.reddit.com/r/homelab/.rss",
             "linuxserver.io": "https://blog.linuxserver.io/feed/",
             "noted.lol": "https://noted.lol/feed.xml",
-            "selfh.st": "https://selfh.st/news/feed.xml"
+            "selfh.st": "https://selfh.st/rss/"
         }
 
         result = {"sources": []}
@@ -1694,13 +2607,13 @@ def api_rss():
         _rss_cache[cache_key] = {"data": result, "ts": time.time()}
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/ports/check")
+@app.get("/api/ports/check")
 def api_ports_check():
     """Check for port conflicts in running containers."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     try:
         port_usage = {}
@@ -1740,13 +2653,13 @@ def api_ports_check():
             "total_ports": len(container_ports)
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/widget/<app_id>")
+@app.get("/api/widget/{app_id}")
 def api_widget(app_id):
     """Get widget data for an application."""
     if app_id not in APP_REGISTRY:
-        return jsonify({"error": "App not found"}), 404
+        return jsonify({"error": "App not found"}, 404)
 
     try:
         app_info = APP_REGISTRY[app_id]
@@ -1797,29 +2710,29 @@ def api_widget(app_id):
             "memory": mem_mb
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/widget_config", methods=["GET"])
+@app.get("/api/widget_config")
 def api_widget_config_get():
     """Get widget configuration."""
     config = _load_widget_config()
     return jsonify(config)
 
-@app.route("/api/widget_config", methods=["POST"])
-def api_widget_config_post():
+@app.post("/api/widget_config")
+def api_widget_config_post(body: dict = Body(default={})):
     """Save widget configuration."""
     try:
-        config = request.json
+        config = body
         _save_widget_config(config)
         return jsonify({"status": "saved"})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
-@app.route("/api/tailscale")
+@app.get("/api/tailscale")
 def api_tailscale():
     """Get Tailscale status."""
     if not DOCKER_OK:
-        return jsonify({"error": "Docker not available"}), 500
+        return jsonify({"error": "Docker not available"}, 500)
 
     try:
         containers = _dc.containers.list(all=True)
@@ -1831,7 +2744,7 @@ def api_tailscale():
                 break
 
         if not tailscale_container:
-            return jsonify({"error": "Tailscale container not found"}), 404
+            return jsonify({"error": "Tailscale container not found"}, 404)
 
         is_running = tailscale_container.attrs.get("State", {}).get("Running", False)
         result = {"status": "running" if is_running else "stopped", "container_name": tailscale_container.name}
@@ -1845,7 +2758,7 @@ def api_tailscale():
 
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
 # =============================================================================
 # SERVICE INTEGRATION — Radarr / Sonarr / Plex / Seerr
@@ -1872,7 +2785,788 @@ def _svc_get(base_url, path, api_key, api_key_header="X-Api-Key", timeout=5):
     r.raise_for_status()
     return r.json()
 
-@app.route("/api/services/radarr/calendar")
+_og_cache: dict = {}
+
+@app.get("/api/feeds/og")
+def api_feeds_og(request: Request):
+    """Fetch og:image from an article URL for thumbnail enrichment."""
+    import urllib.request as _ur2, re as _re_og
+    url = request.query_params.get("url", "").strip()
+    if not url or not url.startswith("http"):
+        return jsonify({"img": None})
+    cache_key = "og_" + url
+    if cache_key in _og_cache and time.time() - _og_cache[cache_key].get("ts", 0) < 7200:
+        return jsonify(_og_cache[cache_key]["data"])
+    try:
+        req = _ur2.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "identity",
+            "Cache-Control": "no-cache",
+        })
+        with _ur2.urlopen(req, timeout=10) as r:
+            # Only read first 80KB — og:image is always in <head>
+            html = r.read(80000).decode("utf-8", "ignore")
+        # Extract og:image / twitter:image — handle both quote styles
+        img = None
+        patterns = [
+            r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\'<>]{10,})["\']',
+            r'<meta[^>]+content=["\']([^"\'<>]{10,})["\'][^>]+property=["\']og:image["\']',
+            r'<meta[^>]+name=["\']twitter:image(?::src)?["\'][^>]+content=["\']([^"\'<>]{10,})["\']',
+            r'<meta[^>]+content=["\']([^"\'<>]{10,})["\'][^>]+name=["\']twitter:image["\']',
+            # Some sites use data attributes or JSON-LD with imageUrl
+            r'"thumbnailUrl"\s*:\s*"([^"]{10,})"',
+            r'"image"\s*:\s*\{"@type"[^}]+"url"\s*:\s*"([^"]{10,})"',
+        ]
+        for pat in patterns:
+            m = _re_og.search(pat, html, _re_og.I)
+            if m:
+                candidate = m.group(1).strip()
+                if candidate.startswith("http") and len(candidate) > 10:
+                    img = candidate
+                    break
+        result = {"img": img}
+        _og_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"img": None, "error": str(e)[:80]})
+
+@app.get("/api/reddit/feed")
+def api_reddit_feed(request: Request):
+    """Server-side Reddit proxy — session login (username+password only), OAuth fallback, then anonymous."""
+    import urllib.request as _ur, urllib.parse as _up, json as _jr, base64 as _b64, http.cookiejar as _cj
+    sub   = request.query_params.get("sub",   "").strip()
+    sort  = request.query_params.get("sort",  "hot").strip()
+    after = request.query_params.get("after", "").strip()
+    limit = min(int(request.query_params.get("limit", "25")), 100)
+    if not sub:
+        return jsonify({"error": "Missing subreddit"}, 400)
+    cache_key = f"reddit_{sub}_{sort}_{after}_{limit}"
+    if cache_key in _rss_cache and time.time() - _rss_cache[cache_key].get("ts", 0) < 120:
+        return jsonify(_rss_cache[cache_key]["data"])
+
+    client_id     = _get_setting("reddit_client_id",     "").strip()
+    client_secret = _get_setting("reddit_client_secret", "").strip()
+    reddit_user   = _get_setting("reddit_username",      "").strip()
+    reddit_pass   = _get_setting("reddit_password",      "").strip()
+    app_ua = f"ArrHub:v1 (by /u/{reddit_user or 'homelab_user'})"
+    browser_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    session_error = None
+    oauth_error   = None
+
+    # --- Try 1: Cookie session login (username + password only — no API app needed) ---
+    # Reddit requires a pre-existing anonymous loid/session cookie before it accepts login POSTs.
+    # We GET the Reddit homepage first with a CookieJar so Reddit sets those cookies, then POST login.
+    _browser_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    if reddit_user and reddit_pass:
+        try:
+            session_cache_key = f"reddit_session_{reddit_user}"
+            session_cookie = None
+            if session_cache_key in _rss_cache and time.time() - _rss_cache[session_cache_key].get("ts", 0) < 3600:
+                session_cookie = _rss_cache[session_cache_key]["data"]
+            if not session_cookie:
+                jar = _cj.CookieJar()
+                opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
+                # Step 1: GET Reddit homepage to obtain anonymous loid/session cookies
+                try:
+                    seed_req = _ur.Request("https://www.reddit.com/", headers={
+                        "User-Agent": _browser_ua,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.5",
+                    })
+                    with opener.open(seed_req, timeout=10) as _sr:
+                        _sr.read()
+                except Exception:
+                    pass  # Even if this fails, proceed — some cookies may have been set
+                # Step 2: POST login with browser-like headers and the loid cookies now in jar
+                login_payload = _up.urlencode({"user": reddit_user, "passwd": reddit_pass, "api_type": "json"}).encode()
+                for login_url in ["https://www.reddit.com/api/login", "https://old.reddit.com/api/login"]:
+                    try:
+                        login_req = _ur.Request(
+                            login_url,
+                            data=login_payload,
+                            headers={
+                                "User-Agent": _browser_ua,
+                                "Content-Type": "application/x-www-form-urlencoded",
+                                "Accept": "application/json",
+                                "Origin": "https://www.reddit.com",
+                                "Referer": "https://www.reddit.com/login",
+                            }
+                        )
+                        with opener.open(login_req, timeout=12) as lr:
+                            resp = _jr.loads(lr.read())
+                        errors = resp.get("json", {}).get("errors", [])
+                        if errors:
+                            session_error = f"Login failed: {errors[0][1] if errors[0] else errors}"
+                        else:
+                            for ck in jar:
+                                if ck.name in ("reddit_session", "token_v2"):
+                                    session_cookie = ck.value
+                                    _rss_cache[session_cache_key] = {"data": session_cookie, "ts": time.time()}
+                                    break
+                        if session_cookie:
+                            break
+                    except Exception as _le:
+                        session_error = f"Session login failed ({login_url.split('/')[2]}): {str(_le)[:100]}"
+            if session_cookie:
+                fetch_url = f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1"
+                if after: fetch_url += f"&after={after}"
+                fetch_req = _ur.Request(fetch_url, headers={
+                    "User-Agent": _browser_ua,
+                    "Cookie": f"reddit_session={session_cookie}; over18=1",
+                    "Accept": "application/json",
+                })
+                with _ur.urlopen(fetch_req, timeout=15) as r:
+                    data = _jr.loads(r.read())
+                if isinstance(data, dict) and data.get("data"):
+                    result = {"data": data["data"], "ok": True, "method": "session"}
+                    _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                    return jsonify(result)
+        except Exception as e:
+            session_error = f"Session login failed: {str(e)[:120]}"
+
+    # --- Try 2: OAuth password grant (script app — needs client_id + secret + username + password) ---
+    if client_id and client_secret and reddit_user and reddit_pass:
+        try:
+            token_cache_key = f"reddit_token_{client_id}"
+            token = None
+            if token_cache_key in _rss_cache and time.time() - _rss_cache[token_cache_key].get("ts", 0) < 3300:
+                token = _rss_cache[token_cache_key]["data"].get("access_token")
+            if not token:
+                creds = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+                post_data = _up.urlencode({"grant_type": "password", "username": reddit_user, "password": reddit_pass}).encode()
+                tok_req = _ur.Request(
+                    "https://www.reddit.com/api/v1/access_token",
+                    data=post_data,
+                    headers={"Authorization": f"Basic {creds}", "User-Agent": app_ua,
+                             "Content-Type": "application/x-www-form-urlencoded"}
+                )
+                with _ur.urlopen(tok_req, timeout=10) as tr:
+                    tok_data = _jr.loads(tr.read())
+                if tok_data.get("error"):
+                    oauth_error = f"OAuth error: {tok_data.get('error')}"
+                else:
+                    token = tok_data.get("access_token")
+                    _rss_cache[token_cache_key] = {"data": tok_data, "ts": time.time()}
+            if token:
+                url = f"https://oauth.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1"
+                if after: url += f"&after={after}"
+                api_req = _ur.Request(url, headers={"Authorization": f"Bearer {token}", "User-Agent": app_ua})
+                with _ur.urlopen(api_req, timeout=15) as r:
+                    data = _jr.loads(r.read())
+                if isinstance(data, dict) and data.get("data"):
+                    result = {"data": data["data"], "ok": True, "method": "oauth"}
+                    _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                    return jsonify(result)
+        except Exception as e:
+            oauth_error = f"OAuth failed: {str(e)[:100]}"
+
+    # --- Try 3: Anonymous JSON API (old.reddit.com, then www) ---
+    browser_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    base_urls = [
+        f"https://old.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&over18=1",
+        f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}&raw_json=1&include_over_18=1",
+    ]
+    anon_err = None
+    for base_url in base_urls:
+        url = base_url + (f"&after={after}" if after else "")
+        try:
+            req = _ur.Request(url, headers={
+                "User-Agent": browser_ua,
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cookie": "over18=1; _options=%7B%22pref_over_18%22%3A%20true%7D; redesign_optout=true",
+                "Cache-Control": "no-cache",
+                "Referer": "https://www.reddit.com/",
+            })
+            with _ur.urlopen(req, timeout=15) as r:
+                raw = r.read()
+            data = _jr.loads(raw)
+            if isinstance(data, dict) and data.get("data"):
+                result = {"data": data["data"], "ok": True, "method": "anonymous"}
+                _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+                return jsonify(result)
+        except Exception as exc:
+            anon_err = str(exc)[:120]
+
+    # --- Try 4: Reddit RSS feed as last resort ---
+    try:
+        import xml.etree.ElementTree as _et
+        rss_url = f"https://www.reddit.com/r/{sub}/{sort}/.rss?limit={limit}"
+        req = _ur.Request(rss_url, headers={"User-Agent": browser_ua, "Cookie": "over18=1"})
+        with _ur.urlopen(req, timeout=15) as r:
+            rss_content = r.read()
+        root = _et.fromstring(rss_content)
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+        entries = root.findall('.//atom:entry', ns) or root.findall('.//entry')
+        if entries:
+            children = []
+            for entry in entries[:limit]:
+                title_el = entry.find('atom:title', ns) or entry.find('title')
+                link_el = entry.find('atom:link', ns) or entry.find('link')
+                content_el = entry.find('atom:content', ns) or entry.find('content')
+                author_el = entry.find('atom:author/atom:name', ns)
+                updated_el = entry.find('atom:updated', ns) or entry.find('updated')
+                link_href = link_el.get('href', '') if link_el is not None else ''
+                permalink = link_href.replace('https://www.reddit.com', '')
+                # Try to extract thumbnail from content HTML
+                thumb = None
+                content_html = content_el.text if content_el is not None else ''
+                import re as _re_rss
+                img_m = _re_rss.search(r'<img[^>]+src=["\']([^"\']+)["\']', content_html or '')
+                if img_m:
+                    thumb = img_m.group(1)
+                children.append({"kind": "t3", "data": {
+                    "title": title_el.text if title_el is not None else "Untitled",
+                    "permalink": permalink,
+                    "url": link_href,
+                    "score": 0,
+                    "num_comments": 0,
+                    "created_utc": 0,
+                    "thumbnail": thumb or "self",
+                    "post_hint": "",
+                    "is_video": False,
+                    "is_gallery": False,
+                    "domain": "",
+                    "author": author_el.text if author_el is not None else "",
+                }})
+            result = {"data": {"children": children, "after": None}, "ok": True, "method": "rss"}
+            _rss_cache[cache_key] = {"data": result, "ts": time.time()}
+            return jsonify(result)
+    except Exception:
+        pass
+
+    # All methods failed — give the most actionable error message
+    if not reddit_user:
+        error_msg = "Reddit username not set. Go to Settings → Reddit Login and enter your Reddit username and password. No app creation required."
+    elif session_error and "WRONG_PASSWORD" in str(session_error):
+        error_msg = "Wrong Reddit password. Check your credentials in Settings → Reddit Login."
+    elif session_error and ("403" in str(session_error) or "Blocked" in str(session_error)):
+        error_msg = ("Reddit is blocking the login request (403). This can happen if your username/password is wrong, "
+                     "or if Reddit is temporarily blocking automated logins. "
+                     "Try: 1) Double-check your password in Settings → Reddit Login. "
+                     "2) If still blocked, create a free Reddit script app at reddit.com/prefs/apps "
+                     "and enter the Client ID + Secret in the Advanced section of Settings → Reddit Login.")
+    elif session_error:
+        error_msg = f"Reddit login failed: {session_error}. Check your username/password in Settings → Reddit Login."
+    elif anon_err and "403" in str(anon_err):
+        error_msg = "This subreddit requires Reddit login (NSFW or restricted). Enter your credentials in Settings → Reddit Login."
+    else:
+        error_msg = session_error or oauth_error or anon_err or "All Reddit access methods failed. Check Settings → Reddit Login."
+    return jsonify({"error": error_msg, "ok": False})
+
+@app.get("/api/reddit/comments")
+def api_reddit_comments(request: Request):
+    """Server-side proxy for Reddit comment threads."""
+    import urllib.request as _ur, json as _jr
+    url = request.query_params.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "Missing url"}, 400)
+    try:
+        req = _ur.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "over18=1; redesign_optout=true",
+            "Cache-Control": "no-cache",
+            "Referer": "https://www.reddit.com/",
+        })
+        with _ur.urlopen(req, timeout=15) as r:
+            data = _jr.loads(r.read())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)[:120]})
+
+# ── Premier League API (ESPN free endpoints — no API key needed) ────────
+_epl_cache: dict = {}
+
+@app.get("/api/epl/standings")
+def api_epl_standings():
+    """Fetch Premier League standings from ESPN free API."""
+    import urllib.request as _ur, json as _jr
+    cache_key = "epl_standings"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 900:
+        return jsonify(_epl_cache[cache_key]["data"])
+    try:
+        req = _ur.Request(
+            "https://site.api.espn.com/apis/v2/sports/soccer/eng.1/standings",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+        )
+        with _ur.urlopen(req, timeout=12) as r:
+            data = _jr.loads(r.read())
+        standings = []
+        entries = []
+        for child in data.get("children", []):
+            entries.extend(child.get("standings", {}).get("entries", []))
+        if not entries:
+            entries = data.get("standings", {}).get("entries", [])
+        for entry in entries:
+            team_info = entry.get("team", {})
+            stats = {s["name"]: s.get("value", s.get("displayValue", 0)) for s in entry.get("stats", [])}
+            standings.append({
+                "pos": int(stats.get("rank", 0)),
+                "team": team_info.get("shortDisplayName", team_info.get("displayName", "?")),
+                "crest": team_info.get("logos", [{}])[0].get("href", "") if team_info.get("logos") else "",
+                "played": int(stats.get("gamesPlayed", 0)),
+                "won": int(stats.get("wins", 0)),
+                "drawn": int(stats.get("ties", 0)),
+                "lost": int(stats.get("losses", 0)),
+                "gf": int(stats.get("pointsFor", 0)),
+                "ga": int(stats.get("pointsAgainst", 0)),
+                "gd": int(stats.get("pointDifferential", 0)),
+                "pts": int(stats.get("points", 0)),
+            })
+        standings.sort(key=lambda x: x["pos"])
+        result = {"standings": standings}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"standings": [], "error": str(e)[:120]})
+
+@app.get("/api/epl/matches")
+def api_epl_matches(request: Request):
+    """Fetch upcoming/recent matches. Tries football-data.org (if key set) then ESPN."""
+    import urllib.request as _ur, json as _jr, datetime as _dt
+    mtype  = request.query_params.get("type", "upcoming")  # upcoming | results
+    league = request.query_params.get("league", "eng.1").strip()
+    cache_key = f"epl_matches_{mtype}_{league}"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 600:
+        return jsonify(_epl_cache[cache_key]["data"])
+
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    today = _dt.date.today()
+
+    # ── football-data.org league code map ──────────────────────────────
+    _FDO_CODES = {
+        "eng.1": "PL",  "esp.1": "PD",   "ger.1": "BL1",
+        "ita.1": "SA",  "fra.1": "FL1",  "por.1": "PPL",
+        "ned.1": "DED", "bel.1": "BSA",  "eur.1": "CL",
+        "eur.2": "EL",  "int.world": "WC",
+    }
+
+    # ── Try football-data.org first if API key is configured ───────────
+    fdo_key = _db_get("football_api_key", "")
+    if fdo_key:
+        try:
+            fdo_code = _FDO_CODES.get(league)
+            if fdo_code:
+                status_filter = "FINISHED" if mtype == "results" else "SCHEDULED,LIVE"
+                fdo_url = f"https://api.football-data.org/v4/competitions/{fdo_code}/matches?status={status_filter}&limit=50"
+                fdo_req = _ur.Request(fdo_url, headers={"X-Auth-Token": fdo_key, "User-Agent": ua})
+                with _ur.urlopen(fdo_req, timeout=10) as r:
+                    fdo_data = _jr.loads(r.read())
+                matches = []
+                for m in fdo_data.get("matches", []):
+                    home_team = m.get("homeTeam", {})
+                    away_team = m.get("awayTeam", {})
+                    score = m.get("score", {})
+                    full = score.get("fullTime", {})
+                    is_finished = m.get("status") == "FINISHED"
+                    is_live     = m.get("status") in ("IN_PLAY", "PAUSED", "HALFTIME")
+                    home_goals = full.get("home")
+                    away_goals = full.get("away")
+                    matches.append({
+                        "id":       str(m.get("id", "")),
+                        "home":     home_team.get("shortName", home_team.get("name", "?")),
+                        "homeCrest":home_team.get("crest", ""),
+                        "away":     away_team.get("shortName", away_team.get("name", "?")),
+                        "awayCrest":away_team.get("crest", ""),
+                        "date":     m.get("utcDate", ""),
+                        "status":   "IN_PLAY" if is_live else ("FINISHED" if is_finished else "SCHEDULED"),
+                        "scoreH":   home_goals,
+                        "scoreA":   away_goals,
+                        "matchday": m.get("matchday"),
+                        "source":   "football-data.org",
+                    })
+                result = {"matches": matches, "source": "football-data.org"}
+                _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+                return jsonify(result)
+        except Exception:
+            pass  # fall through to ESPN
+
+    # ── ESPN fallback — use correct date-range format ──────────────────
+    # ESPN scoreboard supports dates=YYYYMMDD-YYYYMMDD (range), NOT multiple params
+    try:
+        if mtype == "results":
+            start = (today - _dt.timedelta(days=30)).strftime("%Y%m%d")
+            end   = today.strftime("%Y%m%d")
+        else:
+            start = today.strftime("%Y%m%d")
+            end   = (today + _dt.timedelta(days=90)).strftime("%Y%m%d")  # 90-day lookahead
+        url = (f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
+               f"/scoreboard?dates={start}-{end}&limit=200")
+        req = _ur.Request(url, headers={"User-Agent": ua})
+        with _ur.urlopen(req, timeout=12) as r:
+            data = _jr.loads(r.read())
+        matches = []
+        for event in data.get("events", []):
+            comp = event.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            home = next((c for c in competitors if c.get("homeAway") == "home"), {})
+            away = next((c for c in competitors if c.get("homeAway") == "away"), {})
+            home_team = home.get("team", {})
+            away_team = away.get("team", {})
+            status_obj  = comp.get("status", {}).get("type", {})
+            status_name = status_obj.get("name", "")
+            is_finished = status_name == "STATUS_FINAL"
+            is_live     = status_name in ("STATUS_IN_PROGRESS", "STATUS_HALFTIME")
+            if mtype == "results" and not is_finished:
+                continue
+            if mtype == "upcoming" and is_finished:
+                continue
+            matches.append({
+                "id":       event.get("id"),
+                "home":     home_team.get("shortDisplayName", home_team.get("displayName", "?")),
+                "homeCrest":home_team.get("logo", ""),
+                "away":     away_team.get("shortDisplayName", away_team.get("displayName", "?")),
+                "awayCrest":away_team.get("logo", ""),
+                "date":     event.get("date", ""),
+                "status":   "IN_PLAY" if is_live else ("FINISHED" if is_finished else "SCHEDULED"),
+                "scoreH":   int(home.get("score", 0)) if (is_finished or is_live) else None,
+                "scoreA":   int(away.get("score", 0)) if (is_finished or is_live) else None,
+                "matchday": None,
+                "source":   "ESPN",
+            })
+        result = {"matches": matches, "source": "ESPN"}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"matches": [], "error": str(e)[:200]})
+
+@app.get("/api/football/team_fixtures")
+def api_football_team_fixtures(request: Request):
+    """Proxy ESPN team schedule server-side — tries multiple season/type combos for reliability."""
+    import urllib.request as _ur, json as _jr, datetime as _dt
+    team_id = request.query_params.get("team_id", "").strip()
+    league  = request.query_params.get("league", "eng.1").strip()
+    if not team_id:
+        return jsonify({"error": "team_id required"}, 400)
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    today = _dt.date.today()
+    # Soccer seasons run Aug → May. ESPN indexes by START year.
+    # Jan-Jul 2026 → 2025-26 season → start year 2025
+    # Aug-Dec 2026 → 2026-27 season → start year 2026
+    sy = today.year if today.month >= 8 else today.year - 1
+    season_candidates = list(dict.fromkeys([sy, sy + 1, sy - 1]))  # current first
+    # League competition name keywords — used to filter out cup/non-league matches after fetch
+    _COMP_KW = {
+        "eng.1": ["premier league", "premier", "barclays"],
+        "esp.1": ["laliga", "la liga", "primera"],
+        "ger.1": ["bundesliga"],
+        "ita.1": ["serie a"],
+        "fra.1": ["ligue 1"],
+        "por.1": ["primeira liga", "liga nos"],
+        "eur.1": ["champions league", "champions"],
+        "eur.2": ["europa league", "europa"],
+    }
+
+    candidate_urls = []
+    for s in season_candidates:
+        # Try bare URL first (all competitions), then regular-season-only as backup
+        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}")
+        candidate_urls.append(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/schedule?season={s}&seasontype=2")
+    all_events = []
+    seen_ids = set()
+    for url in candidate_urls:
+        try:
+            req = _ur.Request(url, headers={"User-Agent": ua})
+            with _ur.urlopen(req, timeout=10) as r:
+                data = _jr.loads(r.read())
+            events = data.get("events", [])
+            for ev in events:
+                eid = ev.get("id")
+                if eid and eid not in seen_ids:
+                    seen_ids.add(eid)
+                    all_events.append(ev)
+        except Exception:
+            pass
+    # Filter to league matches only (removes cup/secondary competition matches)
+    _kws = _COMP_KW.get(league, [])
+    if _kws and all_events:
+        def _ev_matches_league(ev):
+            comp = (ev.get("competitions") or [{}])[0]
+            slug  = (ev.get("season") or {}).get("slug", "").lower()
+            name  = (ev.get("name") or "").lower()
+            notes = " ".join(
+                (n.get("headline","") + " " + n.get("value",""))
+                for n in (comp.get("notes") or [])
+            ).lower()
+            haystack = f"{slug} {name} {notes}"
+            return any(kw.lower() in haystack for kw in _kws)
+        filtered = [ev for ev in all_events if _ev_matches_league(ev)]
+        if filtered:
+            all_events = filtered  # Only use filtered set when it yields results
+
+    # Sort by date ascending so upcoming matches appear after past ones
+    all_events.sort(key=lambda ev: ev.get("date", ""))
+    return jsonify({"events": all_events, "debug": {"total": len(all_events), "season_tried": sy}})
+
+@app.get("/api/football/team_news")
+def api_football_team_news(request: Request):
+    """Proxy ESPN team news server-side — tries multiple ESPN news endpoints."""
+    import urllib.request as _ur, json as _jr
+    team_id = request.query_params.get("team_id", "").strip()
+    league  = request.query_params.get("league", "eng.1").strip()
+    if not team_id:
+        return jsonify({"error": "team_id required"}, 400)
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    # Try multiple ESPN news endpoints — different leagues/teams use different paths
+    news_urls = [
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/teams/{team_id}/news?limit=20",
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/news?team={team_id}&limit=20",
+        f"https://now.core.api.espn.com/v1/sports/news?leagues={league}&teams={team_id}&limit=20",
+    ]
+    for url in news_urls:
+        try:
+            req = _ur.Request(url, headers={"User-Agent": ua})
+            with _ur.urlopen(req, timeout=12) as r:
+                data = _jr.loads(r.read())
+            # ESPN returns articles under different keys depending on endpoint
+            articles = (data.get("articles") or data.get("items") or
+                        data.get("feed") or data.get("headlines") or [])
+            if articles:
+                return jsonify({"articles": articles})
+        except Exception:
+            pass
+    return jsonify({"articles": [], "error": "No news available from ESPN at this time"})
+
+@app.get("/api/epl/highlights")
+def api_epl_highlights():
+    """Fetch PL highlight videos from scorebat free API."""
+    import urllib.request as _ur, json as _jr
+    cache_key = "epl_highlights"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 1200:
+        return jsonify(_epl_cache[cache_key]["data"])
+    try:
+        req = _ur.Request("https://www.scorebat.com/video-api/v3/feed/?token=free", headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        with _ur.urlopen(req, timeout=12) as r:
+            all_vids = _jr.loads(r.read())
+        # Filter for Premier League
+        epl_keywords = ["premier league", "english premier", "epl"]
+        highlights = []
+        for v in (all_vids if isinstance(all_vids, list) else all_vids.get("response", [])):
+            comp = (v.get("competition", "") or v.get("competitionName", "")).lower()
+            if any(k in comp for k in epl_keywords):
+                embed = ""
+                for e in (v.get("videos", []) or []):
+                    if e.get("embed"):
+                        embed = e["embed"]
+                        break
+                highlights.append({
+                    "title": v.get("title", ""),
+                    "thumb": v.get("thumbnail", ""),
+                    "embed": embed,
+                    "date": v.get("date", ""),
+                    "competition": v.get("competition", v.get("competitionName", "")),
+                })
+        result = {"highlights": highlights[:20]}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"highlights": [], "error": str(e)[:120]})
+
+@app.get("/api/yt/channel_feed")
+def api_yt_channel_feed(request: Request):
+    """Resolve a YouTube channel handle to its RSS feed and return recent videos.
+    Query params:
+      handle  – e.g. 'cbssportsgolazo'  (without the @ prefix)
+    """
+    import urllib.request as _ur, re as _re
+    from xml.etree import ElementTree as _ET
+    handle = request.query_params.get("handle", "").strip().lstrip("@")
+    if not handle:
+        return jsonify({"videos": [], "error": "handle required"})
+    cache_key = f"yt_channel_{handle}"
+    if cache_key in _epl_cache and time.time() - _epl_cache[cache_key].get("ts", 0) < 600:
+        return jsonify(_epl_cache[cache_key]["data"])
+    try:
+        # Step 1: fetch the channel page to extract the channel ID
+        req = _ur.Request(
+            f"https://www.youtube.com/@{handle}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
+        with _ur.urlopen(req, timeout=15) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        m = (_re.search(r'"channelId":"([A-Za-z0-9_-]{24})"', html)
+             or _re.search(r'<meta itemprop="channelId" content="([^"]+)"', html)
+             or _re.search(r'"externalId":"([A-Za-z0-9_-]{24})"', html))
+        if not m:
+            return jsonify({"videos": [], "error": "Could not resolve channel ID for @" + handle})
+        channel_id = m.group(1)
+        # Step 2: fetch the RSS feed
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        req2 = _ur.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
+        with _ur.urlopen(req2, timeout=12) as r2:
+            xml = r2.read().decode("utf-8", errors="replace")
+        # Step 3: parse XML
+        root = _ET.fromstring(xml)
+        ns = {
+            "atom":  "http://www.w3.org/2005/Atom",
+            "yt":    "http://www.youtube.com/xml/schemas/2015",
+            "media": "http://search.yahoo.com/mrss/",
+        }
+        videos = []
+        for entry in root.findall("atom:entry", ns):
+            vid_id    = entry.findtext("yt:videoId", namespaces=ns) or ""
+            title_el  = entry.find("atom:title", ns)
+            title     = title_el.text if title_el is not None else ""
+            published = entry.findtext("atom:published", namespaces=ns) or ""
+            thumb     = f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg" if vid_id else ""
+            if vid_id:
+                videos.append({
+                    "id":    vid_id,
+                    "title": title,
+                    "date":  published,
+                    "thumb": thumb,
+                    "url":   f"https://www.youtube.com/watch?v={vid_id}",
+                })
+        result = {"videos": videos[:15], "channel_id": channel_id, "handle": handle}
+        _epl_cache[cache_key] = {"data": result, "ts": time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"videos": [], "error": str(e)[:150]})
+
+@app.get("/api/services/qbittorrent/torrents")  # legacy compat
+@app.get("/api/services/downloader/torrents")
+def api_downloader_torrents():
+    """Unified downloader API — dispatches to qBittorrent, Transmission, or Deluge."""
+    import urllib.request as _udl, urllib.parse as _uparse, http.cookiejar as _cj, json as _jdl
+    dtype = _get_setting("downloader_type", "qbittorrent")
+
+    def _fmt(b):
+        try: b = float(b)
+        except Exception: return "0 B"
+        for u in ["B","KB","MB","GB","TB"]:
+            if b < 1024: return f"{b:.1f} {u}"
+            b /= 1024
+        return f"{b:.1f} TB"
+
+    # ── qBittorrent ──────────────────────────────────────────────────────
+    if dtype == "qbittorrent":
+        url  = _get_setting("qbittorrent_url",  "").rstrip("/")
+        user = _get_setting("qbittorrent_user", "admin")
+        pwd  = _get_setting("qbittorrent_pass", "adminadmin")
+        if not url:
+            return jsonify({"error": "qBittorrent URL not configured", "torrents": []})
+        try:
+            jar = _cj.CookieJar()
+            opener = _udl.build_opener(_udl.HTTPCookieProcessor(jar))
+            login_data = _uparse.urlencode({"username": user, "password": pwd}).encode()
+            with opener.open(_udl.Request(f"{url}/api/v2/auth/login", data=login_data,
+                             headers={"Referer": url}), timeout=8) as r:
+                if r.read().decode().strip() != "Ok.":
+                    return jsonify({"error": "qBittorrent login failed", "torrents": []})
+            with opener.open(_udl.Request(f"{url}/api/v2/torrents/info",
+                             headers={"Referer": url}), timeout=8) as r:
+                torrents = _jdl.loads(r.read())
+            speed_info = {}
+            try:
+                with opener.open(_udl.Request(f"{url}/api/v2/transfer/info",
+                                 headers={"Referer": url}), timeout=5) as r:
+                    speed_info = _jdl.loads(r.read())
+            except Exception: pass
+            result = [{"name": t.get("name",""), "state": t.get("state",""),
+                       "progress": round(t.get("progress",0)*100, 1),
+                       "size": _fmt(t.get("size",0)), "dlspeed": _fmt(t.get("dlspeed",0))+"/s",
+                       "upspeed": _fmt(t.get("upspeed",0))+"/s", "eta": t.get("eta",0),
+                       "num_seeds": t.get("num_seeds",0), "category": t.get("category","")}
+                      for t in torrents]
+            return jsonify({"torrents": result,
+                            "dl_speed": _fmt(speed_info.get("dl_info_speed",0))+"/s",
+                            "ul_speed": _fmt(speed_info.get("up_info_speed",0))+"/s"})
+        except Exception as e:
+            return jsonify({"error": str(e), "torrents": []})
+
+    # ── Transmission ─────────────────────────────────────────────────────
+    elif dtype == "transmission":
+        url  = _get_setting("transmission_url",  "").rstrip("/")
+        user = _get_setting("transmission_user", "")
+        pwd  = _get_setting("transmission_pass", "")
+        if not url:
+            return jsonify({"error": "Transmission URL not configured", "torrents": []})
+        rpc_url = f"{url}/transmission/rpc"
+        if "/rpc" in url:
+            rpc_url = url
+        try:
+            import base64
+            headers = {"Content-Type": "application/json", "User-Agent": "ArrHub/3.15"}
+            if user:
+                creds = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+                headers["Authorization"] = f"Basic {creds}"
+            payload = _jdl.dumps({"method":"torrent-get","arguments":{"fields":[
+                "id","name","status","percentDone","totalSize","rateDownload","rateUpload","eta","labels"]}}).encode()
+            # Need CSRF token — first request gets 409 with X-Transmission-Session-Id
+            token = ""
+            try:
+                _udl.urlopen(_udl.Request(rpc_url, data=payload, headers={**headers, "X-Transmission-Session-Id": ""}), timeout=5)
+            except _udl.HTTPError as e:
+                token = e.headers.get("X-Transmission-Session-Id", "")
+            headers["X-Transmission-Session-Id"] = token
+            with _udl.urlopen(_udl.Request(rpc_url, data=payload, headers=headers), timeout=8) as r:
+                data = _jdl.loads(r.read())
+            state_map = {0:"stopped",1:"check_wait",2:"checking",3:"dl_wait",4:"downloading",5:"seed_wait",6:"seeding"}
+            result = [{"name": t.get("name",""),
+                       "state": state_map.get(t.get("status",0), str(t.get("status",0))),
+                       "progress": round(t.get("percentDone",0)*100, 1),
+                       "size": _fmt(t.get("totalSize",0)),
+                       "dlspeed": _fmt(t.get("rateDownload",0))+"/s",
+                       "upspeed": _fmt(t.get("rateUpload",0))+"/s",
+                       "eta": t.get("eta",-1), "num_seeds": 0,
+                       "category": (t.get("labels") or [""])[0]}
+                      for t in data.get("arguments",{}).get("torrents",[])]
+            total_dl = sum(t.get("rateDownload",0) for t in data.get("arguments",{}).get("torrents",[]))
+            total_ul = sum(t.get("rateUpload",0)   for t in data.get("arguments",{}).get("torrents",[]))
+            return jsonify({"torrents": result,
+                            "dl_speed": _fmt(total_dl)+"/s", "ul_speed": _fmt(total_ul)+"/s"})
+        except Exception as e:
+            return jsonify({"error": str(e), "torrents": []})
+
+    # ── Deluge ───────────────────────────────────────────────────────────
+    elif dtype == "deluge":
+        url  = _get_setting("deluge_url",  "").rstrip("/")
+        pwd  = _get_setting("deluge_pass", "deluge")
+        if not url:
+            return jsonify({"error": "Deluge URL not configured", "torrents": []})
+        json_url = f"{url}/json"
+        if url.endswith("/json"):
+            json_url = url
+        try:
+            jar = _cj.CookieJar()
+            opener = _udl.build_opener(_udl.HTTPCookieProcessor(jar))
+            hdrs = {"Content-Type": "application/json", "User-Agent": "ArrHub/3.15"}
+            def _rpc(method, params):
+                body = _jdl.dumps({"id":1,"method":method,"params":params}).encode()
+                with opener.open(_udl.Request(json_url, data=body, headers=hdrs), timeout=8) as r:
+                    return _jdl.loads(r.read())
+            # Login
+            _rpc("auth.login", [pwd])
+            # Get torrents
+            fields = ["name","state","progress","total_size","download_payload_rate","upload_payload_rate","eta","label"]
+            resp = _rpc("core.get_torrents_status", [{}, fields])
+            torrents_raw = resp.get("result", {})
+            state_map = {"Downloading":"downloading","Seeding":"seeding","Paused":"paused",
+                         "Error":"error","Queued":"queued","Checking":"checking","Moving":"moving"}
+            result = [{"name": v.get("name",""), "state": state_map.get(v.get("state",""), v.get("state","")),
+                       "progress": round(v.get("progress",0), 1),
+                       "size": _fmt(v.get("total_size",0)),
+                       "dlspeed": _fmt(v.get("download_payload_rate",0))+"/s",
+                       "upspeed": _fmt(v.get("upload_payload_rate",0))+"/s",
+                       "eta": v.get("eta",-1), "num_seeds": 0, "category": v.get("label","")}
+                      for v in torrents_raw.values()]
+            total_dl = sum(v.get("download_payload_rate",0) for v in torrents_raw.values())
+            total_ul = sum(v.get("upload_payload_rate",0)   for v in torrents_raw.values())
+            return jsonify({"torrents": result,
+                            "dl_speed": _fmt(total_dl)+"/s", "ul_speed": _fmt(total_ul)+"/s"})
+        except Exception as e:
+            return jsonify({"error": str(e), "torrents": []})
+
+    return jsonify({"error": f"Unknown downloader type: {dtype}", "torrents": []})
+
+@app.get("/api/services/radarr/calendar")
 def api_radarr_calendar():
     """Upcoming movies from Radarr (next 14 days)."""
     url = _get_setting("radarr_url")
@@ -1886,13 +3580,74 @@ def api_radarr_calendar():
         data = _svc_get(url, f"/api/v3/calendar?start={start}&end={end}&unmonitored=false", key)
         movies = [{"title": m.get("title"), "year": m.get("year"),
                    "date": m.get("physicalRelease") or m.get("digitalRelease") or m.get("inCinemas", "")[:10],
-                   "poster": (next((i["remoteUrl"] for i in m.get("images",[]) if i.get("coverType")=="poster"), None)),
-                   "hasFile": m.get("hasFile", False)} for m in data]
+                   "poster":   next((i["remoteUrl"] for i in m.get("images",[]) if i.get("coverType")=="poster"),  None),
+                   "backdrop": next((i["remoteUrl"] for i in m.get("images",[]) if i.get("coverType")=="fanart"),  None),
+                   "overview": m.get("overview","")[:280],
+                   "rating":   m.get("ratings",{}).get("imdb",{}).get("value") or m.get("ratings",{}).get("tmdb",{}).get("value"),
+                   "tmdbId":   m.get("tmdbId"),
+                   "hasFile":  m.get("hasFile", False)} for m in data]
         return jsonify({"configured": True, "movies": movies[:10]})
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "movies": []})
 
-@app.route("/api/services/sonarr/calendar")
+@app.get("/api/services/radarr/queue")
+def api_radarr_queue():
+    """Active download queue from Radarr."""
+    url = _get_setting("radarr_url")
+    key = _get_setting("radarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        data = _svc_get(url, "/api/v3/queue?pageSize=20&includeUnknownMovieItems=false&includeMovie=true", key)
+        records = data.get("records", []) if isinstance(data, dict) else []
+        items = []
+        for rec in records[:15]:
+            movie = rec.get("movie", {})
+            poster   = next((i["remoteUrl"] for i in movie.get("images", []) if i.get("coverType") == "poster"),  None)
+            backdrop = next((i["remoteUrl"] for i in movie.get("images", []) if i.get("coverType") == "fanart"),  None)
+            items.append({
+                "title":          rec.get("title") or movie.get("title", "Unknown"),
+                "year":           movie.get("year"),
+                "status":         rec.get("status", ""),
+                "progress":       round(100 - (rec.get("sizeleft", 0) / max(rec.get("size", 1), 1)) * 100, 1),
+                "size":           rec.get("size", 0),
+                "sizeleft":       rec.get("sizeleft", 0),
+                "timeleft":       rec.get("timeleft", ""),
+                "quality":        rec.get("quality", {}).get("quality", {}).get("name", ""),
+                "poster":         poster,
+                "backdrop":       backdrop,
+                "overview":       movie.get("overview","")[:280],
+                "rating":         movie.get("ratings",{}).get("imdb",{}).get("value") or movie.get("ratings",{}).get("tmdb",{}).get("value"),
+                "tmdbId":         movie.get("tmdbId"),
+                "indexer":        rec.get("indexer", ""),
+                "downloadClient": rec.get("downloadClient", ""),
+            })
+        return jsonify({"configured": True, "queue": items, "totalRecords": data.get("totalRecords", 0)})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "queue": []})
+
+@app.get("/api/services/radarr/library")
+def api_radarr_library():
+    """Radarr library stats."""
+    url = _get_setting("radarr_url")
+    key = _get_setting("radarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        movies = _svc_get(url, "/api/v3/movie", key)
+        total = len(movies)
+        monitored = sum(1 for m in movies if m.get("monitored"))
+        downloaded = sum(1 for m in movies if m.get("hasFile"))
+        missing = sum(1 for m in movies if m.get("monitored") and not m.get("hasFile"))
+        return jsonify({
+            "configured": True,
+            "total": total, "monitored": monitored,
+            "downloaded": downloaded, "missing": missing,
+        })
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e)})
+
+@app.get("/api/services/sonarr/calendar")
 def api_sonarr_calendar():
     """Upcoming episodes from Sonarr (next 7 days)."""
     url = _get_setting("sonarr_url")
@@ -1915,7 +3670,62 @@ def api_sonarr_calendar():
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "episodes": []})
 
-@app.route("/api/services/plex/sessions")
+@app.get("/api/services/sonarr/queue")
+def api_sonarr_queue():
+    """Active download queue from Sonarr."""
+    url = _get_setting("sonarr_url")
+    key = _get_setting("sonarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        data = _svc_get(url, "/api/v3/queue?pageSize=20&includeUnknownSeriesItems=false&includeSeries=true&includeEpisode=true", key)
+        records = data.get("records", []) if isinstance(data, dict) else []
+        items = []
+        for rec in records[:15]:
+            series = rec.get("series", {})
+            episode = rec.get("episode", {})
+            poster = next((i["remoteUrl"] for i in series.get("images", []) if i.get("coverType") == "poster"), None)
+            ep_label = f"S{episode.get('seasonNumber',0):02d}E{episode.get('episodeNumber',0):02d}" if episode else ""
+            items.append({
+                "title": series.get("title", "Unknown"),
+                "episode": ep_label,
+                "episodeTitle": episode.get("title", ""),
+                "status": rec.get("status", ""),
+                "progress": round(100 - (rec.get("sizeleft", 0) / max(rec.get("size", 1), 1)) * 100, 1),
+                "size": rec.get("size", 0),
+                "sizeleft": rec.get("sizeleft", 0),
+                "timeleft": rec.get("timeleft", ""),
+                "quality": rec.get("quality", {}).get("quality", {}).get("name", ""),
+                "poster": poster,
+                "indexer": rec.get("indexer", ""),
+                "downloadClient": rec.get("downloadClient", ""),
+            })
+        return jsonify({"configured": True, "queue": items, "totalRecords": data.get("totalRecords", 0)})
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e), "queue": []})
+
+@app.get("/api/services/sonarr/library")
+def api_sonarr_library():
+    """Sonarr library stats."""
+    url = _get_setting("sonarr_url")
+    key = _get_setting("sonarr_api_key")
+    if not url:
+        return jsonify({"configured": False})
+    try:
+        series_list = _svc_get(url, "/api/v3/series", key)
+        total = len(series_list)
+        monitored = sum(1 for s in series_list if s.get("monitored"))
+        episodes_total = sum(s.get("statistics", {}).get("episodeCount", 0) for s in series_list)
+        episodes_have = sum(s.get("statistics", {}).get("episodeFileCount", 0) for s in series_list)
+        return jsonify({
+            "configured": True,
+            "totalSeries": total, "monitored": monitored,
+            "episodes": episodes_total, "episodesOnDisk": episodes_have,
+        })
+    except Exception as e:
+        return jsonify({"configured": True, "error": str(e)})
+
+@app.get("/api/services/plex/sessions")
 def api_plex_sessions():
     """Active Plex streams (Now Playing)."""
     url   = _get_setting("plex_url")
@@ -1948,9 +3758,9 @@ def api_plex_sessions():
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "sessions": []})
 
-@app.route("/api/services/seerr/requests")
+@app.get("/api/services/seerr/requests")
 def api_seerr_requests():
-    """Recent Seerr/Overseerr requests (latest 8)."""
+    """Recent Seerr/Overseerr requests (latest 8) with resolved titles."""
     url = _get_setting("seerr_url")
     key = _get_setting("seerr_api_key")
     if not url:
@@ -1960,24 +3770,40 @@ def api_seerr_requests():
         reqs = []
         for r in data.get("results", []):
             media = r.get("media", {})
+            media_type = media.get("mediaType", "")
+            tmdb_id = media.get("tmdbId", "")
+
+            # Resolve actual title from Overseerr media endpoint
+            title = ""
+            try:
+                if media_type == "movie" and tmdb_id:
+                    mdata = _svc_get(url, f"/api/v1/movie/{tmdb_id}", key)
+                    title = mdata.get("title", "") or mdata.get("originalTitle", "")
+                elif media_type == "tv" and tmdb_id:
+                    mdata = _svc_get(url, f"/api/v1/tv/{tmdb_id}", key)
+                    title = mdata.get("name", "") or mdata.get("originalName", "")
+            except Exception:
+                pass
+
             reqs.append({
                 "id": r.get("id"),
-                "type": media.get("mediaType",""),
-                "status": r.get("status"),          # 1=pending 2=approved 3=declined 4=available
-                "requestedBy": r.get("requestedBy",{}).get("displayName",""),
-                "title": media.get("tmdbId",""),     # resolved to title in frontend via cache
-                "poster": media.get("posterPath",""),
-                "createdAt": r.get("createdAt","")[:10]
+                "type": media_type,
+                "status": r.get("status"),  # 1=pending 2=approved 3=declined 4=available
+                "requestedBy": r.get("requestedBy", {}).get("displayName", ""),
+                "title": title or f"TMDB #{tmdb_id}",
+                "poster": media.get("posterPath", ""),
+                "createdAt": r.get("createdAt", "")[:10],
+                "tmdbId": tmdb_id,
             })
         return jsonify({"configured": True, "requests": reqs})
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "requests": []})
 
-@app.route("/api/home")
+@app.get("/api/home")
 def api_home():
     """Home tab data: categorized apps with status and ports."""
     if not DOCKER_OK:
-        return jsonify({"categories": []}), 500
+        return jsonify({"categories": []}, 500)
 
     try:
         containers = _dc.containers.list(all=True)
@@ -2035,7 +3861,7 @@ def api_home():
         return jsonify({"categories": categories})
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}, 500)
 
 # =============================================================================
 # HELPERS
@@ -2059,15 +3885,17 @@ def _calc_cpu_percent(stats):
         return 0
 
 def _extract_ports(container):
-    """Extract ports from container as simple strings."""
+    """Extract ports from container as hostPort:containerPort strings (only bound ports)."""
     ports = []
     try:
         port_info = container.ports or {}
         for key, val in port_info.items():
             if val:
-                host_port = val[0].get("HostPort")
-                container_port = key.split('/')[0] if key else ""
-                ports.append(f"{host_port}:{container_port}")
+                for binding in val:
+                    host_port = binding.get("HostPort")
+                    if host_port and host_port.isdigit():
+                        container_port = key.split('/')[0] if key else ""
+                        ports.append(f"{host_port}:{container_port}")
     except Exception:
         pass
     return ports
@@ -2145,55 +3973,84 @@ _HTML_SPA = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ArrHub</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230a84ff'/><text x='50%' y='54%' dominant-baseline='middle' text-anchor='middle' font-size='18' font-family='system-ui' fill='white'>A</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
 <style>
 /* =====================================================================
-   ARRHUB — PegaProx-inspired dark dashboard
+   ARRHUB — Apple-inspired glass morphism dashboard
    ===================================================================== */
 :root{
-  --bg:       #0d1117;
-  --bg2:      #161b22;
-  --bg3:      #1c2128;
-  --surface:  #21262d;
-  --surface2: #30363d;
-  --border:   #30363d;
-  --border2:  #444c56;
-  --text:     #c9d1d9;
-  --text2:    #8b949e;
-  --text3:    #6e7681;
-  --green:    #3fb950;
-  --green2:   rgba(63,185,80,.15);
-  --blue:     #388bfd;
-  --blue2:    rgba(56,139,253,.15);
-  --orange:   #f78166;
-  --orange2:  rgba(247,129,102,.15);
-  --yellow:   #e3b341;
-  --yellow2:  rgba(227,179,65,.15);
-  --red:      #f85149;
-  --red2:     rgba(248,81,73,.15);
-  --purple:   #bc8cff;
-  --purple2:  rgba(188,140,255,.15);
-  --cyan:     #39d353;
+  --bg:       #0a0a0f;
+  --bg2:      #111118;
+  --bg3:      #18181f;
+  --surface:  #1e1e27;
+  --surface2: #2a2a36;
+  --border:   rgba(255,255,255,0.08);
+  --border2:  rgba(255,255,255,0.14);
+  --text:     #f2f2f7;
+  --text2:    #aeaeb8;
+  --text3:    #636370;
+  --green:    #32d74b;
+  --green2:   rgba(50,215,75,.15);
+  --blue:     #0a84ff;
+  --blue2:    rgba(10,132,255,.15);
+  --orange:   #ff9f0a;
+  --orange2:  rgba(255,159,10,.15);
+  --yellow:   #ffd60a;
+  --yellow2:  rgba(255,214,10,.15);
+  --red:      #ff453a;
+  --red2:     rgba(255,69,58,.15);
+  --purple:   #bf5af2;
+  --purple2:  rgba(191,90,242,.15);
+  --cyan:     #5ac8fa;
   --sb-w:     260px;
   --top-h:    56px;
   --ctr-card-min: 280px;
-  --r:        8px;
+  --r:        12px;
+  --r-lg:     18px;
   --mono:     'JetBrains Mono',monospace;
-  --ui:       'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
-  --transition: .15s ease;
+  --ui:       'Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',sans-serif;
+  --transition: .18s cubic-bezier(.25,.46,.45,.94);
+  /* Glass morphism — visible without GPU, beautiful with it */
+  --glass-bg:        rgba(20,20,32,0.82);
+  --glass-bg-hover:  rgba(28,28,44,0.92);
+  --glass-border:    rgba(255,255,255,0.13);
+  --glass-border-hi: rgba(255,255,255,0.22);
+  --glass-blur:      blur(40px) saturate(200%);
+  --glass-blur-sm:   blur(20px) saturate(180%);
+  /* shadow + inset top-edge "lit" highlight (key to real glass look) */
+  --glass-shadow:    0 4px 24px rgba(0,0,0,0.40),0 1px 2px rgba(0,0,0,0.25),
+                     inset 0 1px 0 rgba(255,255,255,0.08);
+  --glass-shadow-lg: 0 8px 40px rgba(0,0,0,0.50),0 2px 4px rgba(0,0,0,0.25),
+                     inset 0 1px 0 rgba(255,255,255,0.10);
+  --glass-hover-glow:0 0 0 1px rgba(10,132,255,0.25),0 8px 32px rgba(10,132,255,0.08);
+  /* Ambient glow colors */
+  --glow-blue:      rgba(10,132,255,0.12);
+  --glow-purple:    rgba(191,90,242,0.10);
 }
 /* ── Themes ─────────────────────────────────────────────────────────── */
 [data-theme="light"]{
-  --bg:#f6f8fa;--bg2:#ffffff;--bg3:#f0f2f5;
-  --surface:#e9ecef;--surface2:#dee2e6;
-  --border:#d0d7de;--border2:#b8bfc7;
-  --text:#1f2328;--text2:#656d76;--text3:#9198a1;
+  --bg:#f2f2f7;--bg2:#ffffff;--bg3:#f0f0f5;
+  --surface:#e5e5ea;--surface2:#d1d1d6;
+  --border:rgba(0,0,0,0.08);--border2:rgba(0,0,0,0.14);
+  --text:#1c1c1e;--text2:#636366;--text3:#8e8e93;
+  --glass-bg:rgba(255,255,255,0.72);
+  --glass-bg-hover:rgba(255,255,255,0.85);
+  --glass-border:rgba(0,0,0,0.08);
+  --glass-shadow:0 4px 24px rgba(0,0,0,0.10),0 1px 2px rgba(0,0,0,0.06);
+  --glass-shadow-lg:0 8px 40px rgba(0,0,0,0.15),0 2px 4px rgba(0,0,0,0.06);
+  --glow-blue:rgba(10,132,255,0.05);--glow-purple:rgba(191,90,242,0.04);
 }
+[data-theme="light"] body{background-image:radial-gradient(ellipse 80% 50% at 20% -20%,var(--glow-blue),transparent),radial-gradient(ellipse 60% 40% at 80% 110%,var(--glow-purple),transparent);}
+[data-theme="light"] #sidebar,
+[data-theme="light"] #topbar{background:rgba(242,242,247,0.80);}
+[data-theme="light"] #alerts-bar{background:rgba(255,255,255,0.72);border-color:rgba(0,0,0,0.08);}
 [data-theme="nord"]{
   --bg:#2e3440;--bg2:#3b4252;--bg3:#434c5e;
   --surface:#434c5e;--surface2:#4c566a;
@@ -2228,54 +4085,259 @@ _HTML_SPA = r"""<!DOCTYPE html>
 [data-accent="pink"]{--blue:#f778ba;--blue2:rgba(247,120,186,.15);}
 [data-accent="cyan"]{--blue:#56d9e0;--blue2:rgba(86,217,224,.15);}
 
-/* ── Background image layer ─────────────────────────────────────────── */
+/* ── Apple-smooth scrolling and selection ── */
+html { scroll-behavior: smooth; }
+* { box-sizing: border-box; }
+::selection { background: rgba(10,132,255,0.35); color: inherit; }
+
+/* ── Ambient background — deep dark with soft gradient orbs ── */
+body {
+  background: var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% -20%, var(--glow-blue), transparent),
+    radial-gradient(ellipse 60% 40% at 80% 110%, var(--glow-purple), transparent);
+}
 #bg-layer{display:none;position:fixed;inset:0;z-index:0;background-size:cover;background-position:center;}
 #app{position:relative;z-index:1;}
 
-/* ── GridStack Dashboard Widgets ────────────────────────────────────── */
-/* Hide widgets before GridStack positions them — prevents 600ms stacking flash */
-.grid-stack:not(.gs-ready) > .grid-stack-item { visibility:hidden; }
-.grid-stack{width:100%;}
-.grid-stack-item-content{
-  overflow:hidden;
-  height:100%;
-  border-radius:var(--r);
+/* ── Homarr-style Dashboard Layout — 12-col span grid, dense auto-flow ── */
+/* Widgets use data-span="N" for column width. Hidden widgets leave no gap  */
+/* because grid-auto-flow:dense re-packs remaining visible cells.           */
+.ov-dash{
+  display:grid;
+  grid-template-columns:repeat(12,1fr);
+  gap:14px;
+  padding:0;
+}
+/* Span widths */
+.dash-cell[data-span="12"]{ grid-column:span 12; }
+.dash-cell[data-span="8"] { grid-column:span 8;  }
+.dash-cell[data-span="6"] { grid-column:span 6;  }
+.dash-cell[data-span="4"] { grid-column:span 4;  }
+.dash-cell[data-span="3"] { grid-column:span 3;  }
+/* Base cell — min-width/height:0 CRITICAL: prevents grid children overflowing their lane */
+.dash-cell{
   position:relative;
+  min-width:0;
+  min-height:0;
+  width:100%;
+  box-sizing:border-box;
 }
-.grid-stack-item-content .panel{
-  margin:0;
-  height:100%;
-  border-radius:var(--r);
+.dash-cell > .panel,
+.dash-cell > .metric-grid,
+.dash-cell > div { margin:0; }
+/* Scrollable cells — opt-in only */
+.dash-cell.scrollable{
+  overflow-y:auto;overflow-x:hidden;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+#dash-services.scrollable{ max-height:440px; }
+#dash-infra.scrollable   { max-height:380px; }
+#dash-todo.scrollable    { max-height:400px; }
+.dash-cell[data-span="8"]#dash-logstore { max-height:360px; }
+/* Make logstore use side-by-side layout for storage+logs when wide enough */
+@media(min-width:900px){
+  #dash-logstore .logstore-inner{ display:flex;gap:14px; }
+  #ls-panel-storage,#ls-panel-logs{ flex:1;min-width:0;max-height:280px; }
+}
+/* Apps & Calendar widget styles */
+.apps-tab-btn{ transition:border-color .15s,color .15s; }
+.apps-tab-btn:hover{ background:var(--bg3)!important; }
+#cal-grid > div:hover{ background:var(--bg3)!important; filter:brightness(1.08); }
+/* Calendar + Apps swipe card — fixed row height for side-by-side layout */
+#dash-calendar,#dash-apps{ height:380px; }
+/* Apps swipe card — mirrors media-suite-card */
+#apps-swipe-card{
+  background:var(--glass-bg);
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0) 60%);
+  backdrop-filter:var(--glass-blur-sm);
+  -webkit-backdrop-filter:var(--glass-blur-sm);
+  border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);
   overflow:hidden;
+  box-shadow:var(--glass-shadow);
+  display:flex;flex-direction:column;
+  height:100%;
 }
-/* Drag handle shown when in edit mode */
-.gs-editing .grid-stack-item>.grid-stack-item-content::before{
-  content:'⠿  drag to rearrange · resize from corner';
-  display:block;
-  padding:4px 10px;
-  font-size:10px;
-  color:var(--text3);
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  border-radius:var(--r) var(--r) 0 0;
-  cursor:grab;
-  user-select:none;
-  letter-spacing:.03em;
+#apps-track{
+  display:flex;
+  overflow:hidden;
+  flex:1;
+  transition:transform .35s cubic-bezier(.25,.46,.45,.94);
 }
-.gs-editing .grid-stack-item>.grid-stack-item-content .panel{
-  border-radius:0 0 var(--r) var(--r);
+/* Services widget header — mirrors Media Suite msc-* styles */
+#apps-swipe-card .msc-header{
+  display:flex;align-items:center;padding:10px 14px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  gap:8px;flex-shrink:0;
 }
-.gs-editing .grid-stack-item{outline:1px dashed var(--border2);}
-/* Widget remove button (shown in edit mode) */
-.gs-editing .widget-remove-btn{display:flex!important;}
+#apps-swipe-card .msc-title{
+  font-size:13px;font-weight:600;color:var(--text);flex:1;letter-spacing:-.01em;
+}
+#apps-swipe-card .msc-dots{
+  display:flex;gap:5px;align-items:center;
+}
+#apps-swipe-card .msc-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:rgba(255,255,255,0.15);cursor:pointer;
+  transition:background .2s,transform .2s;
+}
+#apps-swipe-card .msc-dot.active{background:var(--blue);transform:scale(1.25);}
+#apps-swipe-card .msc-nav-btn{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  padding:3px 6px;border-radius:6px;font-size:16px;line-height:1;
+  transition:color .15s,background .15s;
+}
+#apps-swipe-card .msc-nav-btn:hover{background:rgba(255,255,255,0.08);color:var(--text);}
+/* Log+Storage tabbed card */
+#ls-panel-storage,#ls-panel-logs{
+  overflow-y:auto;max-height:290px;padding:4px 2px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+/* ── Edit-mode overlay ── */
+.ov-dash.edit-mode .dash-cell{
+  outline:2px dashed var(--blue);
+  outline-offset:3px;
+  border-radius:var(--r,8px);
+}
+/* Per-widget remove button — hidden until edit mode */
 .widget-remove-btn{
-  display:none;position:absolute;top:4px;right:4px;z-index:10;
-  width:20px;height:20px;border-radius:50%;border:none;
-  background:var(--red2);color:var(--red);cursor:pointer;
-  font-size:12px;line-height:1;align-items:center;justify-content:center;
+  display:none;
+  position:absolute;top:6px;right:6px;z-index:20;
+  width:22px;height:22px;border-radius:50%;
+  background:var(--red2,rgba(248,81,73,.15));
+  color:var(--red,#f85149);
+  border:1px solid var(--red,#f85149);
+  cursor:pointer;font-size:14px;font-weight:700;line-height:1;
+  align-items:center;justify-content:center;
   transition:background .15s;
 }
-.widget-remove-btn:hover{background:var(--red)!important;color:#fff!important;}
+.widget-remove-btn:hover{ background:var(--red,#f85149);color:#fff; }
+.ov-dash.edit-mode .widget-remove-btn{ display:flex!important; }
+/* Responsive breakpoints */
+@media(max-width:1200px){
+  /* On medium screens: gauges+sysinfo share a row, logstore full width */
+  .dash-cell[data-span="8"]#dash-gauges { grid-column:span 7; }
+  .dash-cell[data-span="4"]#dash-sysinfo { grid-column:span 5; }
+  .dash-cell[data-span="8"]#dash-services { grid-column:span 12; }
+  .dash-cell[data-span="4"]#dash-featured { grid-column:span 12; }
+}
+@media(max-width:900px){
+  .dash-cell[data-span="8"] { grid-column:span 12; }
+  .dash-cell[data-span="6"] { grid-column:span 12; }
+  .dash-cell[data-span="4"] { grid-column:span 6; }
+  /* logstore: stack panels vertically on narrow screens */
+  #dash-logstore .logstore-inner{ flex-direction:column; }
+  #dash-featured { display:none; }
+}
+@media(max-width:600px){
+  .dash-cell[data-span="12"],
+  .dash-cell[data-span="8"],
+  .dash-cell[data-span="6"],
+  .dash-cell[data-span="4"],
+  .dash-cell[data-span="3"]{ grid-column:span 12; }
+}
+/* Media suite card: span 8 on desktop, no longer full width */
+#dash-services{ min-height:360px; }
+/* Featured backdrop panel */
+#dash-featured{ min-height:360px; }
+.feat-panel{
+  height:100%;border-radius:var(--r-lg);overflow:hidden;
+  position:relative;display:flex;flex-direction:column;
+  background:var(--glass-bg);border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow);
+}
+.feat-backdrop{
+  position:absolute;inset:0;
+  background-size:cover;background-position:center;
+  transition:opacity .5s ease;
+  opacity:0;
+}
+.feat-backdrop.loaded{ opacity:1; }
+.feat-backdrop-overlay{
+  position:absolute;inset:0;
+  background:linear-gradient(to top, rgba(8,8,18,0.98) 0%, rgba(8,8,18,0.6) 50%, rgba(8,8,18,0.1) 100%);
+}
+.feat-content{
+  position:relative;z-index:1;
+  display:flex;flex-direction:column;
+  height:100%;padding:12px;
+}
+.feat-top{ flex:1; }
+.feat-badge{
+  display:inline-block;font-size:9px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.06em;
+  padding:2px 7px;border-radius:4px;
+  background:rgba(10,132,255,0.2);color:var(--blue);
+  margin-bottom:6px;
+}
+.feat-title{
+  font-size:16px;font-weight:700;color:#fff;
+  line-height:1.25;margin-bottom:4px;
+}
+.feat-meta{ font-size:11px;color:rgba(255,255,255,0.55);margin-bottom:8px; }
+.feat-overview{
+  font-size:11px;color:rgba(255,255,255,0.65);
+  line-height:1.5;display:-webkit-box;
+  -webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;
+}
+.feat-poster{
+  width:52px;height:76px;border-radius:4px;object-fit:cover;
+  box-shadow:0 4px 16px rgba(0,0,0,.5);flex-shrink:0;
+  float:right;margin:0 0 8px 10px;
+}
+.feat-rating{ display:flex;align-items:center;gap:4px;margin-top:8px; }
+.feat-stars{ color:#ffd700;font-size:12px; }
+.feat-score{ font-size:12px;color:var(--text2);font-family:var(--mono); }
+.feat-bottom{
+  display:flex;gap:6px;margin-top:8px;padding-top:8px;
+  border-top:1px solid rgba(255,255,255,0.08);
+}
+.feat-btn{
+  flex:1;padding:6px 8px;border-radius:8px;border:none;
+  font-size:11px;font-weight:600;cursor:pointer;
+  background:rgba(10,132,255,0.15);color:var(--blue);
+  transition:background .15s;
+}
+.feat-btn:hover{ background:rgba(10,132,255,0.28); }
+.feat-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--text3);gap:8px;
+}
+.feat-nav{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:10px;
+}
+.feat-nav-title{ font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em; }
+.feat-nav-btns{ display:flex;gap:4px; }
+.feat-nav-btn{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  font-size:14px;padding:2px 6px;border-radius:6px;transition:color .15s,background .15s;
+}
+.feat-nav-btn:hover{ background:rgba(255,255,255,0.06);color:var(--text); }
+/* Service card tabs ── */
+.svc-card{display:flex;flex-direction:column;overflow:hidden;}
+.svc-card-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.06);gap:6px;flex-shrink:0;}
+.svc-card-title{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;letter-spacing:-.01em;}
+.svc-tabs{display:flex;gap:2px;background:rgba(255,255,255,0.05);border-radius:8px;padding:2px;}
+.svc-tab{background:none;border:none;color:var(--text3);font-size:10px;font-weight:600;padding:3px 9px;border-radius:6px;cursor:pointer;transition:background .15s,color .15s;}
+.svc-tab:hover{background:rgba(255,255,255,0.08);color:var(--text2);}
+.svc-tab.active{background:rgba(10,132,255,0.2);color:var(--blue);}
+.svc-card-body{display:flex;flex-direction:column;gap:4px;padding:6px 8px;overflow-y:auto;flex:1;min-height:0;}
+/* Clickable service items */
+.svc-item{display:flex;align-items:center;gap:8px;padding:4px 4px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;border-radius:4px;}
+.svc-item:hover{background:var(--surface);}
+.svc-item:last-child{border-bottom:none;}
+.svc-detail{display:none;padding:6px 10px;background:var(--bg3);border-radius:6px;margin:2px 0 4px;font-size:11px;color:var(--text2);line-height:1.5;border:1px solid var(--border);}
+.svc-detail.open{display:block;}
+/* Queue progress bar */
+.svc-q-bar{height:3px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:3px;}
+.svc-q-fill{height:100%;border-radius:2px;transition:width .5s ease;}
+/* Service library stats grid */
+.svc-lib-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0;}
+.svc-lib-stat{text-align:center;padding:10px 6px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);}
+.svc-lib-val{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text);}
+.svc-lib-label{font-size:10px;color:var(--text3);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;}
 /* Service launcher tiles */
 .launcher-tile{
   display:flex;flex-direction:column;align-items:center;gap:4px;
@@ -2289,9 +4351,10 @@ _HTML_SPA = r"""<!DOCTYPE html>
 .launcher-tile-port{font-size:10px;color:var(--text3);font-family:var(--mono);}
 /* Widget palette cards */
 .widget-palette-card{
-  display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 8px;
-  background:var(--surface);border:2px solid var(--border);border-radius:8px;
+  display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px 8px 10px;
+  background:var(--surface);border:2px solid var(--border);border-radius:10px;
   cursor:pointer;transition:border-color .15s,background .15s;text-align:center;
+  position:relative;
 }
 .widget-palette-card:hover{border-color:var(--blue);background:var(--surface2);}
 .widget-palette-card.active{border-color:var(--green);background:var(--green2);}
@@ -2316,21 +4379,50 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 #app{display:flex;height:100vh;overflow:hidden;}
 #sidebar{
   width:var(--sb-w);min-width:var(--sb-w);
-  background:var(--bg2);
-  border-right:1px solid var(--border);
+  background:rgba(8,8,16,0.88);
+  backdrop-filter:var(--glass-blur);
+  -webkit-backdrop-filter:var(--glass-blur);
+  border-right:1px solid rgba(255,255,255,0.08);
+  box-shadow:inset -1px 0 0 rgba(255,255,255,0.04);
   display:flex;flex-direction:column;
   overflow-y:auto;overflow-x:hidden;
   flex-shrink:0;
+  position:relative;
+  z-index:10;
 }
-#main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;}
 #topbar{
   height:var(--top-h);min-height:var(--top-h);
-  background:var(--bg2);
-  border-bottom:1px solid var(--border);
+  background:rgba(10,10,18,0.78);
+  backdrop-filter:var(--glass-blur);
+  -webkit-backdrop-filter:var(--glass-blur);
+  border-bottom:1px solid rgba(255,255,255,0.09);
+  box-shadow:0 1px 0 rgba(255,255,255,0.04),0 4px 16px rgba(0,0,0,0.3);
   display:flex;align-items:center;padding:0 20px;gap:16px;
   flex-shrink:0;
+  position:relative;
+  z-index:9;
 }
-#content{flex:1;overflow-y:auto;padding:20px;background:var(--bg);}
+#content{flex:1;overflow-y:auto;padding:20px;background:transparent;}
+/* Right sidebar — floating overlay (does not push #content) */
+#right-sidebar{
+  position:fixed;
+  right:0;
+  top:var(--top-h);
+  height:calc(100vh - var(--top-h));
+  width:0;
+  overflow:hidden;
+  background:rgba(10,10,18,0.92);
+  backdrop-filter:var(--glass-blur);
+  -webkit-backdrop-filter:var(--glass-blur);
+  border-left:1px solid var(--glass-border);
+  box-shadow:-6px 0 32px rgba(0,0,0,0.45);
+  display:flex;flex-direction:column;
+  transition:width .3s cubic-bezier(.25,.46,.45,.94);
+  z-index:50;
+}
+#right-sidebar.open{width:300px;}
+#right-sidebar-inner{width:300px;padding:16px;overflow-y:auto;height:100%;}
 
 /* ── Sidebar ── */
 .sb-brand{
@@ -2355,13 +4447,13 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 }
 .sb-item{
   display:flex;align-items:center;gap:8px;
-  padding:7px 8px;border-radius:var(--r);
+  padding:7px 10px;border-radius:10px;
   cursor:pointer;color:var(--text2);
   transition:background var(--transition),color var(--transition);
-  font-size:13.5px;
+  font-size:13px;font-weight:400;
 }
-.sb-item:hover{background:var(--surface);color:var(--text);}
-.sb-item.active{background:var(--blue2);color:var(--blue);font-weight:500;}
+.sb-item:hover{background:rgba(255,255,255,0.06);color:var(--text);}
+.sb-item.active{background:rgba(10,132,255,0.18);color:var(--blue);font-weight:500;}
 .sb-item .sb-icon{width:16px;height:16px;opacity:.7;flex-shrink:0;}
 .sb-item.active .sb-icon{opacity:1;}
 .sb-badge{
@@ -2375,10 +4467,15 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 /* ── Topbar ── */
 .tb-stat{
   display:flex;align-items:center;gap:8px;
-  padding:6px 12px;border-radius:var(--r);
-  background:var(--surface);border:1px solid var(--border);
+  padding:6px 12px;border-radius:20px;
+  background:rgba(255,255,255,0.06);
+  border:1px solid rgba(255,255,255,0.10);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
   cursor:default;
+  transition:background var(--transition);
 }
+.tb-stat:hover{background:rgba(255,255,255,0.09);}
 .tb-stat-label{font-size:11px;color:var(--text2);}
 .tb-stat-val{font-size:13px;font-weight:600;color:var(--text);}
 .tb-stat-val.green{color:var(--green);}
@@ -2400,21 +4497,54 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 /* ── Sections ── */
 .section-header{
   display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:14px;
+  margin-bottom:20px;
+  padding-bottom:0;
+  border-bottom:none;
 }
-.section-title{font-size:15px;font-weight:600;color:var(--text);}
-.section-sub{font-size:12px;color:var(--text3);}
+.section-title{font-size:34px;font-weight:200;color:var(--text);letter-spacing:-.8px;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;}
+.section-sub{font-size:13px;color:var(--text3);margin-top:2px;font-weight:400;letter-spacing:.01em;}
+
+/* ── Apple-style overview panels ── */
+#tab-overview .panel{
+  background:var(--glass-bg);
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0) 60%);
+  backdrop-filter:blur(40px) saturate(200%);
+  -webkit-backdrop-filter:blur(40px) saturate(200%);
+  border:1px solid var(--glass-border);
+  border-radius:16px;
+  box-shadow:var(--glass-shadow);
+  transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+  overflow:hidden;
+  min-width:0;
+  width:100%;
+  box-sizing:border-box;
+}
+#tab-overview .panel:hover{
+  transform:translateY(-1px);
+  box-shadow:0 4px 30px rgba(0,0,0,0.2);
+}
+#tab-overview .panel-title{
+  font-size:14px;font-weight:500;letter-spacing:.02em;
+  color:var(--text2);
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  padding-bottom:10px;margin-bottom:14px;
+}
 
 /* ── Stat cards row ── */
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;}
 .stat-card{
-  background:var(--bg2);border:1px solid var(--border);
-  border-radius:var(--r);padding:14px 16px;
+  background:var(--glass-bg);
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.05) 0%,rgba(255,255,255,0) 60%);
+  backdrop-filter:blur(40px) saturate(200%);
+  -webkit-backdrop-filter:blur(40px) saturate(200%);
+  border:1px solid var(--glass-border);
+  border-radius:16px;padding:16px 18px;
   display:flex;flex-direction:column;gap:6px;
-  transition:border-color var(--transition);
+  transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease;
   container-type:inline-size;overflow:hidden;min-height:0;
+  box-shadow:var(--glass-shadow);
 }
-.stat-card:hover{border-color:var(--border2);}
+.stat-card:hover{transform:translateY(-2px);box-shadow:var(--glass-shadow-lg),var(--glass-hover-glow);border-color:var(--glass-border-hi);}
 .stat-card-icon{font-size:18px;margin-bottom:2px;}
 .stat-card-val{font-size:22px;font-weight:700;color:var(--text);font-family:var(--mono);}
 .stat-card-label{font-size:11px;color:var(--text2);}
@@ -2449,11 +4579,20 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .gauge-sub{font-size:11px;color:var(--text2);font-weight:500;}
 
 /* ── Overview metric row ── */
-.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:20px;}
+.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;}
 .metric-card{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
-  padding:16px;display:flex;flex-direction:column;gap:8px;
+  background:var(--glass-bg);
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.05) 0%,rgba(255,255,255,0) 60%);
+  backdrop-filter:blur(40px) saturate(200%);
+  -webkit-backdrop-filter:blur(40px) saturate(200%);
+  border:1px solid var(--glass-border);border-radius:16px;
+  padding:16px 18px;display:flex;flex-direction:column;gap:6px;overflow:hidden;
+  box-shadow:var(--glass-shadow);
+  transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease;
 }
+.metric-card:hover{transform:translateY(-2px);box-shadow:var(--glass-shadow-lg),var(--glass-hover-glow);border-color:var(--glass-border-hi);}
+/* When gauge widget is narrow, stack metric cards 2×2 */
+@container (max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr);}}
 .metric-top{display:flex;align-items:center;justify-content:space-between;}
 .metric-name{font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;}
 .metric-badge{font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600;}
@@ -2461,10 +4600,20 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 /* ── Container grid ── */
 .container-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--ctr-card-min,280px),1fr));gap:14px;}
 .ctr-card{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
-  overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition);
+  background:var(--glass-bg);
+  backdrop-filter:var(--glass-blur-sm);
+  -webkit-backdrop-filter:var(--glass-blur-sm);
+  border:1px solid var(--glass-border);border-radius:16px;
+  overflow:hidden;
+  box-shadow:var(--glass-shadow);
+  transition:border-color var(--transition),background var(--transition),box-shadow var(--transition),transform var(--transition);
 }
-.ctr-card:hover{border-color:var(--border2);box-shadow:0 4px 20px rgba(0,0,0,.35);}
+.ctr-card:hover{
+  border-color:rgba(255,255,255,0.14);
+  background:var(--glass-bg-hover);
+  box-shadow:var(--glass-shadow-lg);
+  transform:translateY(-1px);
+}
 
 .ctr-header{padding:12px 14px;display:flex;align-items:flex-start;gap:10px;border-bottom:1px solid var(--border);}
 .ctr-icon{
@@ -2518,9 +4667,40 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-fam
 .btn.blue:hover{background:var(--blue2);}
 .btn svg{width:12px;height:12px;flex-shrink:0;}
 
-/* ── Generic panel ── */
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:16px;}
-.panel-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;display:flex;align-items:center;gap:8px;}
+/* ── Generic panel — Apple glass morphism everywhere ── */
+.panel{
+  background:var(--glass-bg);
+  backdrop-filter:var(--glass-blur-sm);
+  -webkit-backdrop-filter:var(--glass-blur-sm);
+  border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);
+  padding:16px;
+  margin-bottom:16px;
+  box-shadow:var(--glass-shadow);
+  transition:box-shadow var(--transition),transform var(--transition),border-color var(--transition),background var(--transition);
+  /* subtle gradient gives the "glass thickness" illusion */
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0) 60%);
+}
+.panel-title{font-size:13px;font-weight:500;letter-spacing:.01em;color:var(--text2);margin-bottom:12px;display:flex;align-items:center;gap:8px;}
+.panel:hover{
+  background-color:var(--glass-bg-hover);
+  box-shadow:var(--glass-shadow-lg),var(--glass-hover-glow);
+  transform:translateY(-2px);
+  border-color:var(--glass-border-hi);
+}
+/* ── Fallback: no GPU / no backdrop-filter (Proxmox VMs, headless Docker) ── */
+@supports not (backdrop-filter: blur(1px)){
+  :root{
+    --glass-bg:       rgba(22,22,34,0.97);
+    --glass-bg-hover: rgba(30,30,46,0.99);
+  }
+  .panel,.stat-card,.metric-card,.ctr-card,#alerts-bar,
+  #tab-overview .panel,.modal-box,.rsb-section,
+  #media-suite-card,#apps-swipe-card,#right-sidebar{
+    backdrop-filter:none !important;
+    -webkit-backdrop-filter:none !important;
+  }
+}
 
 /* ── Tables ── */
 table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -2639,20 +4819,172 @@ tbody tr:last-child{border-bottom:none;}
 .disk-usage{color:var(--text2);}
 
 /* ── Catalog ── */
-.cat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
-.cat-card{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
-  padding:14px;display:flex;flex-direction:column;gap:8px;
-  transition:border-color var(--transition);
+/* ══ APP STORE / CATALOG STYLES ══════════════════════════════════════ */
+/* Store hero banner */
+.store-hero{
+  border-radius:var(--r-lg);overflow:hidden;margin-bottom:18px;
+  background:linear-gradient(135deg,rgba(10,132,255,0.18) 0%,rgba(100,60,220,0.18) 100%);
+  border:1px solid rgba(10,132,255,0.2);
+  padding:20px 24px;display:flex;align-items:center;gap:20px;
+  position:relative;
 }
-.cat-card:hover{border-color:var(--border2);}
-.cat-card-header{display:flex;align-items:center;gap:10px;}
-.cat-icon{font-size:22px;width:36px;text-align:center;}
-.cat-name{font-weight:600;font-size:13.5px;color:var(--text);}
-.cat-cat{font-size:11px;color:var(--text3);}
-.cat-desc{font-size:12px;color:var(--text2);line-height:1.5;}
-.cat-footer{margin-top:auto;display:flex;align-items:center;justify-content:space-between;}
-.cat-image{font-size:11px;font-family:var(--mono);color:var(--text3);}
+.store-hero-icon{ font-size:40px;flex-shrink:0; }
+.store-hero-text{ flex:1;min-width:0; }
+.store-hero-title{ font-size:18px;font-weight:700;color:var(--text);margin-bottom:3px; }
+.store-hero-sub{ font-size:12px;color:var(--text2); }
+.store-hero-stat{
+  display:flex;flex-direction:column;align-items:center;
+  background:rgba(255,255,255,0.06);border-radius:10px;padding:10px 18px;flex-shrink:0;
+}
+.store-hero-num{ font-size:22px;font-weight:700;color:var(--blue);font-family:var(--mono); }
+.store-hero-lbl{ font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-top:2px; }
+
+/* Featured strip — horizontal scroll */
+.store-featured-strip{
+  display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;margin-bottom:18px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+.store-featured-card{
+  flex-shrink:0;width:200px;border-radius:var(--r-lg);overflow:hidden;
+  background:var(--glass-bg);border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow);cursor:pointer;
+  transition:transform .2s,box-shadow .2s;display:flex;flex-direction:column;
+}
+.store-featured-card:hover{ transform:translateY(-3px);box-shadow:var(--glass-shadow-lg); }
+.store-fc-banner{
+  height:90px;display:flex;align-items:center;justify-content:center;
+  font-size:44px;flex-shrink:0;
+}
+.store-fc-body{ padding:10px 12px;flex:1;display:flex;flex-direction:column; }
+.store-fc-name{ font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px; }
+.store-fc-cat{ font-size:10px;color:var(--text3);margin-bottom:6px; }
+.store-fc-btn{
+  margin-top:auto;padding:4px 10px;border-radius:8px;border:none;
+  background:rgba(10,132,255,0.15);color:var(--blue);font-size:10px;font-weight:700;
+  cursor:pointer;letter-spacing:.03em;transition:background .15s;
+  align-self:flex-start;
+}
+.store-fc-btn:hover{ background:rgba(10,132,255,0.28); }
+
+/* Section headings */
+.store-section{ margin-bottom:20px; }
+.store-section-hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:10px;padding-bottom:6px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+}
+.store-section-title{ font-size:13px;font-weight:700;color:var(--text);letter-spacing:-.01em; }
+.store-section-link{
+  font-size:11px;color:var(--blue);text-decoration:none;cursor:pointer;
+  background:none;border:none;padding:0;transition:opacity .15s;
+}
+.store-section-link:hover{ opacity:.7; }
+
+/* App grid (store style) */
+.store-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(180px,1fr));
+  gap:10px;
+}
+.store-app-card{
+  background:var(--glass-bg);border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);padding:14px 12px;
+  display:flex;flex-direction:column;gap:0;
+  cursor:pointer;transition:border-color .15s,transform .15s,box-shadow .15s;
+  position:relative;
+}
+.store-app-card:hover{
+  border-color:var(--glass-border-hi);
+  transform:translateY(-2px);
+  box-shadow:var(--glass-shadow-lg);
+}
+.store-app-icon{
+  font-size:34px;margin-bottom:10px;
+  width:54px;height:54px;display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,0.05);border-radius:14px;
+  overflow:hidden;
+}
+.store-app-icon img{width:38px;height:38px;object-fit:contain;}
+.store-fc-icon{width:54px;height:54px;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.store-fc-icon img{width:44px;height:44px;object-fit:contain;}
+.store-modal-icon{width:72px;height:72px;display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,0.05);border-radius:16px;overflow:hidden;flex-shrink:0;}
+.store-modal-icon img{width:52px;height:52px;object-fit:contain;}
+.store-list-icon img{width:28px;height:28px;object-fit:contain;}
+.store-app-name{ font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px;line-height:1.25; }
+.store-app-cat{
+  font-size:10px;color:var(--text3);margin-bottom:8px;
+  text-transform:uppercase;letter-spacing:.05em;
+}
+.store-app-desc{
+  font-size:11px;color:var(--text2);line-height:1.45;flex:1;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  margin-bottom:10px;
+}
+.store-app-footer{ display:flex;align-items:center;justify-content:space-between;margin-top:auto; }
+.store-app-image{
+  font-size:9px;color:var(--text3);font-family:var(--mono);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px;
+}
+.store-app-deploy-btn{
+  padding:4px 10px;border-radius:8px;border:none;
+  background:rgba(10,132,255,0.15);color:var(--blue);
+  font-size:10px;font-weight:700;cursor:pointer;
+  transition:background .15s;flex-shrink:0;
+  letter-spacing:.02em;
+}
+.store-app-deploy-btn:hover{ background:rgba(10,132,255,0.28); }
+.store-fav-btn{
+  position:absolute;top:8px;right:8px;
+  background:none;border:none;font-size:14px;cursor:pointer;
+  color:var(--text3);transition:color .15s,transform .15s;padding:2px;
+}
+.store-fav-btn:hover{ color:var(--yellow);transform:scale(1.2); }
+.store-fav-btn.starred{ color:var(--yellow); }
+
+/* List-style view (for search results) */
+.store-list-row{
+  display:flex;align-items:center;gap:12px;padding:10px 12px;
+  background:var(--glass-bg);border:1px solid var(--glass-border);
+  border-radius:var(--r);margin-bottom:6px;cursor:pointer;
+  transition:border-color .15s,background .15s;
+}
+.store-list-row:hover{
+  border-color:var(--glass-border-hi);background:var(--glass-bg-hover);
+}
+.store-list-icon{
+  font-size:26px;width:42px;height:42px;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,0.05);border-radius:10px;flex-shrink:0;
+}
+.store-list-info{ flex:1;min-width:0; }
+.store-list-name{ font-size:13px;font-weight:600;color:var(--text); }
+.store-list-meta{ font-size:11px;color:var(--text3);margin-top:2px; }
+.store-list-desc{ font-size:11px;color:var(--text2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+
+/* Fav section */
+.fav-section{ margin-bottom:18px;padding:12px;background:rgba(255,204,0,0.05);border:1px solid rgba(255,204,0,0.12);border-radius:var(--r-lg); }
+.fav-section-title{ font-size:11px;font-weight:700;color:var(--yellow);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px; }
+
+/* Category pills */
+.filter-row{ display:flex;flex-wrap:wrap;gap:6px; }
+.filter-pill{
+  padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;
+  background:rgba(255,255,255,0.05);color:var(--text2);border:1px solid rgba(255,255,255,0.08);
+  transition:background .15s,color .15s,border-color .15s;
+}
+.filter-pill:hover{ background:rgba(255,255,255,0.1);color:var(--text); }
+.filter-pill.active{
+  background:rgba(10,132,255,0.18);color:var(--blue);
+  border-color:rgba(10,132,255,0.35);
+}
+
+/* Deploy controls */
+#deploy-controls{ display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap; }
+#deploy-controls select{
+  background:var(--bg2);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;
+}
 
 /* ── Responsive — original ── */
 @media(max-width:700px){
@@ -2746,14 +5078,27 @@ body.sse-disconnected #app{padding-top:38px;}
 @media(max-width:900px){#sb-collapse-btn{display:none;}}
 
 /* Collapsed sidebar state */
-#app.sb-collapsed #sidebar{width:60px;min-width:60px;}
-#app.sb-collapsed .sb-title,#app.sb-collapsed .sb-version,
-#app.sb-collapsed .sb-section-label,#app.sb-collapsed .sb-badge{display:none!important;}
-#app.sb-collapsed .sb-item{justify-content:center;padding:8px 0;}
-#app.sb-collapsed .sb-item>span:not(.sb-icon){display:none;}
-#app.sb-collapsed .sb-brand{justify-content:center;padding:12px 0;}
+#app.sb-collapsed #sidebar{width:56px;min-width:56px;overflow:hidden;}
+#app.sb-collapsed .sb-title,
+#app.sb-collapsed .sb-version,
+#app.sb-collapsed .sb-section-label,
+#app.sb-collapsed .sb-badge{display:none!important;}
+/* font-size:0 collapses bare text nodes (label text) without touching SVG */
+#app.sb-collapsed .sb-item{
+  font-size:0;
+  justify-content:center;
+  padding:10px 0;
+  margin:1px 6px;
+  border-radius:8px;
+}
+/* Keep icon sized and centered */
+#app.sb-collapsed .sb-item .sb-icon{
+  width:20px;height:20px;flex-shrink:0;margin:0;opacity:.85;
+}
+#app.sb-collapsed .sb-item.active .sb-icon{opacity:1;}
+#app.sb-collapsed .sb-brand{justify-content:center;padding:14px 0;}
 #app.sb-collapsed .sb-logo{margin:0;}
-#app.sb-collapsed #sidebar .sb-section{padding:6px 4px;}
+#app.sb-collapsed #sidebar .sb-section{padding:4px 0;}
 
 /* Card size slider */
 .ctr-size-slider{accent-color:var(--blue);width:80px;cursor:pointer;vertical-align:middle;}
@@ -2772,10 +5117,141 @@ body.sse-disconnected #app{padding-top:38px;}
 .pm-group.collapsed .pm-group-body{display:none;}
 
 /* Stack manager cards */
-.stack-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:10px;}
+.stack-card{background:var(--glass-bg);backdrop-filter:var(--glass-blur-sm);-webkit-backdrop-filter:var(--glass-blur-sm);border:1px solid var(--glass-border);border-radius:var(--r-lg);padding:14px;margin-bottom:10px;}
 .stack-card-hdr{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
 .stack-card-name{font-weight:600;font-size:14px;flex:1;}
 .stack-card-actions{display:flex;gap:6px;flex-wrap:wrap;}
+
+/* ── Media Suite Swipeable Card ── */
+#media-suite-card{
+  background:var(--glass-bg);
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0) 60%);
+  backdrop-filter:var(--glass-blur-sm);
+  -webkit-backdrop-filter:var(--glass-blur-sm);
+  border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);
+  overflow:hidden;
+  box-shadow:var(--glass-shadow);
+  display:flex;flex-direction:column;
+  min-height:320px;
+}
+#media-suite-card .msc-header{
+  display:flex;align-items:center;padding:10px 14px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  gap:8px;flex-shrink:0;
+}
+#media-suite-card .msc-title{
+  font-size:13px;font-weight:600;color:var(--text);flex:1;letter-spacing:-.01em;
+}
+#media-suite-card .msc-dots{ display:none; }
+#media-suite-card .msc-nav-btn{ display:none; }
+/* Named service tab bar */
+#media-suite-card .msc-tabs{
+  display:flex;gap:3px;align-items:center;flex:1;overflow-x:auto;scrollbar-width:none;
+}
+#media-suite-card .msc-tabs::-webkit-scrollbar{ display:none; }
+#media-suite-card .msc-tab{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  padding:4px 9px;border-radius:20px;font-size:11px;font-weight:500;
+  transition:background .15s,color .15s;white-space:nowrap;flex-shrink:0;
+}
+#media-suite-card .msc-tab.active{
+  background:var(--blue2);color:var(--blue);font-weight:600;
+}
+#media-suite-card .msc-tab:hover:not(.active){
+  background:rgba(255,255,255,0.07);color:var(--text);
+}
+/* The slide track — overflow must NOT be hidden here; the parent viewport clips */
+#msc-track{
+  display:flex;
+  overflow:visible;
+  flex:1;
+  transition:transform .35s cubic-bezier(.25,.46,.45,.94);
+}
+.msc-slide{
+  min-width:100%;width:100%;
+  display:flex;flex-direction:column;
+  flex-shrink:0;
+  overflow:hidden;
+}
+.msc-slide-hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 14px;background:rgba(255,255,255,0.03);
+  border-bottom:1px solid rgba(255,255,255,0.04);
+  flex-shrink:0;
+}
+.msc-slide-label{font-size:12px;font-weight:600;color:var(--text2);display:flex;align-items:center;gap:6px;}
+.msc-slide-tabs{display:flex;gap:2px;background:rgba(255,255,255,0.05);border-radius:8px;padding:2px;}
+.msc-slide-tab{background:none;border:none;color:var(--text3);font-size:10px;font-weight:600;padding:3px 9px;border-radius:6px;cursor:pointer;transition:background .15s,color .15s;}
+.msc-slide-tab:hover{background:rgba(255,255,255,0.08);color:var(--text2);}
+.msc-slide-tab.active{background:rgba(10,132,255,0.2);color:var(--blue);}
+.msc-slide-body{flex:1;overflow-y:auto;padding:6px 8px;}
+
+/* ── Right sidebar toggle button in topbar ── */
+#rsb-toggle-btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:5px 10px;border-radius:20px;
+  background:rgba(255,255,255,0.06);
+  border:1px solid rgba(255,255,255,0.10);
+  color:var(--text2);font-size:12px;cursor:pointer;
+  transition:background var(--transition),color var(--transition);
+  backdrop-filter:blur(10px);
+}
+#rsb-toggle-btn:hover{background:rgba(255,255,255,0.10);color:var(--text);}
+#rsb-toggle-btn.active{background:rgba(10,132,255,0.18);border-color:rgba(10,132,255,0.3);color:var(--blue);}
+/* Right sidebar section heads */
+.rsb-section{margin-bottom:18px;}
+.rsb-title{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;padding:0 2px;}
+.rsb-link{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;text-decoration:none;color:var(--text2);font-size:12px;transition:background .15s;}
+.rsb-link:hover{background:rgba(255,255,255,0.06);}
+.rsb-port{margin-left:auto;font-size:10px;color:var(--text3);font-family:var(--mono);}
+.rsb-dl-item{display:flex;flex-direction:column;gap:2px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04);}
+.rsb-dl-name{font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rsb-dl-bar{height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;margin-top:3px;}
+.rsb-np-item{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04);}
+.rsb-np-poster{width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0;background:var(--bg3);}
+.rsb-np-info{flex:1;min-width:0;}
+.rsb-np-title{font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rsb-np-sub{font-size:10px;color:var(--text3);margin-top:1px;}
+
+/* ── HLS Player improved ── */
+#iptv-hls-panel{
+  background:var(--glass-bg);
+  backdrop-filter:var(--glass-blur-sm);
+  -webkit-backdrop-filter:var(--glass-blur-sm);
+  border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);
+  padding:14px;
+  margin-top:10px;
+}
+.hls-player-wrap{
+  position:relative;background:#000;border-radius:12px;overflow:hidden;
+  aspect-ratio:16/9;
+}
+.hls-player-wrap video{width:100%;height:100%;display:block;}
+.hls-url-row{display:flex;gap:8px;margin-bottom:10px;}
+.hls-url-row input{
+  flex:1;padding:8px 12px;
+  background:rgba(255,255,255,0.06);
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:10px;color:var(--text);font-size:12px;outline:none;
+  transition:border-color .15s;
+}
+.hls-url-row input:focus{border-color:var(--blue);}
+.hls-url-row input::placeholder{color:var(--text3);}
+.hls-source-badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
+.hls-source-badge{
+  font-size:11px;padding:3px 10px;border-radius:20px;cursor:pointer;
+  border:1px solid var(--glass-border);
+  background:rgba(255,255,255,0.05);color:var(--text2);
+  transition:all .15s;
+}
+.hls-source-badge:hover{background:rgba(10,132,255,0.15);color:var(--blue);border-color:rgba(10,132,255,0.3);}
+.hls-quality-row{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:var(--text3);}
+.hls-quality-row select{
+  background:rgba(255,255,255,0.06);border:1px solid var(--glass-border);
+  color:var(--text);border-radius:8px;padding:3px 7px;font-size:11px;
+}
 
 /* Mobile bottom nav — hidden on desktop */
 #bottom-nav{
@@ -2790,7 +5266,7 @@ body.sse-disconnected #app{padding-top:38px;}
   flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:3px;cursor:pointer;color:var(--text3);font-size:10px;font-weight:500;
   border:none;background:none;padding:4px 2px;
-  transition:color var(--transition);
+  transition:color var(--transition);flex-shrink:0;
 }
 .bn-item:hover,.bn-item.active{color:var(--blue);}
 .bn-item svg{width:20px;height:20px;}
@@ -2849,6 +5325,98 @@ body.sse-disconnected #app{padding-top:38px;}
   .grid-stack.gs-editing .grid-stack-item > .ui-resizable-handle{touch-action:none;}
   /* HLS video players: full width */
   #rss-iptv-view video{height:180px!important;}
+}
+
+/* ── Comprehensive Mobile Layout ── */
+@media(max-width:768px){
+  /* IPTV: stack channel list above player */
+  #iptv-channels-view > div{
+    grid-template-columns:1fr!important;
+    height:auto!important;
+    min-height:unset!important;
+  }
+  #iptv-channel-list{max-height:200px!important;}
+  #iptv-player-wrap{min-height:240px!important;}
+  /* Overview gauges: keep 2 columns on tablet */
+  .metric-grid{grid-template-columns:repeat(2,1fr)!important;}
+  /* Topbar: hide less critical stats */
+  #topbar .tb-stat:nth-child(n+3){display:none;}
+  /* Section headers: wrap */
+  .section-header{flex-wrap:wrap;gap:8px;}
+  /* Modals: full width */
+  .modal-content{width:96vw!important;max-width:96vw!important;}
+  /* GridStack: single column */
+  .grid-stack{min-height:unset!important;}
+}
+
+@media(max-width:480px){
+  /* Overview gauges: single column on phones */
+  .metric-grid{grid-template-columns:1fr!important;}
+  /* Gauges: shrink canvas to fit phone */
+  #cpu-gauge-canvas,#mem-gauge-canvas{width:130px!important;height:130px!important;}
+  /* IPTV sub-nav: wrap */
+  #tab-iptv .section-header > div:last-child{flex-wrap:wrap;gap:6px;}
+  /* Reduce padding throughout */
+  .panel{padding:10px!important;}
+  .metric-card{padding:10px 8px!important;}
+  /* Section title font */
+  .section-title{font-size:14px!important;}
+  /* Bottom nav labels: smaller */
+  .bn-item span{font-size:9px!important;}
+  /* RSS cards: single column */
+  #tab-rss .cat-grid{grid-template-columns:1fr!important;}
+  /* Tables: horizontal scroll */
+  .table-wrap,#ctr-table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  /* Port map table */
+  .pm-group table{min-width:420px;}
+  /* Topbar load stat hidden */
+  #topbar .tb-stat:nth-child(n+2){display:none;}
+  /* Deployment grid: single column */
+  #launcher-grid{grid-template-columns:repeat(3,1fr)!important;}
+}
+
+/* ── Football Hub mobile ── */
+@media(max-width:700px){
+  /* View buttons: wrap & reduce padding */
+  #tab-epl .section-header > div:last-child{flex-wrap:wrap;gap:4px;}
+  #tab-epl .view-btn{padding:4px 8px;font-size:11px;}
+  /* League selector: scrollable rows */
+  #football-league-selector > div:not(:first-child):not(:nth-child(3)){
+    flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+  }
+  .league-pill{font-size:10px;padding:4px 10px;}
+  /* Team modal: full width on phone */
+  #football-team-modal{padding:0;align-items:flex-end;}
+  #football-team-modal > .panel{width:100vw!important;max-width:100vw!important;max-height:85vh;border-radius:16px 16px 0 0;}
+  /* Match rows on small screens */
+  #football-fixtures-list > div, #football-results-list > div{padding:8px 8px;}
+}
+/* ── Feeds tab mobile ── */
+@media(max-width:600px){
+  #feeds-rss-grid,#feeds-reddit-grid,#feeds-yt-grid{
+    grid-template-columns:repeat(auto-fill,minmax(160px,1fr))!important;
+    gap:8px!important;
+  }
+  #feeds-pills-row{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;}
+  #feeds-pills-row .filter-pill{white-space:nowrap;flex-shrink:0;}
+  #tab-feeds .section-header{flex-direction:column;align-items:flex-start;gap:6px;}
+}
+/* ── IPTV modal mobile ── */
+@media(max-width:480px){
+  #iptv-add-modal .panel{width:98vw!important;padding:14px!important;}
+  #feeds-add-modal .panel, #feeds-newcat-modal .panel{width:98vw!important;padding:14px!important;}
+}
+/* ── Feeds on very small screens ── */
+@media(max-width:400px){
+  #feeds-rss-grid,#feeds-reddit-grid,#feeds-yt-grid{
+    grid-template-columns:1fr!important;
+  }
+}
+
+/* Ensure tap targets are large enough on all mobile sizes */
+@media(max-width:900px){
+  .sb-item,.channel-item{min-height:44px;display:flex;align-items:center;}
+  input[type="text"],input[type="search"],select{font-size:16px!important;} /* prevent iOS zoom */
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -2958,22 +5526,47 @@ body.sse-disconnected #app{padding-top:38px;}
   transition:all var(--transition);
 }
 .view-btn.active{background:var(--blue2);border-color:rgba(56,139,253,.5);color:var(--blue);}
+.league-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:5px 13px;border-radius:20px;border:1px solid var(--border);
+  background:var(--bg2);color:var(--text2);font-size:11px;cursor:pointer;
+  transition:all .15s;white-space:nowrap;
+}
+.league-pill:hover{background:var(--bg3);color:var(--text);}
+.league-pill.active{background:var(--accent,#2563eb);color:#fff;border-color:var(--accent,#2563eb);}
 
 /* ══════════════════════════════════════════════════════════════
    10. ALERTS BAR
    ══════════════════════════════════════════════════════════════ */
 #alerts-bar{
-  border-radius:var(--r);margin-bottom:16px;
-  border:1px solid var(--border);
+  position:fixed;
+  top:var(--top-h);
+  left:var(--sb-w);
+  right:0;
+  z-index:8;
+  border-radius:0;
+  margin:0;
+  border:none;
+  border-bottom:1px solid var(--glass-border);
   overflow:hidden;
+  background:var(--glass-bg);
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0) 60%);
+  backdrop-filter:blur(40px) saturate(200%);
+  -webkit-backdrop-filter:blur(40px) saturate(200%);
+  box-shadow:0 4px 16px rgba(0,0,0,.25);
+  transition:transform .2s ease;
+}
+#alerts-bar.alerts-hidden{
+  transform:translateY(-110%);
+  pointer-events:none;
 }
 #alerts-bar-header{
   display:flex;align-items:center;justify-content:space-between;
-  padding:10px 14px;background:var(--bg2);cursor:pointer;
-  font-size:13px;font-weight:600;
+  padding:8px 20px;background:transparent;cursor:pointer;
+  font-size:13px;font-weight:500;
 }
-#alerts-bar-header:hover{background:var(--surface);}
-#alerts-body{padding:0 14px 10px;background:var(--bg2);}
+#alerts-bar-header:hover{background:rgba(255,255,255,0.03);}
+#alerts-body{padding:0 20px 10px;background:transparent;}
 #alerts-body.collapsed{display:none;}
 .alert-row{
   display:flex;align-items:center;gap:8px;
@@ -3009,7 +5602,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.10.0</div>
+      <div class="sb-version">v3.17.12</div>
     </div>
   </div>
 
@@ -3026,15 +5619,11 @@ body.sse-disconnected #app{padding-top:38px;}
     </div>
     <div class="sb-item" onclick="showTab('stornet',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-      Storage &amp; Network
+      Infrastructure
     </div>
     <div class="sb-item" onclick="showTab('ports',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
       Port Map
-    </div>
-    <div class="sb-item" onclick="showTab('hardware',this)">
-      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
-      Hardware
     </div>
   </div>
 
@@ -3084,9 +5673,17 @@ body.sse-disconnected #app{padding-top:38px;}
 
   <div class="sb-section">
     <div class="sb-section-label">Feeds</div>
-    <div class="sb-item" onclick="showTab('rss',this)">
+    <div class="sb-item" onclick="showTab('feeds',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7m-6 0a1 1 0 11-2 0 1 1 0 012 0z"/></svg>
-      RSS Feeds
+      Feeds
+    </div>
+    <div class="sb-item" onclick="showTab('iptv',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.868v6.264a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+      IPTV Player
+    </div>
+    <div class="sb-item" onclick="showTab('epl',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4.5L6 21l1.5-7.5L2 9h7z"/></svg>
+      Football
     </div>
   </div>
 
@@ -3136,6 +5733,22 @@ body.sse-disconnected #app{padding-top:38px;}
     </div>
     <div class="tb-right">
       <span class="tb-time" id="tb-time"></span>
+      <!-- Right sidebar toggle -->
+      <button id="rsb-toggle-btn" onclick="toggleRightSidebar()" title="Toggle info panel">
+        <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v14a2 2 0 002 2h4M9 3v18M9 3h10a2 2 0 012 2v14a2 2 0 01-2 2H9"/></svg>
+        Panel
+      </button>
+    </div>
+  </div>
+
+  <!-- FLOATING ALERTS BAR — fixed below topbar, spans full content width -->
+  <div id="alerts-bar" class="alerts-hidden">
+    <div id="alerts-bar-header" onclick="toggleAlerts()">
+      <span id="alerts-title">🔔 Alerts</span>
+      <span id="alerts-chevron" style="color:var(--text3);font-size:11px">▼</span>
+    </div>
+    <div id="alerts-body">
+      <div class="alert-row"><span>🟢</span><span>Loading alerts...</span></div>
     </div>
   </div>
 
@@ -3144,257 +5757,581 @@ body.sse-disconnected #app{padding-top:38px;}
 
     <!-- ── DASHBOARD ── -->
     <div id="tab-overview" class="tab-panel active fade-in">
-      <!-- ALERTS BAR -->
-      <div id="alerts-bar">
-        <div id="alerts-bar-header" onclick="toggleAlerts()">
-          <span id="alerts-title">🔔 Alerts</span>
-          <span id="alerts-chevron" style="color:var(--text3);font-size:11px">▼</span>
-        </div>
-        <div id="alerts-body">
-          <div class="alert-row"><span>🟢</span><span>Loading alerts...</span></div>
-        </div>
-      </div>
-      <div class="section-header">
+      <div class="section-header" style="margin-bottom:24px">
         <div>
-          <div class="section-title">System Overview</div>
-          <div class="section-sub" id="ov-hostname">Loading...</div>
+          <div class="section-title" id="ov-greeting" style="margin-bottom:2px">Good morning</div>
+          <div class="section-sub" id="ov-date" style="font-size:14px;opacity:.6"></div>
+          <div class="section-sub" id="ov-hostname" style="font-size:11px;opacity:.4;margin-top:2px">Loading...</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
-          <button id="ov-add-btn" class="btn" onclick="showWidgetPalette()" style="display:none;font-size:11px;padding:4px 12px;gap:4px">
-            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            Add Widget
+          <!-- Always-visible widget controls — Homarr-style -->
+          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px" title="Enter edit mode to show/hide widgets">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Edit
           </button>
-          <button id="ov-reset-btn" class="btn" onclick="resetGridLayout()" style="font-size:11px;padding:4px 12px;gap:4px;display:none">
+          <button id="ov-add-btn" class="btn blue" onclick="showWidgetPalette()" style="font-size:11px;padding:4px 12px;gap:4px" title="Add or remove dashboard widgets">
+            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Widgets
+          </button>
+          <button id="ov-reset-btn" class="btn" onclick="resetGridLayout()" style="font-size:11px;padding:4px 12px;gap:4px;display:none" title="Restore all hidden widgets">
             <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Reset
           </button>
-          <button id="ov-edit-btn" class="btn" onclick="toggleGridEdit()" style="font-size:11px;padding:4px 12px;gap:4px">
-            <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-            Edit Layout
-          </button>
         </div>
       </div>
 
-      <!-- Gauges row -->
-      <div class="metric-grid" id="gauge-row">
-        <div class="metric-card">
-          <div class="metric-top">
-            <span class="metric-name">CPU Usage</span>
-            <span class="metric-badge" id="cpu-badge" style="background:var(--green2);color:var(--green)">0%</span>
-          </div>
-          <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
-            <div style="position:relative;width:140px;height:140px">
-              <canvas id="cpu-gauge-canvas" width="140" height="140"></canvas>
-              <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
-                <span id="cpu-gauge-text" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
+      <!-- ── Overview CSS Grid Dashboard ─────────────────────────────────
+           Clean, fixed CSS Grid layout with Glance-style design.
+           No drag-and-drop or localStorage positioning.        -->
+      <div id="ov-dashboard" class="ov-dash">
+
+        <!-- ⓪ System Gauges widget -->
+        <div class="dash-cell" id="dash-gauges" data-span="8" data-widget="gauges">
+          <button class="widget-remove-btn" onclick="removeWidget('gauges')" title="Hide widget">✕</button>
+            <div class="metric-grid" id="gauge-row" style="margin:0;padding:10px 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;width:100%;box-sizing:border-box;min-width:0">
+
+              <!-- ── CPU ── -->
+              <div class="metric-card" style="align-items:center;text-align:center;padding:16px 12px;gap:8px">
+                <div class="metric-top" style="width:100%;justify-content:center;gap:10px">
+                  <span class="metric-name">CPU</span>
+                  <span class="metric-badge" id="cpu-badge" style="background:var(--green2);color:var(--green)">0%</span>
+                </div>
+                <div style="position:relative;width:160px;height:160px">
+                  <canvas id="cpu-gauge-canvas" width="160" height="160"></canvas>
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
+                    <span id="cpu-gauge-text" style="font-size:32px;font-weight:700;font-family:var(--mono);color:#3fb950;line-height:1">0%</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">Usage</span>
+                  </div>
+                </div>
+                <div id="cpu-cores" style="font-size:12px;color:var(--text2);font-weight:500">— cores · — MHz</div>
+                <div class="pbar-wrap" style="width:100%;margin-top:2px"><div class="pbar blue" id="cpu-pbar" style="width:0%"></div></div>
               </div>
-            </div>
-            <span class="gauge-sub" id="cpu-cores">— cores</span>
-          </div>
-          <div class="pbar-wrap"><div class="pbar blue" id="cpu-pbar" style="width:0%"></div></div>
-        </div>
 
-        <div class="metric-card">
-          <div class="metric-top">
-            <span class="metric-name">Memory</span>
-            <span class="metric-badge" id="mem-badge" style="background:var(--green2);color:var(--green)">0%</span>
-          </div>
-          <div class="gauge-wrap" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:4px">
-            <div style="position:relative;width:140px;height:140px">
-              <canvas id="mem-gauge-canvas" width="140" height="140"></canvas>
-              <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column">
-                <span id="mem-gauge-text" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text)">0%</span>
+              <!-- ── Memory ── -->
+              <div class="metric-card" style="align-items:center;text-align:center;padding:16px 12px;gap:8px">
+                <div class="metric-top" style="width:100%;justify-content:center;gap:10px">
+                  <span class="metric-name">Memory</span>
+                  <span class="metric-badge" id="mem-badge" style="background:var(--green2);color:var(--green)">0%</span>
+                </div>
+                <div style="position:relative;width:160px;height:160px">
+                  <canvas id="mem-gauge-canvas" width="160" height="160"></canvas>
+                  <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
+                    <span id="mem-gauge-text" style="font-size:32px;font-weight:700;font-family:var(--mono);color:#bc8cff;line-height:1">0%</span>
+                    <span style="font-size:10px;color:var(--text3);margin-top:4px;letter-spacing:.04em;text-transform:uppercase">RAM</span>
+                  </div>
+                </div>
+                <div id="mem-detail" style="font-size:12px;color:var(--text2);font-weight:500">— / — GB</div>
+                <div class="pbar-wrap" style="width:100%;margin-top:2px"><div class="pbar" id="mem-pbar" style="width:0%;background:var(--purple)"></div></div>
               </div>
+
+              <!-- ── Load & Uptime ── -->
+              <div class="metric-card" style="gap:10px;padding:16px">
+                <div class="metric-top">
+                  <span class="metric-name">Load Average</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px;flex:1;justify-content:center">
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>1 min</span><span id="load-1m" style="color:var(--text);font-family:var(--mono)">—</span></div>
+                    <div class="pbar-wrap"><div id="load-1m-bar" class="pbar blue" style="width:0%;transition:width .4s"></div></div>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>5 min</span><span id="load-5m" style="color:var(--text);font-family:var(--mono)">—</span></div>
+                    <div class="pbar-wrap"><div id="load-5m-bar" class="pbar blue" style="width:0%;transition:width .4s"></div></div>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>15 min</span><span id="load-15m" style="color:var(--text);font-family:var(--mono)">—</span></div>
+                    <div class="pbar-wrap"><div id="load-15m-bar" class="pbar blue" style="width:0%;transition:width .4s"></div></div>
+                  </div>
+                </div>
+                <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:2px">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>Uptime</span><span id="uptime-val" style="color:var(--green);font-family:var(--mono)">—</span></div>
+                </div>
+              </div>
+
+              <!-- ── Containers ── -->
+              <div class="metric-card" style="gap:10px;padding:16px">
+                <div class="metric-top">
+                  <span class="metric-name">Containers</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;flex:1;justify-content:center">
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.2);border-radius:6px">
+                    <span style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
+                      <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block"></span>Running
+                    </span>
+                    <span id="ctr-running-count" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--green)">—</span>
+                  </div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px">
+                    <span style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
+                      <span style="width:7px;height:7px;border-radius:50%;background:var(--text3);display:inline-block"></span>Stopped
+                    </span>
+                    <span id="ctr-stopped-count" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--text3)">—</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;padding:6px 10px 0;font-size:11px;color:var(--text3)">
+                    <span>Total</span><span id="ctr-total-count" style="font-family:var(--mono);color:var(--text2)">—</span>
+                  </div>
+                </div>
+                <button class="btn blue" style="margin-top:4px;width:100%;justify-content:center;font-size:11px;padding:5px 8px" onclick="showTab('containers',null)">
+                  View All Containers →
+                </button>
+              </div>
+
             </div>
-            <span class="gauge-sub" id="mem-detail">— / — GB</span>
-          </div>
-          <div class="pbar-wrap"><div class="pbar" id="mem-pbar" style="width:0%;background:var(--purple)"></div></div>
         </div>
 
-        <div class="metric-card">
-          <div class="metric-top"><span class="metric-name">Load Average</span></div>
-          <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0;">
-            <div class="ctr-row"><span>1 min</span><span id="load-1m">—</span></div>
-            <div class="ctr-row"><span>5 min</span><span id="load-5m">—</span></div>
-            <div class="ctr-row"><span>15 min</span><span id="load-15m">—</span></div>
-          </div>
-          <div class="ctr-row" style="margin-top:4px;"><span>Uptime</span><span id="uptime-val">—</span></div>
-        </div>
-
-        <div class="metric-card">
-          <div class="metric-top"><span class="metric-name">Containers</span></div>
-          <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0;">
-            <div class="ctr-row"><span>Running</span><span id="ctr-running-count" style="color:var(--green)">—</span></div>
-            <div class="ctr-row"><span>Stopped</span><span id="ctr-stopped-count" style="color:var(--red)">—</span></div>
-            <div class="ctr-row"><span>Total</span><span id="ctr-total-count">—</span></div>
-          </div>
-          <button class="btn blue" style="margin-top:6px;width:100%;justify-content:center" onclick="showTab('containers',null)">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-            View Containers
-          </button>
-        </div>
-      </div>
-
-      <!-- ── Overview GridStack Dashboard ─────────────────────────────────
-           Click "Edit Layout" in the header to enter drag-and-drop mode.
-           Positions are saved to localStorage (key: arrhub_grid).        -->
-      <div class="grid-stack" id="ov-grid">
-
-        <!-- ① System Info widget  (default: left half, row 0) -->
-        <div class="grid-stack-item" gs-id="sysinfo" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
+        <!-- ① System Info widget -->
+        <div class="dash-cell" id="dash-sysinfo" data-span="4" data-widget="sysinfo">
+          <button class="widget-remove-btn" onclick="removeWidget('sysinfo')" title="Hide widget">✕</button>
+            <div class="panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 System Info
               </div>
-              <div class="stat-grid" id="sys-info-grid">
-                <div class="stat-card"><div class="stat-card-val" id="si-os">—</div><div class="stat-card-label">OS</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="si-kernel">—</div><div class="stat-card-label">Kernel</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="si-arch">—</div><div class="stat-card-label">Architecture</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="si-python">—</div><div class="stat-card-label">Python</div></div>
+              <!-- Terminal-style system info rows -->
+              <div id="sys-info-grid" style="display:flex;flex-direction:column;gap:0">
+
+                <!-- OS -->
+                <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border)">
+                  <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                    <svg width="13" height="13" fill="none" stroke="var(--blue)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18"/></svg>
+                  </div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Operating System</div>
+                    <div id="si-os" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                  </div>
+                  <div style="width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0"></div>
+                </div>
+
+                <!-- Kernel -->
+                <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border)">
+                  <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                    <svg width="13" height="13" fill="none" stroke="var(--purple,#bc8cff)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                  </div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Kernel</div>
+                    <div id="si-kernel" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                  </div>
+                </div>
+
+                <!-- Architecture + Python side by side -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border);border-right:1px solid var(--border)">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" fill="none" stroke="var(--yellow,#e3b341)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3l6 18M3 9h18M3 15h18"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Architecture</div>
+                      <div id="si-arch" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px">—</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border)">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 12h8M12 8v8"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Python</div>
+                      <div id="si-python" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px">—</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Hostname + Uptime side by side -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-right:1px solid var(--border)">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Hostname</div>
+                      <div id="si-hostname" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;padding:7px 12px">
+                    <div style="width:26px;height:26px;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                      <svg width="13" height="13" fill="none" stroke="var(--text2)" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
+                    </div>
+                    <div style="min-width:0">
+                      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;line-height:1">Uptime</div>
+                      <div id="si-uptime" style="font-size:12px;font-weight:600;color:var(--text);font-family:var(--mono);margin-top:2px">—</div>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             </div>
-          </div>
         </div>
 
-        <!-- ② Weather widget  (default: right half, row 0) -->
-        <div class="grid-stack-item" gs-id="weather" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('weather')" title="Remove widget">✕</button>
-            <div class="panel" id="weather-panel" style="margin:0;height:100%;overflow:hidden">
+        <!-- ② Weather widget -->
+        <div class="dash-cell" id="dash-weather" data-span="4" data-widget="weather">
+          <button class="widget-remove-btn" onclick="removeWidget('weather')" title="Hide widget">✕</button>
+            <div class="panel" id="weather-panel" style="margin:0">
               <div class="panel-title">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.051A4.002 4.002 0 003 15z"/></svg>
                 Weather
                 <span id="weather-location" style="margin-left:8px;font-weight:400;font-size:11px;color:var(--text3)"></span>
               </div>
-              <div id="weather-widget" style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:10px;align-items:center">
-                <div style="display:flex;align-items:center;gap:10px;padding:4px 12px 4px 0;border-right:1px solid var(--border)">
-                  <div id="weather-icon" style="font-size:36px;line-height:1">🌤️</div>
-                  <div>
-                    <div id="weather-temp" style="font-size:26px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
-                    <div id="weather-desc" style="font-size:11px;color:var(--text3);margin-top:2px">Loading…</div>
+              <div id="weather-widget">
+                <div style="display:flex;align-items:center;gap:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+                  <div id="weather-icon" style="font-size:42px;line-height:1">🌤️</div>
+                  <div style="flex:1">
+                    <div style="display:flex;align-items:baseline;gap:6px">
+                      <div id="weather-temp" style="font-size:30px;font-weight:700;font-family:var(--mono);color:var(--text)">—</div>
+                      <div id="weather-desc" style="font-size:12px;color:var(--text2)">Loading…</div>
+                    </div>
+                    <div style="font-size:11px;color:var(--text3);margin-top:3px">
+                      Feels <span id="weather-feels">—</span>&ensp;·&ensp;Wind <span id="weather-wind">—</span>&ensp;·&ensp;Humidity <span id="weather-humidity">—</span>
+                    </div>
                   </div>
                 </div>
-                <div class="stat-card"><div class="stat-card-val" id="weather-humidity">—</div><div class="stat-card-label">Humidity</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="weather-wind">—</div><div class="stat-card-label">Wind</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="weather-feels">—</div><div class="stat-card-label">Feels Like</div></div>
+                <div id="weather-forecast" style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:10px"></div>
               </div>
-              <div id="weather-forecast" style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;padding-bottom:4px"></div>
+            </div>
+        </div>
+
+        <!-- ② Storage + Logs (stacked single column) -->
+        <div class="dash-cell" id="dash-logstore" data-span="4" data-widget="logstore">
+          <button class="widget-remove-btn" onclick="removeWidget('logstore')" title="Hide widget">✕</button>
+          <div class="panel" style="margin:0;height:100%;display:flex;flex-direction:column;padding:12px 14px">
+            <!-- Header -->
+            <div class="panel-title" style="margin-bottom:10px;flex-shrink:0">
+              <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+              Storage &amp; Logs
+              <button class="btn blue" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="showTab('logs',null)">Full Logs →</button>
+            </div>
+            <!-- Stacked: Storage top, Logs bottom -->
+            <div class="logstore-inner" style="display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent">
+              <!-- Storage -->
+              <div>
+                <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💾 Disk Usage</div>
+                <div id="dash-storage-list" style="display:flex;flex-direction:column;gap:6px">
+                  <div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">Loading...</div>
+                </div>
+              </div>
+              <!-- Divider -->
+              <div style="height:1px;background:var(--border);flex-shrink:0;border-radius:1px"></div>
+              <!-- Logs -->
+              <div style="flex:1;min-height:0">
+                <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📋 Recent Logs</div>
+                <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:8px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;max-height:120px">(loading...)</pre>
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- ③ Service Cards row  (default: full width, row 4) -->
-        <div class="grid-stack-item" gs-id="services" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
-          <div class="grid-stack-item-content" style="overflow:hidden">
-            <button class="widget-remove-btn" onclick="removeWidget('services')" title="Remove widget">✕</button>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:8px;height:100%;box-sizing:border-box" id="service-cards-row">
-              <div class="panel" style="margin:0" id="radarr-card">
-                <div class="panel-title">🎥 Radarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 14 days</span></div>
-                <div id="radarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
-              </div>
-              <div class="panel" style="margin:0" id="sonarr-card">
-                <div class="panel-title">📺 Sonarr — Upcoming<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Next 7 days</span></div>
-                <div id="sonarr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
-              </div>
-              <div class="panel" style="margin:0" id="plex-card">
-                <div class="panel-title">▶ Plex — Now Playing<span id="plex-stream-count" style="margin-left:auto;background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600"></span></div>
-                <div id="plex-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
-              </div>
-              <div class="panel" style="margin:0" id="seerr-card">
-                <div class="panel-title">🎬 Seerr — Requests<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Recent</span></div>
-                <div id="seerr-card-body" style="display:flex;flex-direction:column;gap:6px;min-height:60px"><div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div></div>
-              </div>
-            </div>
-          </div>
-        </div>
 
-        <!-- ④+⑤ Docker & Network I/O — merged into one full-width row (default: row 9) -->
-        <div class="grid-stack-item" gs-id="infra" gs-x="0" gs-y="9" gs-w="12" gs-h="3">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
-              <div class="panel-title">
+
+        <!-- ③ Docker & Network I/O (row 2, col 3) -->
+        <div class="dash-cell scrollable" id="dash-infra" data-span="4" data-widget="infra">
+          <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Hide widget">✕</button>
+            <div class="panel" style="margin:0;height:100%;display:flex;flex-direction:column">
+              <div class="panel-title" style="flex-shrink:0">
                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                 Docker &amp; Network
               </div>
-              <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
-                <!-- Docker stats -->
-                <div class="stat-card"><div class="stat-card-val" id="docker-images">—</div><div class="stat-card-label">Images</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="docker-volumes">—</div><div class="stat-card-label">Volumes</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="docker-networks">—</div><div class="stat-card-label">Networks</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="docker-disk">—</div><div class="stat-card-label">Docker Disk</div></div>
-                <!-- Network I/O stats -->
-                <div class="stat-card"><div class="stat-card-val" id="ov-net-sent">—</div><div class="stat-card-label">Net ↑ Sent</div></div>
-                <div class="stat-card"><div class="stat-card-val" id="ov-net-recv">—</div><div class="stat-card-label">Net ↓ Recv</div></div>
+              <!-- Docker stats (compact grid) -->
+              <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+                  <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                  Docker Engine
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                    <div id="docker-images" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--blue);line-height:1">—</div>
+                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Images</div>
+                  </div>
+                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                    <div id="docker-volumes" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--yellow,#e3b341);line-height:1">—</div>
+                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Volumes</div>
+                  </div>
+                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                    <div id="docker-networks" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--purple,#bc8cff);line-height:1">—</div>
+                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Networks</div>
+                  </div>
+                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                    <div id="docker-disk" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);line-height:1">—</div>
+                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Disk Used</div>
+                  </div>
+                </div>
+              </div>
+              <!-- Network I/O section -->
+              <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;flex:1">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+                  <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
+                  Network I/O
+                </div>
+                <div style="margin-bottom:8px">
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                    <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                      <svg width="10" height="10" fill="none" stroke="var(--green)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+                      Upload
+                    </span>
+                    <span id="ov-net-sent" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--green)">—</span>
+                  </div>
+                  <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
+                    <div id="net-sent-bar" style="height:100%;width:30%;background:var(--green);border-radius:2px;transition:width .6s"></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                    <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                      <svg width="10" height="10" fill="none" stroke="var(--blue)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                      Download
+                    </span>
+                    <span id="ov-net-recv" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--blue)">—</span>
+                  </div>
+                  <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
+                    <div id="net-recv-bar" style="height:100%;width:55%;background:var(--blue);border-radius:2px;transition:width .6s"></div>
+                  </div>
+                </div>
+                <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:6px">Cumulative totals since boot</div>
+              </div>
+            </div>
+        </div>
+
+        <!-- ④ Media Suite — unified swipeable card -->
+        <div class="dash-cell" id="dash-services" data-span="8" data-widget="services" style="min-height:360px">
+          <button class="widget-remove-btn" onclick="removeWidget('services')" title="Hide widget">✕</button>
+          <div id="media-suite-card" style="height:360px">
+            <!-- Card header with named service tabs -->
+            <div class="msc-header">
+              <div class="msc-tabs" id="msc-tabs">
+                <button class="msc-tab active" onclick="mscGoTo(0)">🎥 Radarr</button>
+                <button class="msc-tab" onclick="mscGoTo(1)">📺 Sonarr</button>
+                <button class="msc-tab" onclick="mscGoTo(2)">⬇ Downloads</button>
+                <button class="msc-tab" onclick="mscGoTo(3)">▶ Plex</button>
+                <button class="msc-tab" onclick="mscGoTo(4)">🎬 Seerr</button>
+              </div>
+              <!-- Open in external link -->
+              <button style="background:none;border:none;color:var(--text3);cursor:pointer;padding:3px 6px;border-radius:6px;font-size:12px;flex-shrink:0;opacity:0.6" id="msc-ext-btn" onclick="mscOpenExternal()" title="Open in app">↗</button>
+            </div>
+            <!-- Slide track -->
+            <div style="flex:1;overflow:hidden;position:relative">
+              <div id="msc-track" style="display:flex;height:100%;transition:transform .35s cubic-bezier(.25,.46,.45,.94)">
+
+                <!-- Slide 0: Radarr -->
+                <div class="msc-slide" id="radarr-card">
+                  <div class="msc-slide-hdr">
+                    <span class="msc-slide-label">🎥 Radarr</span>
+                    <div class="msc-slide-tabs svc-tabs">
+                      <button class="msc-slide-tab svc-tab active" onclick="svcTabSwitch('radarr','upcoming',this)">Upcoming</button>
+                      <button class="msc-slide-tab svc-tab" onclick="svcTabSwitch('radarr','queue',this)">Queue</button>
+                      <button class="msc-slide-tab svc-tab" onclick="svcTabSwitch('radarr','library',this)">Library</button>
+                    </div>
+                  </div>
+                  <div id="radarr-card-body" class="msc-slide-body svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Loading…</div></div>
+                </div>
+
+                <!-- Slide 1: Sonarr -->
+                <div class="msc-slide" id="sonarr-card">
+                  <div class="msc-slide-hdr">
+                    <span class="msc-slide-label">📺 Sonarr</span>
+                    <div class="msc-slide-tabs svc-tabs">
+                      <button class="msc-slide-tab svc-tab active" onclick="svcTabSwitch('sonarr','upcoming',this)">Upcoming</button>
+                      <button class="msc-slide-tab svc-tab" onclick="svcTabSwitch('sonarr','queue',this)">Queue</button>
+                      <button class="msc-slide-tab svc-tab" onclick="svcTabSwitch('sonarr','library',this)">Library</button>
+                    </div>
+                  </div>
+                  <div id="sonarr-card-body" class="msc-slide-body svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Loading…</div></div>
+                </div>
+
+                <!-- Slide 2: Downloads (qBittorrent) -->
+                <div class="msc-slide" id="qbit-card">
+                  <div class="msc-slide-hdr">
+                    <span class="msc-slide-label">⬇️ Downloads</span>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span id="qbit-speed" style="font-size:10px;color:var(--text3);font-family:var(--mono)"></span>
+                      <div class="msc-slide-tabs svc-tabs">
+                        <button class="msc-slide-tab svc-tab active" onclick="svcTabSwitch('qbit','active',this)">Active</button>
+                        <button class="msc-slide-tab svc-tab" onclick="svcTabSwitch('qbit','all',this)">All</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="qbit-card-body" class="msc-slide-body svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Loading…</div></div>
+                </div>
+
+                <!-- Slide 3: Plex -->
+                <div class="msc-slide" id="plex-card">
+                  <div class="msc-slide-hdr">
+                    <span class="msc-slide-label">▶ Plex — Now Playing</span>
+                    <span id="plex-stream-count" style="background:var(--blue2);color:var(--blue);border-radius:20px;padding:1px 9px;font-size:11px;font-weight:600"></span>
+                  </div>
+                  <div id="plex-card-body" class="msc-slide-body svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Loading…</div></div>
+                </div>
+
+                <!-- Slide 4: Seerr -->
+                <div class="msc-slide" id="seerr-card">
+                  <div class="msc-slide-hdr">
+                    <span class="msc-slide-label">🎬 Seerr — Requests</span>
+                    <span style="font-size:11px;color:var(--text3)">Recent</span>
+                  </div>
+                  <div id="seerr-card-body" class="msc-slide-body svc-card-body"><div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Loading…</div></div>
+                </div>
+
               </div>
             </div>
           </div>
         </div>
 
-        <!-- ⑥ Recent Logs  (default: left 4 cols, row 12) -->
-        <div class="grid-stack-item" gs-id="logs" gs-x="0" gs-y="12" gs-w="4" gs-h="4">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('logs')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
-              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-                <span>
-                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                  Recent Logs
-                </span>
-                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('logs',null)">View All</button>
+        <!-- Featured Media Panel — backdrop art + movie info from Radarr queue -->
+        <div class="dash-cell" id="dash-featured" data-span="4" data-widget="featured">
+          <button class="widget-remove-btn" onclick="removeWidget('featured')" title="Hide widget">✕</button>
+          <div class="feat-panel">
+            <div id="feat-backdrop" class="feat-backdrop"></div>
+            <div class="feat-backdrop-overlay"></div>
+            <div class="feat-content">
+              <div class="feat-nav">
+                <span class="feat-nav-title">🎬 Featured</span>
+                <div class="feat-nav-btns">
+                  <button class="feat-nav-btn" onclick="featNav(-1)" title="Previous">‹</button>
+                  <button class="feat-nav-btn" onclick="featNav(1)" title="Next">›</button>
+                </div>
               </div>
-              <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:10px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all">(loading...)</pre>
-            </div>
-          </div>
-        </div>
-
-        <!-- ⑦ Containers Live  (default: right 8 cols, row 12) -->
-        <div class="grid-stack-item" gs-id="ctrs" gs-x="4" gs-y="12" gs-w="8" gs-h="4">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('ctrs')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:hidden">
-              <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
-                <span style="display:flex;align-items:center;gap:6px">
-                  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                  Containers
-                  <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">—</span>
-                </span>
-                <button class="btn blue" style="padding:3px 10px;font-size:11px" onclick="showTab('containers',null)">View All</button>
+              <div class="feat-top" id="feat-body">
+                <div class="feat-empty"><div style="font-size:32px">🎬</div><div style="font-size:12px">Loading…</div></div>
               </div>
-              <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
-                <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
+              <div class="feat-bottom" id="feat-actions" style="display:none">
+                <button class="feat-btn" onclick="mscGoTo(0);showTab('overview',null)">📋 In Radarr</button>
+                <button class="feat-btn" id="feat-tmdb-btn" onclick="">🔍 TMDB</button>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- ⑧ Service Launcher  (default: full width, row 16) -->
-        <div class="grid-stack-item" gs-id="launcher" gs-x="0" gs-y="16" gs-w="12" gs-h="3">
-          <div class="grid-stack-item-content">
-            <button class="widget-remove-btn" onclick="removeWidget('launcher')" title="Remove widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;overflow:auto">
-              <div class="panel-title">
-                🚀 Service Launcher
-                <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text3)">Click any tile to open</span>
+        <!-- ⑦ Apps: Service Launcher + Containers (swipeable) -->
+        <div class="dash-cell" id="dash-apps" data-span="4" data-widget="apps">
+          <button class="widget-remove-btn" onclick="removeWidget('apps')" title="Hide widget">✕</button>
+          <div id="apps-swipe-card">
+            <!-- Header: title + dots + nav arrows -->
+            <div class="msc-header">
+              <span class="msc-title">🖥️ Services</span>
+              <div class="msc-dots" id="apps-dots">
+                <div class="msc-dot active" onclick="appsGoTo(0)" title="Launcher"></div>
+                <div class="msc-dot" onclick="appsGoTo(1)" title="Containers"></div>
               </div>
-              <div id="launcher-tiles" style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 0"></div>
+              <button class="msc-nav-btn" onclick="appsNav(-1)" title="Previous">‹</button>
+              <button class="msc-nav-btn" onclick="appsNav(1)" title="Next">›</button>
+            </div>
+            <!-- Slide track -->
+            <div id="apps-track">
+              <!-- Slide 0: Launcher -->
+              <div class="msc-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label">🚀 Launcher</span>
+                </div>
+                <div class="msc-slide-body">
+                  <div id="ov-launcher-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:6px"></div>
+                </div>
+              </div>
+              <!-- Slide 1: Containers -->
+              <div class="msc-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label">📦 Containers
+                    <span id="ov-ctr-badge" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:600;margin-left:4px">—</span>
+                  </span>
+                  <button class="btn blue" style="padding:3px 10px;font-size:11px;margin-left:auto" onclick="showTab('containers',null)">All →</button>
+                </div>
+                <div class="msc-slide-body">
+                  <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:5px">
+                    <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
-      </div><!-- /ov-grid -->
-
-      <!-- Widget Palette Modal -->
-      <div id="widget-palette-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;width:520px;max-width:95vw;max-height:80vh;overflow:auto">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <div style="font-size:14px;font-weight:600;color:var(--text)">Add / Remove Widgets</div>
-            <button class="btn" onclick="document.getElementById('widget-palette-modal').style.display='none'" style="padding:4px 12px">✕ Close</button>
+        <!-- ⑧ Calendar -->
+        <div class="dash-cell" id="dash-calendar" data-span="4" data-widget="calendar">
+          <button class="widget-remove-btn" onclick="removeWidget('calendar')" title="Hide widget">✕</button>
+          <div class="panel" style="margin:0">
+            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <span style="display:flex;align-items:center;gap:6px">
+                <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-width="2" d="M16 2v4M8 2v4M3 10h18"/></svg>
+                Calendar
+              </span>
+              <div style="display:flex;align-items:center;gap:6px">
+                <button onclick="calPrevMonth()" class="btn" style="padding:3px 9px;font-size:13px">◀</button>
+                <span id="cal-month-label" style="font-size:12px;font-weight:600;min-width:110px;text-align:center"></span>
+                <button onclick="calNextMonth()" class="btn" style="padding:3px 9px;font-size:13px">▶</button>
+                <button onclick="calGoToday()" class="btn blue" style="padding:3px 9px;font-size:11px">Today</button>
+              </div>
+            </div>
+            <!-- Day-of-week headers -->
+            <div id="cal-dow-row" style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:3px">
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Sun</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Mon</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Tue</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Wed</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Thu</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Fri</div>
+              <div style="text-align:center;font-size:10px;color:var(--text3);font-weight:600;padding:3px">Sat</div>
+            </div>
+            <!-- Calendar grid -->
+            <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px"></div>
+            <!-- Add event modal -->
+            <div id="cal-event-form" style="display:none;margin-top:10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px;gap:8px">
+              <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:6px">
+                Add event — <span id="cal-form-date-label" style="color:var(--blue)"></span>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <input id="cal-event-title" type="text" placeholder="Event title…"
+                  style="flex:1;min-width:120px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--r);font-size:12px"
+                  onkeydown="if(event.key==='Enter')calSubmitEvent()">
+                <select id="cal-event-color" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 7px;border-radius:var(--r);font-size:12px">
+                  <option value="#2563eb">🔵 Blue</option>
+                  <option value="#16a34a">🟢 Green</option>
+                  <option value="#dc2626">🔴 Red</option>
+                  <option value="#d97706">🟠 Orange</option>
+                  <option value="#9333ea">🟣 Purple</option>
+                </select>
+                <button onclick="calSubmitEvent()" class="btn blue" style="padding:5px 12px;font-size:11px">Save</button>
+                <button onclick="calCloseForm()" class="btn" style="padding:5px 10px;font-size:11px">Cancel</button>
+              </div>
+            </div>
           </div>
-          <div id="widget-palette-body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px"></div>
+        </div>
+
+        <!-- ⑨ To-Do List -->
+        <div class="dash-cell scrollable" id="dash-todo" data-span="4" data-widget="todo">
+          <button class="widget-remove-btn" onclick="removeWidget('todo')" title="Hide widget">✕</button>
+          <div class="panel" style="margin:0;height:100%">
+            <div class="panel-title" style="display:flex;align-items:center;gap:6px">
+              <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+              To-Do
+              <span id="todo-pending-count" style="background:var(--blue2);color:var(--blue);border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600"></span>
+            </div>
+            <div style="display:flex;gap:5px;margin-bottom:8px">
+              <input id="todo-new-input" type="text" placeholder="Add a task…"
+                style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--r);font-size:12px"
+                onkeydown="if(event.key==='Enter')todoAdd()">
+              <button onclick="todoAdd()" class="btn blue" style="padding:5px 10px;font-size:11px;white-space:nowrap">+ Add</button>
+            </div>
+            <div id="todo-list" style="display:flex;flex-direction:column;gap:4px;max-height:280px;overflow-y:auto;scrollbar-width:thin"></div>
+          </div>
+        </div>
+
+      </div><!-- /ov-dashboard -->
+
+      <!-- Widget Palette Modal — Homarr-style -->
+      <div id="widget-palette-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:0;width:580px;max-width:95vw;max-height:82vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.5)">
+          <!-- Header -->
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">
+            <div>
+              <div style="font-size:15px;font-weight:700;color:var(--text)">Dashboard Widgets</div>
+              <div style="font-size:11px;color:var(--text3);margin-top:2px">Click a widget to show or hide it on your dashboard</div>
+            </div>
+            <button class="btn" onclick="document.getElementById('widget-palette-modal').style.display='none'" style="padding:4px 12px;font-size:13px">✕</button>
+          </div>
+          <!-- Widget grid -->
+          <div id="widget-palette-body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px;padding:16px;overflow-y:auto"></div>
+          <!-- Footer -->
+          <div style="padding:10px 20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+            <span id="widget-palette-count" style="font-size:11px;color:var(--text3)"></span>
+            <button class="btn" onclick="resetGridLayout();document.getElementById('widget-palette-modal').style.display='none'" style="font-size:11px;padding:4px 14px">
+              <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              Show All
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -3461,13 +6398,13 @@ body.sse-disconnected #app{padding-top:38px;}
     <div id="tab-stornet" class="tab-panel">
       <div class="section-header">
         <div>
-          <div class="section-title">💾 Storage &amp; 📡 Network</div>
-          <div class="section-sub">Disk usage and live bandwidth in one view</div>
+          <div class="section-title">🏗️ Infrastructure</div>
+          <div class="section-sub">Storage, network, and hardware in one view</div>
         </div>
         <button class="btn-primary" onclick="loadStorage();loadNetwork()">↺ Refresh</button>
       </div>
       <!-- ── Storage ── -->
-      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Disk Usage</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Storage</div>
       <div id="disk-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:18px"></div>
       <!-- ── Network ── -->
       <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Network</div>
@@ -3476,11 +6413,11 @@ body.sse-disconnected #app{padding-top:38px;}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
             <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↑ TX (Upload)</div>
-            <canvas id="net-tx-chart" height="55"></canvas>
+            <div style="position:relative;height:70px"><canvas id="net-tx-chart"></canvas></div>
           </div>
           <div>
             <div style="font-size:10px;color:var(--text3);margin-bottom:3px">↓ RX (Download)</div>
-            <canvas id="net-rx-chart" height="55"></canvas>
+            <div style="position:relative;height:70px"><canvas id="net-rx-chart"></canvas></div>
           </div>
         </div>
       </div>
@@ -3488,6 +6425,37 @@ body.sse-disconnected #app{padding-top:38px;}
         <div class="panel-title">Interfaces</div>
         <table><thead><tr><th>Interface</th><th>IP</th><th>Sent</th><th>Recv</th><th>Rate ↑/↓</th><th>Status</th></tr></thead>
         <tbody id="net-table"></tbody></table>
+      </div>
+      <!-- ── Hardware (merged) — pie charts ── -->
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin:18px 0 8px">Hardware</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+
+        <!-- CPU pie chart -->
+        <div class="panel" style="display:flex;flex-direction:column;align-items:center;padding:16px 12px;gap:10px">
+          <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;align-self:flex-start">CPU</div>
+          <div style="position:relative;width:120px;height:120px">
+            <canvas id="hw-cpu-chart" width="120" height="120"></canvas>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;pointer-events:none">
+              <span id="hw-cpu-pct" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text)">—%</span>
+              <span style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Usage</span>
+            </div>
+          </div>
+          <div id="hw-cpu-detail" style="font-size:11px;color:var(--text2);text-align:center">— cores · — MHz</div>
+        </div>
+
+        <!-- Memory pie chart -->
+        <div class="panel" style="display:flex;flex-direction:column;align-items:center;padding:16px 12px;gap:10px">
+          <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;align-self:flex-start">Memory</div>
+          <div style="position:relative;width:120px;height:120px">
+            <canvas id="hw-mem-chart" width="120" height="120"></canvas>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;pointer-events:none">
+              <span id="hw-mem-pct" style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--text)">—%</span>
+              <span style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Used</span>
+            </div>
+          </div>
+          <div id="hw-mem-detail" style="font-size:11px;color:var(--text2);text-align:center">— / — GB</div>
+        </div>
+
       </div>
     </div>
 
@@ -3505,18 +6473,6 @@ body.sse-disconnected #app{padding-top:38px;}
       <div id="port-accordion"><div class="empty"><div class="empty-icon">🔌</div><div class="empty-text">Click Refresh to load port assignments</div></div></div>
     </div>
 
-    <!-- ── HARDWARE ── -->
-    <div id="tab-hardware" class="tab-panel">
-      <div class="section-header"><div class="section-title">Hardware</div></div>
-      <div class="panel">
-        <div class="panel-title">CPU</div>
-        <div class="stat-grid" id="hw-cpu"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-title">Memory</div>
-        <div id="hw-mem"></div>
-      </div>
-    </div>
 
     <!-- ── LOGS ── -->
     <div id="tab-logs" class="tab-panel">
@@ -3531,32 +6487,53 @@ body.sse-disconnected #app{padding-top:38px;}
       <div id="log-output">Loading...</div>
     </div>
 
-    <!-- ── DEPLOY ── -->
+    <!-- ── DEPLOY (App Store) ── -->
     <div id="tab-deploy" class="tab-panel">
-      <div class="section-header">
-        <div class="section-title">App Catalog</div>
-        <div class="search-wrap">
-          <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input type="text" id="cat-search" placeholder="Search apps..." oninput="filterCatalog()">
+      <!-- Store hero banner -->
+      <div class="store-hero" id="store-hero">
+        <div class="store-hero-icon">🛒</div>
+        <div class="store-hero-text">
+          <div class="store-hero-title">App Store</div>
+          <div class="store-hero-sub">Deploy Docker apps to your Proxmox homelab with one click</div>
         </div>
+        <div class="store-hero-stat">
+          <div class="store-hero-num" id="store-total-count">—</div>
+          <div class="store-hero-lbl">Apps</div>
+        </div>
+      </div>
+      <!-- Search bar -->
+      <div class="section-header" style="margin-bottom:10px">
+        <div class="search-wrap" style="flex:1;max-width:400px">
+          <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input type="text" id="cat-search" placeholder="Search apps, categories…" oninput="filterCatalog()">
+        </div>
+        <select id="cat-sort" onchange="renderCatalog()" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">
+          <option value="az">A–Z</option>
+          <option value="za">Z–A</option>
+          <option value="cat">Category</option>
+        </select>
       </div>
       <!-- Favorites row (hidden when empty) -->
       <div id="fav-section" class="fav-section" style="display:none">
         <div class="fav-section-title">⭐ Favorites</div>
-        <div class="cat-grid" id="fav-grid" style="gap:10px"></div>
+        <div class="store-grid" id="fav-grid"></div>
       </div>
-      <!-- Controls: category pills + sort + count -->
-      <div id="cat-categories" class="filter-row" style="margin-bottom:8px"></div>
-      <div id="deploy-controls">
-        <select id="cat-sort" onchange="renderCatalog()">
-          <option value="az">Name A–Z</option>
-          <option value="za">Name Z–A</option>
-          <option value="cat">Category</option>
-        </select>
+      <!-- Featured strip (shown when no search active) -->
+      <div id="store-featured-wrap" class="store-section">
+        <div class="store-section-hdr">
+          <span class="store-section-title">⚡ Featured</span>
+          <button class="store-section-link" onclick="filterCat('All',document.querySelector(\'#cat-categories .filter-pill\'))">See all →</button>
+        </div>
+        <div class="store-featured-strip" id="store-featured-strip"></div>
+      </div>
+      <!-- Category pills -->
+      <div id="cat-categories" class="filter-row" style="margin-bottom:12px"></div>
+      <!-- Count + grid -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <span id="cat-count" style="font-size:12px;color:var(--text3)"></span>
       </div>
-      <div class="cat-grid" id="cat-grid">
-        <div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">Loading catalog...</div></div>
+      <div class="store-grid" id="cat-grid">
+        <div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">Loading apps…</div></div>
       </div>
     </div>
 
@@ -3605,6 +6582,43 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSettings()">Save Settings</button>
       </div>
+      <!-- Reddit Login -->
+      <div class="panel">
+        <div class="panel-title">🔐 Reddit Login</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
+          Enter your Reddit username and password to access NSFW subreddits. <strong>No app creation required.</strong>
+          Leave blank to use anonymous access (public subreddits only).
+        </div>
+        <div class="settings-grid">
+          <div class="field"><label>Reddit Username</label><input type="text" id="cfg-reddit-username" placeholder="your_reddit_username"><div class="field-hint">Your Reddit account username</div></div>
+          <div class="field"><label>Reddit Password</label><input type="password" id="cfg-reddit-password" placeholder="•••••••••••"><div class="field-hint">Your Reddit account password</div></div>
+        </div>
+        <details style="margin-top:12px">
+          <summary style="font-size:11px;color:var(--text3);cursor:pointer;user-select:none">⚙️ Advanced — Reddit API App (optional, for official OAuth access)</summary>
+          <div style="margin-top:10px;padding:10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border)">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:8px">
+              Only needed if username+password login stops working. Create a free <strong>script</strong>-type app at
+              <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener" style="color:var(--blue)">reddit.com/prefs/apps</a>.
+            </div>
+            <div class="settings-grid">
+              <div class="field"><label>Client ID</label><input type="text" id="cfg-reddit-client-id" placeholder="14-char app ID"><div class="field-hint">Found under your app name on the apps page</div></div>
+              <div class="field"><label>Client Secret</label><input type="password" id="cfg-reddit-client-secret" placeholder="•••••••••••"><div class="field-hint">The "secret" field for your Reddit app</div></div>
+            </div>
+          </div>
+        </details>
+        <button class="btn-primary" style="margin-top:12px" onclick="saveRedditCredentials()">Save Reddit Credentials</button>
+        <span id="reddit-creds-status" style="font-size:11px;color:var(--green);margin-left:10px"></span>
+      </div>
+      <!-- Weather Location -->
+      <div class="panel">
+        <div class="panel-title">🌤️ Weather Location</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Set your city and country for weather data. Leave blank to auto-detect from IP.</div>
+        <div class="settings-grid">
+          <div class="field"><label>City</label><input type="text" id="cfg-weather-city" placeholder="e.g. London"><div class="field-hint">City name for weather forecast</div></div>
+          <div class="field"><label>Country</label><input type="text" id="cfg-weather-country" placeholder="e.g. United Kingdom"><div class="field-hint">Country name (optional, helps accuracy)</div></div>
+        </div>
+        <button class="btn-primary" style="margin-top:12px" onclick="saveWeatherLocation()">Save & Refresh Weather</button>
+      </div>
       <!-- Service Integrations — API keys for Overview cards -->
       <div class="panel">
         <div class="panel-title">
@@ -3621,8 +6635,89 @@ body.sse-disconnected #app{padding-top:38px;}
           <div class="field"><label>Plex Token</label><input type="password" id="svc-plex-token" placeholder="•••••••••••"><div class="field-hint">Settings → Troubleshooting → X-Plex-Token</div></div>
           <div class="field"><label>Seerr/Overseerr URL</label><input type="text" id="svc-seerr-url" placeholder="http://localhost:5055"></div>
           <div class="field"><label>Seerr API Key</label><input type="password" id="svc-seerr-key" placeholder="•••••••••••"></div>
+          <div class="field"><label>⚽ Football API Key</label><input type="password" id="svc-football-key" placeholder="football-data.org key"><div class="field-hint">Free at football-data.org — powers Premier League tab</div></div>
+          <div style="grid-column:1/-1;margin-top:4px">
+            <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">⬇️ Downloads</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div>
+                <label style="font-size:11px;color:var(--text2)">Client</label>
+                <select id="svc-dl-type" onchange="dlTypeChanged()" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  <option value="qbittorrent">qBittorrent</option>
+                  <option value="transmission">Transmission</option>
+                  <option value="deluge">Deluge</option>
+                </select>
+              </div>
+              <!-- qBittorrent fields -->
+              <div id="dl-fields-qbittorrent" style="display:flex;flex-direction:column;gap:8px">
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">URL</label>
+                  <input id="svc-qbit-url" type="text" placeholder="http://10.0.0.33:8080" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Username</label>
+                    <input id="svc-qbit-user" type="text" placeholder="admin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Password</label>
+                    <input id="svc-qbit-pass" type="password" placeholder="adminadmin" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                </div>
+              </div>
+              <!-- Transmission fields -->
+              <div id="dl-fields-transmission" style="display:none;flex-direction:column;gap:8px">
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">URL</label>
+                  <input id="svc-transmission-url" type="text" placeholder="http://10.0.0.33:9091" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Username (optional)</label>
+                    <input id="svc-transmission-user" type="text" placeholder="" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                  <div>
+                    <label style="font-size:11px;color:var(--text2)">Password</label>
+                    <input id="svc-transmission-pass" type="password" placeholder="" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                  </div>
+                </div>
+              </div>
+              <!-- Deluge fields -->
+              <div id="dl-fields-deluge" style="display:none;flex-direction:column;gap:8px">
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">URL</label>
+                  <input id="svc-deluge-url" type="text" placeholder="http://10.0.0.33:8112" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+                <div>
+                  <label style="font-size:11px;color:var(--text2)">Password</label>
+                  <input id="svc-deluge-pass" type="password" placeholder="deluge" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box;margin-top:3px">
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <button class="btn-primary" style="margin-top:16px" onclick="saveSvcSettings()">Save Integrations</button>
+      </div>
+
+      <!-- ── Config Backup & Restore ── -->
+      <div class="panel">
+        <div class="panel-title">💾 Config Backup & Restore</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:14px">
+          Export all your settings (API keys, URLs, credentials) to a JSON file. Import it to restore after a fresh install or container rebuild.
+          <strong style="color:var(--text2)"> Keep your backup file safe — it contains credentials.</strong>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+          <button class="btn-primary" onclick="exportConfig()" style="padding:8px 18px">
+            ⬇️ Export Config
+          </button>
+          <button class="btn" onclick="importConfig()" style="padding:8px 18px">
+            ⬆️ Import Config
+          </button>
+          <span id="config-backup-status" style="font-size:11px;color:var(--green)"></span>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:var(--text3)">
+          Export saves: service URLs, API keys, Reddit credentials, weather city, downloader settings, and all other server-side settings.<br>
+          <em>Appearance/theme preferences are saved locally in your browser and are not included.</em>
+        </div>
       </div>
 
       <!-- ── Appearance ── -->
@@ -3677,246 +6772,661 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.10.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.12</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
     </div>
 
     <!-- ── RSS FEEDS ── -->
-    <div id="tab-rss" class="tab-panel">
-      <!-- RSS header with category tabs + view toggle -->
+    <!-- ═══════════════════════════════════════════════════════════
+         IPTV PLAYER TAB
+    ═══════════════════════════════════════════════════════════ -->
+    <div id="tab-iptv" class="tab-panel">
       <div class="section-header">
-        <div class="section-title">Live Feeds</div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="view-btn active" id="rss-view-feeds" onclick="setRSSView('feeds')">📰 Feeds</button>
-          <button class="view-btn" id="rss-view-live" onclick="setRSSView('live')">📺 Live News</button>
-          <button class="view-btn" id="rss-view-iptv" onclick="setRSSView('iptv')">🎬 Free TV</button>
-          <div id="rss-all-controls" style="gap:6px;align-items:center">
-            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssExpandAll()">⊞ Expand All</button>
-            <button class="btn" style="font-size:11px;padding:3px 10px" onclick="rssCollapseAll()">⊟ Collapse All</button>
+        <div>
+          <div class="section-title">📺 IPTV Player</div>
+          <div class="section-sub">Live channels · Sports · Multiview · Schedule</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <button class="view-btn active" id="iptv-view-channels" onclick="iptvSetView('channels')">📡 Channels</button>
+          <button class="view-btn" id="iptv-view-schedule" onclick="iptvSetView('schedule')">📅 Schedule</button>
+          <button class="view-btn" id="iptv-view-multiview" onclick="iptvSetView('multiview')">⊞ Multiview</button>
+          <select id="iptv-source-select" onchange="iptvSetSource(this.value)" title="IPTV Source" style="font-size:11px;padding:4px 8px;background:rgba(255,255,255,0.06);border:1px solid var(--glass-border);color:var(--text);border-radius:10px;cursor:pointer;backdrop-filter:blur(10px)">
+            <option value="moviebite">SportsBite (Live Sports)</option>
+            <option value="bintv">BinTV</option>
+            <option value="daddylive">DaddyLive</option>
+            <option value="sid_m3u8">s.id M3U8 List</option>
+          </select>
+          <div id="iptv-dl-domain-wrap" style="display:none;align-items:center;gap:4px;flex-wrap:wrap">
+            <span style="font-size:10px;color:var(--text3)">Domain:</span>
+            <select id="iptv-dl-domain-preset" onchange="iptvDaddylivePreset(this.value)"
+              style="font-size:10px;padding:3px 5px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r)">
+              <option value="daddylive.cv">daddylive.cv ★</option>
+              <option value="daddylive.top">daddylive.top</option>
+              <option value="daddylives.nl">daddylives.nl</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input id="iptv-dl-domain" type="text" placeholder="daddylive.cv"
+              style="font-size:10px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);width:110px;display:none"
+              onchange="iptvSetDaddyliveDomain(this.value)"
+              title="Custom DaddyLive domain"/>
+            <a href="https://fmhy.net" target="_blank" rel="noopener"
+              style="font-size:10px;color:var(--blue);text-decoration:none;white-space:nowrap"
+              title="Find current working DaddyLive domain on FMHY">fmhy.net ↗</a>
+
           </div>
-          <button class="btn-primary" onclick="loadRSSFeeds()">↺ Refresh</button>
+          <button onclick="iptvBrowseChannels()" class="btn" style="padding:6px 14px;font-size:12px" title="Browse channels in a panel">🔍 Browse</button>
+          <button onclick="iptvShowAddChannel()" class="btn-primary" style="padding:6px 14px;font-size:12px">＋ Channel</button>
+          <button class="btn-primary" onclick="iptvReload()">↺ Refresh</button>
         </div>
       </div>
 
-      <!-- Category filter pills -->
-      <div class="filter-row" id="rss-cat-pills" style="flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+      <!-- ── CHANNELS VIEW ── -->
+      <div id="iptv-channels-view">
+        <div style="display:grid;grid-template-columns:260px 1fr;gap:14px;height:calc(100vh - 230px);min-height:560px">
 
-      <!-- Feeds view -->
-      <div id="rss-feeds-view">
-        <div id="rss-content" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px"></div>
-      </div>
-
-      <!-- Live News view — confirmed-working embeds + quick-launch cards for the rest -->
-      <!-- YouTube's live_stream?channel= embed only works when the channel explicitly
-           allows embedding. Al Jazeera and France 24 allow it; others often block it.
-           For blocked channels, quick-launch cards open the stream in a new tab. -->
-      <div id="rss-live-view" style="display:none">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:12px">
-          📺 Live news streams — confirmed embeds play inline; others open YouTube in a new tab.
-        </div>
-
-        <!-- ── Confirmed embeds ──────────────────────────────────────────── -->
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin-bottom:20px">
-          <div class="panel">
-            <div class="panel-title">🌍 Al Jazeera English</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCNye-wNBqNL5ZzHSJj3l8Bg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-            <a href="https://www.youtube.com/@aljazeeraenglish/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🇫🇷 France 24 English</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCQfwfsi5VrQ8yKZ-UGuIzgA&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-            <a href="https://www.youtube.com/@FRANCE24English/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
-          </div>
-          <div class="panel">
-            <div class="panel-title">🇩🇪 DW News</div>
-            <iframe src="https://www.youtube.com/embed/live_stream?channel=UCknLrEdhRCp1aegoMqRaCZg&autoplay=0&rel=0&modestbranding=1" style="width:100%;height:240px;border:none;border-radius:6px;background:#000" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-            <a href="https://www.youtube.com/@dwnews/live" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;font-size:11px;color:var(--text3);margin-top:6px;text-decoration:none">↗ Open in YouTube</a>
-          </div>
-        </div>
-
-        <!-- ── Quick-launch cards (open YouTube live in new tab) ─────────── -->
-        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
-          <span>⚡ More Live Streams</span>
-          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens YouTube — some may block embedded playback)</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:20px">
-          <a href="https://www.youtube.com/@BBCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🇬🇧</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">BBC World News</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@SkyNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🌐</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Sky News</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@Bloomberg/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">📊</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Bloomberg</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@ABCNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🇺🇸</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">ABC News Live</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@euronews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🇪🇺</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Euronews</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@NHKWorldNews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🌏</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">NHK World</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@wionews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🌍</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">WION</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@CBSnews/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🎙️</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">CBS News</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-          <a href="https://www.youtube.com/@lofimusic/live" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:28px">🎵</div>
-            <div style="font-weight:600;color:var(--text);font-size:12px;text-align:center">Lofi Girl</div>
-            <div style="font-size:10px;color:var(--blue)">▶ Watch Live</div>
-          </a>
-        </div>
-      </div>
-
-      <!-- ─────────────────────────────────────────────────────────────────────
-           Free TV view — dlstreams.top channel browser + popular quick-launch
-           cards + custom M3U8 player + free streaming links
-           ───────────────────────────────────────────────────────────────────── -->
-      <div id="rss-iptv-view" style="display:none">
-
-        <!-- ① dlstreams.top embedded channel browser -->
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <div>
-            <div style="font-size:12px;font-weight:600;color:var(--text)">📡 DaddyLive — 1000+ Free Channels</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">Browse and click any channel to open its stream in the player below</div>
-          </div>
-          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="btn" style="font-size:11px;padding:4px 12px;text-decoration:none">
-            ↗ Open in New Tab
-          </a>
-        </div>
-
-        <!-- Channel browser iframe — embed the 24/7 listing page -->
-        <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px">
-          <iframe id="dlstreams-browser"
-            src="https://dlstreams.top/24-7-channels.php"
-            style="width:100%;height:480px;border:none;background:var(--bg2)"
-            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-top-navigation-by-user-activation"
-            referrerpolicy="no-referrer"
-            loading="lazy"
-            title="DaddyLive Channel Browser">
-          </iframe>
-          <!-- Shown only if iframe is blocked by X-Frame-Options -->
-          <noscript><div style="padding:20px;text-align:center;color:var(--text3)">Enable JavaScript or <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" style="color:var(--blue)">open site directly</a></div></noscript>
-        </div>
-
-        <!-- ② Popular channel quick-launch cards (open watch page in new tab) -->
-        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
-          <span>⚡ Quick Launch</span>
-          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens channel in new tab)</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:20px">
-          <a href="https://dlstreams.top/watch.php?id=51"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇺🇸</div><div style="font-weight:600;color:var(--text);font-size:12px">ABC USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=44"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏈</div><div style="font-weight:600;color:var(--text);font-size:12px">ESPN USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=35"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">⚽</div><div style="font-weight:600;color:var(--text);font-size:12px">Sky Sports</div></a>
-          <a href="https://dlstreams.top/watch.php?id=61"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🌍</div><div style="font-weight:600;color:var(--text);font-size:12px">beIN Sports</div></a>
-          <a href="https://dlstreams.top/watch.php?id=72"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📺</div><div style="font-weight:600;color:var(--text);font-size:12px">CNN USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=57"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">📰</div><div style="font-weight:600;color:var(--text);font-size:12px">Fox News</div></a>
-          <a href="https://dlstreams.top/watch.php?id=78"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇬🇧</div><div style="font-weight:600;color:var(--text);font-size:12px">BBC News</div></a>
-          <a href="https://dlstreams.top/watch.php?id=97"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🏀</div><div style="font-weight:600;color:var(--text);font-size:12px">NBA TV</div></a>
-          <a href="https://dlstreams.top/watch.php?id=68"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🎬</div><div style="font-weight:600;color:var(--text);font-size:12px">TNT USA</div></a>
-          <a href="https://dlstreams.top/watch.php?id=86"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🚀</div><div style="font-weight:600;color:var(--text);font-size:12px">NASA TV</div></a>
-          <a href="https://dlstreams.top/watch.php?id=42"  target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">🇩🇪</div><div style="font-weight:600;color:var(--text);font-size:12px">DW News</div></a>
-          <a href="https://dlstreams.top/24-7-channels.php" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;cursor:pointer;margin:0;border-style:dashed" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''"><div style="font-size:22px">+</div><div style="font-weight:600;color:var(--text3);font-size:12px">More…</div></a>
-        </div>
-
-        <!-- ③ Custom M3U8 URL player -->
-        <details style="margin-bottom:16px">
-          <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--text);padding:8px 0;user-select:none">🔗 Custom HLS / M3U8 Stream Player</summary>
-          <div style="padding:10px 0">
-            <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Paste any direct M3U8 stream URL — plays in-browser via HLS.js</div>
-            <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
-              <input type="text" id="hls-custom-url" placeholder="https://example.com/stream.m3u8"
-                style="flex:1;min-width:260px;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px">
-              <button class="btn-primary" style="white-space:nowrap" onclick="hlsPlay('hls-custom',document.getElementById('hls-custom-url').value.trim())">▶ Play</button>
+          <!-- Left: channel browser -->
+          <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
+            <div class="search-wrap" style="margin:0;flex:none">
+              <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              <input type="text" id="iptv-search" placeholder="Search channels…" oninput="iptvFilterChannels()">
             </div>
-            <video id="hls-custom" controls muted playsinline
-              style="width:100%;height:280px;background:#000;border-radius:var(--r);margin-top:8px;object-fit:contain;display:none"></video>
+            <div id="iptv-cat-pills" style="display:flex;gap:4px;flex-wrap:wrap"></div>
+            <div id="iptv-channel-list"
+                 style="flex:1;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:4px;min-height:0">
+              <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading channels…</div>
+            </div>
           </div>
-        </details>
 
-        <!-- ④ Free streaming services — external links -->
-        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px">
-          <span>📺 Free Streaming Services</span>
-          <span style="font-size:10px;font-weight:400;color:var(--text3)">(opens in new tab)</span>
+          <!-- Right: player -->
+          <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
+            <!-- Now-playing bar -->
+            <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:8px 14px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="font-size:18px">📺</span>
+                <div>
+                  <div id="iptv-now-playing" style="font-size:13px;font-weight:600;color:var(--text)">Select a channel</div>
+                  <div id="iptv-now-source" style="font-size:10px;color:var(--text3)">MovieBite · Select a channel</div>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px">
+                <button class="btn" style="font-size:11px;padding:3px 10px" onclick="iptvAddToMultiview()" title="Add to multiview">⊞ Multiview</button>
+                <button class="btn" style="font-size:11px;padding:3px 10px" onclick="iptvFullscreen()" title="Fullscreen">⛶ Fullscreen</button>
+                <button class="btn" style="font-size:11px;padding:3px 10px" id="iptv-popout-btn" onclick="iptvPopout()" title="Open in new tab">↗ Pop-out</button>
+              </div>
+            </div>
+            <!-- Player iframe -->
+            <div id="iptv-player-wrap" style="position:relative;background:#000;border-radius:var(--r);overflow:hidden;flex:1;min-height:0">
+              <div id="iptv-player-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--text3)">
+                <div style="font-size:48px">📡</div>
+                <div style="font-size:14px">Click a channel to start watching</div>
+                <div style="font-size:11px;color:var(--text3)">Live channels via MovieBite — select a channel to watch</div>
+              </div>
+              <!--
+                CSS header-crop trick: parent has overflow:hidden + position:relative.
+                The iframe is pushed up by 55px (MovieBite site header height) so the
+                site navigation is hidden and only the player fills the container.
+              -->
+              <iframe id="iptv-player-frame"
+                src="about:blank"
+                style="position:absolute;top:-55px;left:0;width:100%;height:calc(100% + 55px);border:none;display:none"
+                allow="autoplay;fullscreen;encrypted-media;picture-in-picture"
+              ></iframe>
+            </div>
+            <!-- Enhanced HLS / M3U8 Player -->
+            <div id="iptv-hls-panel">
+              <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+                <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                Direct HLS / M3U8 Player
+              </div>
+              <div class="hls-url-row">
+                <input type="text" id="iptv-hls-url" placeholder="Paste .m3u8 stream URL here…">
+                <button class="btn-primary" onclick="iptvPlayHLS()" style="border-radius:10px;padding:8px 16px;font-size:12px;white-space:nowrap">▶ Play</button>
+              </div>
+              <!-- Quick source badges -->
+              <div class="hls-source-badges">
+                <span class="hls-source-badge" onclick="iptvHlsSetUrl('https://s.id/d9M3U8')" title="Load s.id M3U8 playlist">📋 s.id Playlist</span>
+                <span class="hls-source-badge" onclick="iptvHlsClear()">✕ Clear</span>
+              </div>
+              <div id="hls-player-container" style="display:none;margin-top:10px">
+                <div class="hls-player-wrap">
+                  <video id="iptv-hls-player" controls playsinline
+                    style="width:100%;height:100%;background:#000"></video>
+                </div>
+                <div class="hls-quality-row">
+                  <span>Quality:</span>
+                  <select id="hls-quality-sel" onchange="hlsSetQuality(this.value)">
+                    <option value="-1">Auto</option>
+                  </select>
+                  <span id="hls-level-info" style="margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--text3)"></span>
+                </div>
+              </div>
+              <!-- M3U Playlist browser (shown when an m3u8 with channels loads) -->
+              <div id="hls-playlist-list" style="display:none;max-height:200px;overflow-y:auto;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px"></div>
+            </div>
+          </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
-          <a href="https://pluto.tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:24px">📡</div><div style="font-weight:600;color:var(--text);font-size:12px">Pluto TV</div>
-            <div style="font-size:10px;color:var(--text3);text-align:center">250+ channels</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
-          </a>
-          <a href="https://tubitv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:24px">🎬</div><div style="font-weight:600;color:var(--text);font-size:12px">Tubi</div>
-            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; shows</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
-          </a>
-          <a href="https://watch.plex.tv/live-tv" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:24px">▶️</div><div style="font-weight:600;color:var(--text);font-size:12px">Plex Free TV</div>
-            <div style="font-size:10px;color:var(--text3);text-align:center">Live TV &amp; VOD</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
-          </a>
-          <a href="https://www.peacocktv.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:24px">🦚</div><div style="font-weight:600;color:var(--text);font-size:12px">Peacock</div>
-            <div style="font-size:10px;color:var(--text3);text-align:center">NBC free tier</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE TIER</div>
-          </a>
-          <a href="https://therokuchannel.roku.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:24px">📺</div><div style="font-weight:600;color:var(--text);font-size:12px">Roku Channel</div>
-            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; live TV</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
-          </a>
-          <a href="https://www.crackle.com" target="_blank" rel="noopener noreferrer" class="panel" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px;cursor:pointer;margin:0" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor=''">
-            <div style="font-size:24px">🎥</div><div style="font-weight:600;color:var(--text);font-size:12px">Crackle</div>
-            <div style="font-size:10px;color:var(--text3);text-align:center">Movies &amp; originals</div>
-            <div style="font-size:10px;background:var(--green2);color:var(--green);padding:1px 6px;border-radius:8px;font-weight:600">FREE</div>
-          </a>
+      </div>
+
+      <!-- ── REDDIT COMMENTS MODAL ── -->
+      <div id="feeds-reddit-comments-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:960;align-items:center;justify-content:center" onclick="if(event.target===this)feedsCloseComments()">
+        <div style="position:relative;width:min(780px,96vw);max-height:90vh;background:var(--bg2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.7)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);gap:10px;flex-shrink:0">
+            <div id="feeds-comments-title" style="font-size:14px;font-weight:600;color:var(--text);line-height:1.4"></div>
+            <button onclick="feedsCloseComments()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px;flex-shrink:0">✕</button>
+          </div>
+          <div style="padding:14px 16px 0;flex-shrink:0">
+            <div id="feeds-comments-post-body" style="font-size:13px;color:var(--text2);line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow-y:auto;padding-bottom:10px;border-bottom:1px solid var(--border)"></div>
+            <div id="feeds-comments-meta" style="font-size:11px;color:var(--text3);padding:8px 0;display:flex;gap:14px;border-bottom:1px solid var(--border)"></div>
+          </div>
+          <div id="feeds-comments-list" style="padding:12px 16px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px">
+            <div style="color:var(--text3);font-size:12px">Loading comments…</div>
+          </div>
+          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
+            <a id="feeds-comments-link" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ View on Reddit</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── REDDIT POST READER MODAL ── -->
+      <div id="feeds-reddit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:950;align-items:center;justify-content:center" onclick="if(event.target===this)feedsCloseRedditPost()">
+        <div style="position:relative;width:min(720px,95vw);max-height:85vh;background:var(--bg2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.7)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);gap:10px;flex-shrink:0">
+            <div id="feeds-reddit-modal-title" style="font-size:14px;font-weight:600;color:var(--text);line-height:1.4"></div>
+            <button onclick="feedsCloseRedditPost()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px;flex-shrink:0">✕</button>
+          </div>
+          <div id="feeds-reddit-modal-body" style="padding:16px;overflow-y:auto;flex:1;font-size:13px;color:var(--text2);line-height:1.8;white-space:pre-wrap;word-break:break-word"></div>
+          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
+            <a id="feeds-reddit-modal-link" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ View on Reddit</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── FEEDS MEDIA PLAYER MODAL ── -->
+      <div id="feeds-media-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:950;align-items:center;justify-content:center" onclick="if(event.target===this)feedsCloseMedia()">
+        <div style="position:relative;width:min(860px,95vw);background:var(--bg2);border-radius:12px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.7)">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)">
+            <div id="feeds-media-title" style="font-size:13px;font-weight:600;color:var(--text);line-height:1.3;max-width:calc(100% - 40px)"></div>
+            <button onclick="feedsCloseMedia()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;line-height:1;padding:2px 6px" title="Close">✕</button>
+          </div>
+          <div id="feeds-media-body" style="background:#000">
+            <iframe id="feeds-media-iframe" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; fullscreen; gyroscope; picture-in-picture; web-share" style="width:100%;height:480px;display:block;border:none"></iframe>
+          </div>
+          <div style="padding:10px 16px;display:flex;justify-content:flex-end">
+            <a id="feeds-media-extlink" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none">↗ Open on YouTube</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── IPTV BROWSE CHANNELS PANEL (inline, not a modal overlay) ── -->
+      <div id="iptv-browse-modal" style="display:none;margin-top:12px;border-radius:12px;overflow:hidden;background:var(--bg2);border:1px solid var(--border);flex-direction:column">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--surface)">
+          <div>
+            <span id="iptv-browse-title" style="font-size:13px;font-weight:600">📺 Browse Channels</span>
+            <span style="font-size:11px;color:var(--text3);margin-left:10px">Find a channel → add it with ＋ Channel</span>
+          </div>
+          <button onclick="iptvHideBrowse()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:2px 6px" title="Close browser">✕</button>
+        </div>
+        <div style="height:560px;overflow:hidden;position:relative">
+          <iframe id="iptv-browse-iframe" src="" frameborder="0" style="width:100%;height:100%;border:none" allow="autoplay;fullscreen"></iframe>
+        </div>
+        <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;background:var(--surface)">
+          <span style="font-size:11px;color:var(--text2)">Browse SportsBite · click a match to open in main player</span>
+          <button onclick="iptvHideBrowse();iptvShowAddChannel()" class="btn-primary" style="padding:5px 14px;font-size:12px;margin-left:auto">＋ Add Channel</button>
+        </div>
+      </div>
+
+      <!-- ── ADD CHANNEL MODAL ── -->
+      <div id="iptv-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;align-items:center;justify-content:center">
+        <div class="panel" style="width:380px;max-width:95vw;padding:20px">
+          <div class="panel-title" style="margin-bottom:14px">📺 Add Custom Channel</div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Channel Name *</label>
+              <input id="iptv-add-name" type="text" placeholder="e.g. Sky Sports F1" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">MovieBite Slug (from URL) *</label>
+              <input id="iptv-add-slug" type="text" placeholder="e.g. SKY-SPORTS-F1" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+              <div style="font-size:10px;color:var(--text3);margin-top:4px">Visit <a href="https://tv.moviebite.cc" target="_blank" style="color:var(--blue)">tv.moviebite.cc</a>, find the channel, copy the last part of the URL</div>
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Group</label>
+              <input id="iptv-add-group" type="text" placeholder="Sports, News, Entertainment…" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button onclick="iptvHideAddChannel()" class="btn" style="flex:1;padding:8px">Cancel</button>
+            <button onclick="iptvSaveAddChannel()" class="btn-primary" style="flex:1;padding:8px">Add Channel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SCHEDULE VIEW ── -->
+      <div id="iptv-schedule-view" style="display:none">
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+          <button class="filter-pill active" id="iptv-sched-live" onclick="iptvLoadSchedule('live',this)">🔴 Live Now</button>
+          <button class="filter-pill" id="iptv-sched-all" onclick="iptvLoadSchedule('all',this)">📅 All Events</button>
+          <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+            <label style="font-size:11px;color:var(--text3)">⏱ TZ offset:</label>
+            <select id="iptv-tz-offset" onchange="iptvSetTZOffset(this.value)" style="font-size:11px;padding:3px 7px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="-6">-6h</option><option value="-5">-5h</option><option value="-4">-4h</option>
+              <option value="-3">-3h</option><option value="-2">-2h</option><option value="-1">-1h</option>
+              <option value="0" selected>+0h</option>
+              <option value="1">+1h</option><option value="2">+2h</option><option value="3">+3h</option>
+              <option value="4">+4h</option><option value="5">+5h</option><option value="6">+6h</option>
+            </select>
+          </div>
+          <span id="iptv-sched-status" style="font-size:11px;color:var(--text3)"></span>
+        </div>
+        <div id="iptv-schedule-list" style="display:flex;flex-direction:column;gap:6px">
+          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Click "Live Now" or "All Events" to load schedule</div>
+        </div>
+      </div>
+
+      <!-- ── MULTIVIEW ── -->
+      <div id="iptv-multiview-view" style="display:none">
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:600;color:var(--text)">Layout:</span>
+          <button class="filter-pill active" onclick="iptvMVLayout(1,1,this)">1×1</button>
+          <button class="filter-pill" onclick="iptvMVLayout(2,1,this)">2×1</button>
+          <button class="filter-pill" onclick="iptvMVLayout(2,2,this)">2×2</button>
+          <button class="filter-pill" onclick="iptvMVLayout(3,2,this)">3×2</button>
+          <button class="btn" style="margin-left:auto;font-size:11px;padding:3px 10px" onclick="iptvMVClearAll()">✕ Clear All</button>
+        </div>
+        <div id="iptv-mv-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+      </div>
+    </div>
+
+    <!-- ── RSS / FEEDS ─────────────────────────────── -->
+    <div id="tab-feeds" class="tab-panel">
+      <!-- ═══════════════════════════════════════════════════════════════════
+           FEEDS TAB  (RSS · Reddit · YouTube · Hacker News)
+           ═══════════════════════════════════════════════════════════════════ -->
+
+      <!-- Sub-nav + action bar -->
+      <div class="section-header" style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7M6 17a1 1 0 110 2 1 1 0 010-2z"/></svg>
+          <span style="font-weight:600;font-size:15px">Feeds</span>
+        </div>
+        <div id="feeds-pills-row" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <!-- pills are rendered dynamically by loadFeedsTab() -->
+        </div>
+      </div>
+
+      <!-- ── Inline YouTube Player (shown when a video is playing) ──── -->
+      <div id="feeds-yt-player-panel" style="display:none;margin-bottom:14px;border-radius:12px;overflow:hidden;background:#000;border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border)">
+          <div id="feeds-yt-player-title" style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 100px)"></div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <a id="feeds-yt-player-extlink" href="#" target="_blank" rel="noopener"
+               style="font-size:11px;color:var(--blue);text-decoration:none;padding:3px 8px;background:var(--bg3);border-radius:4px;border:1px solid var(--border)">↗ YouTube</a>
+            <button onclick="feedsCloseYTPlayer()" style="background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px" title="Close player">✕</button>
+          </div>
+        </div>
+        <div style="position:relative;width:100%;padding-top:56.25%;background:#000">
+          <iframe id="feeds-yt-player-frame" src="" frameborder="0"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; fullscreen; gyroscope; picture-in-picture; web-share"
+            style="position:absolute;inset:0;width:100%;height:100%;border:none"></iframe>
+        </div>
+      </div>
+
+      <!-- ── RSS sub-page ─────────────────────────────────────────────── -->
+      <div id="feeds-page-rss">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-rss-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <select id="feeds-rss-sort" onchange="feedsSortGrid('feeds-rss-grid',this.value)" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="default">Latest</option>
+              <option value="oldest">Oldest</option>
+              <option value="az">A–Z</option>
+            </select>
+            <button id="feeds-rss-view-btn" onclick="feedsToggleView('feeds-rss-grid','feeds-rss-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+          </div>
+        </div>
+        <div id="feeds-rss-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-rss-more-btn" onclick="feedsLoadMore('rss')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+      </div>
+
+      <!-- ── Reddit sub-page ──────────────────────────────────────────── -->
+      <div id="feeds-page-reddit" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-reddit-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <select id="feeds-reddit-sort" onchange="feedsRedditChangeSort(this.value)" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="hot">Hot</option>
+              <option value="new">New</option>
+              <option value="top">Top</option>
+              <option value="rising">Rising</option>
+            </select>
+            <button id="feeds-reddit-view-btn" onclick="feedsToggleView('feeds-reddit-grid','feeds-reddit-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+          </div>
+        </div>
+        <div id="feeds-reddit-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-reddit-more-btn" onclick="feedsRedditLoadMore()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+      </div>
+
+      <!-- ── YouTube sub-page ─────────────────────────────────────────── -->
+      <div id="feeds-page-youtube" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div id="feeds-yt-channel-tabs" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <select id="feeds-yt-sort" onchange="feedsSortGrid('feeds-yt-grid',this.value)" style="font-size:11px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);cursor:pointer">
+              <option value="default">Latest</option>
+              <option value="oldest">Oldest</option>
+              <option value="az">A–Z</option>
+            </select>
+            <button id="feeds-yt-view-btn" onclick="feedsToggleView('feeds-yt-grid','feeds-yt-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+          </div>
+        </div>
+        <div id="feeds-yt-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-yt-more-btn" onclick="feedsLoadMore('youtube')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+      </div>
+
+      <!-- ── Hacker News sub-page ─────────────────────────────────────── -->
+      <div id="feeds-page-hn" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="filter-pill active" id="hn-sort-frontpage" onclick="feedsHNChangeSort('frontpage',this)">🔥 Front Page</button>
+            <button class="filter-pill" id="hn-sort-newest" onclick="feedsHNChangeSort('newest',this)">New</button>
+            <button class="filter-pill" id="hn-sort-ask" onclick="feedsHNChangeSort('ask',this)">Ask HN</button>
+            <button class="filter-pill" id="hn-sort-show" onclick="feedsHNChangeSort('show',this)">Show HN</button>
+          </div>
+          <button id="feeds-hn-view-btn" onclick="feedsToggleView('feeds-hn-grid','feeds-hn-view-btn')" title="Toggle view" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--r);cursor:pointer;font-size:12px">☰</button>
+        </div>
+        <div id="feeds-hn-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-hn-more-btn" onclick="feedsHNLoadMore()" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+      </div>
+
+      <!-- ── Twitter/X sub-page ─────────────────────────────────────── -->
+      <div id="feeds-page-twitter" style="display:none">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <div id="feeds-twitter-handle-tabs" style="display:flex;gap:6px;flex-wrap:wrap;flex:1"></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button id="tw-mode-cards-btn" onclick="twitterSetMode('cards')" style="background:var(--accent,#2563eb);color:#fff;border:none;padding:4px 12px;border-radius:var(--r);font-size:11px;cursor:pointer">📋 Cards</button>
+            <button id="tw-mode-viewer-btn" onclick="twitterSetMode('viewer')" style="background:var(--bg3);color:var(--text2);border:1px solid var(--border);padding:4px 12px;border-radius:var(--r);font-size:11px;cursor:pointer">🌐 Web Viewer</button>
+            <a id="feeds-twitter-open-link" href="#" target="_blank" rel="noopener"
+               style="font-size:11px;color:var(--blue);text-decoration:none;white-space:nowrap">↗ Open on X</a>
+          </div>
+        </div>
+        <!-- Cards mode (nitter RSS) -->
+        <div id="feeds-twitter-cards-mode">
+          <div id="feeds-twitter-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+          <div style="text-align:center;margin-top:14px"><button id="feeds-twitter-more-btn" onclick="feedsLoadMore('twitter')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+          <div id="feeds-twitter-empty" style="display:none;padding:40px 20px;text-align:center;color:var(--text3);font-size:12px">
+            <div style="font-size:32px;margin-bottom:8px">𝕏</div>
+            <div>No Twitter/X handles added yet.</div>
+            <div style="margin-top:6px">Click <strong>Manage</strong> → add a handle like <code>@username</code></div>
+          </div>
+        </div>
+        <!-- Open on X mode — X.com blocks embedding, so we show a direct-link panel -->
+        <div id="feeds-twitter-viewer-mode" style="display:none">
+          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:var(--bg2);border-radius:var(--r);padding:48px 24px;border:1px solid var(--border)">
+            <div style="font-size:48px">𝕏</div>
+            <div style="font-size:14px;font-weight:600;color:var(--text)">Open on X / Twitter</div>
+            <div style="font-size:12px;color:var(--text2);text-align:center;max-width:340px;line-height:1.6">
+              X.com prevents embedding in third-party apps.<br>
+              Click below to open the selected profile directly.
+            </div>
+            <a id="feeds-twitter-webviewer-extlink" href="#" target="_blank" rel="noopener"
+               style="background:#1d9bf0;color:#fff;padding:10px 28px;border-radius:999px;font-size:13px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:6px">
+              𝕏 Open Profile
+            </a>
+            <button onclick="twitterSetMode('cards')" style="background:none;border:none;color:var(--blue);font-size:11px;cursor:pointer;text-decoration:underline">← Back to Cards</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Custom category pages are injected here by JS -->
+      <div id="feeds-custom-pages"></div>
+
+      <!-- ── Manage sub-page ──────────────────────────────────────────── -->
+      <div id="feeds-page-manage" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <span style="font-size:13px;font-weight:600;color:var(--text)">Manage Subscriptions</span>
+          <button class="btn-primary" style="font-size:11px;padding:4px 12px" onclick="feedsShowNewCatModal()">＋ New Category</button>
+        </div>
+        <div id="feeds-manage-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px">
+          <!-- rendered dynamically by _feedsRenderManage() -->
+        </div>
+      </div>
+
+    </div><!-- /tab-feeds -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         FOOTBALL HUB TAB
+    ═══════════════════════════════════════════════════════════ -->
+    <div id="tab-epl" class="tab-panel">
+      <!-- Header -->
+      <div class="section-header" style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:22px">⚽</span>
+          <div>
+            <span style="font-weight:600;font-size:15px">Football Hub</span>
+            <div style="font-size:11px;color:var(--text3)">Tables · Fixtures · Results · Highlights · News</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <button class="view-btn active" id="football-view-table" onclick="footballSetView('table')">📊 Table</button>
+          <button class="view-btn" id="football-view-fixtures" onclick="footballSetView('fixtures')">📅 Fixtures</button>
+          <button class="view-btn" id="football-view-results" onclick="footballSetView('results')">✅ Results</button>
+          <button class="view-btn" id="football-view-highlights" onclick="footballSetView('highlights')">🎬 Highlights</button>
+          <button class="view-btn" id="football-view-news" onclick="footballSetView('news')">📰 News</button>
+          <button class="btn-primary" onclick="footballRefresh()">↺ Refresh</button>
+        </div>
+      </div>
+
+      <!-- League Selector -->
+      <div id="football-league-selector" style="margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+        <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">🏆 Domestic Leagues</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+          <button class="league-pill active" onclick="footballSelectLeague('eng.1')">🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League</button>
+          <button class="league-pill" onclick="footballSelectLeague('esp.1')">🇪🇸 La Liga</button>
+          <button class="league-pill" onclick="footballSelectLeague('ger.1')">🇩🇪 Bundesliga</button>
+          <button class="league-pill" onclick="footballSelectLeague('ita.1')">🇮🇹 Serie A</button>
+          <button class="league-pill" onclick="footballSelectLeague('fra.1')">🇫🇷 Ligue 1</button>
+          <button class="league-pill" onclick="footballSelectLeague('usa.1')">🇺🇸 MLS</button>
+        </div>
+        <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">🌍 International &amp; Club</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <button class="league-pill" onclick="footballSelectLeague('uefa.champions')">🏆 Champions League</button>
+          <button class="league-pill" onclick="footballSelectLeague('uefa.europa')">🥈 Europa League</button>
+          <button class="league-pill" onclick="footballSelectLeague('fifa.world')">🌍 World Cup</button>
+          <button class="league-pill" onclick="footballSelectLeague('uefa.euro')">🇪🇺 Euros</button>
+          <button class="league-pill" onclick="footballSelectLeague('conmebol.america')">🌎 Copa America</button>
+          <button class="league-pill" onclick="footballSelectLeague('caf.nations')">🌍 AFCON</button>
+        </div>
+      </div>
+
+      <!-- League title bar -->
+      <div id="football-league-title" style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text)">🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League</div>
+
+      <!-- Content views -->
+      <div id="football-table-view">
+        <div id="football-standings" style="overflow-x:auto">
+          <div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading standings…</div>
+        </div>
+      </div>
+      <div id="football-fixtures-view" style="display:none">
+        <div id="football-fixtures-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
+      </div>
+      <div id="football-results-view" style="display:none">
+        <div id="football-results-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
+      </div>
+      <div id="football-highlights-view" style="display:none">
+        <div id="football-highlights-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px"></div>
+      </div>
+      <div id="football-news-view" style="display:none">
+        <div id="football-news-list" style="display:flex;flex-direction:column;gap:8px;max-width:860px"></div>
+      </div>
+    </div><!-- /tab-epl -->
+
+    <!-- Team Detail Modal -->
+    <div id="football-team-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:920;align-items:flex-start;justify-content:flex-end;padding:12px">
+      <div class="panel" style="width:460px;max-width:95vw;max-height:calc(100vh - 24px);overflow-y:auto;position:relative;padding:0">
+        <div style="padding:14px 16px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;position:sticky;top:0;background:var(--bg2);z-index:1">
+          <img id="football-team-crest" src="" style="width:28px;height:28px;object-fit:contain" onerror="this.style.display='none'">
+          <span id="football-team-name" style="font-weight:600;font-size:14px;flex:1"></span>
+          <button onclick="footballCloseTeamModal()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:0 4px;line-height:1">✕</button>
+        </div>
+        <div style="display:flex;border-bottom:1px solid var(--border)">
+          <button id="team-tab-btn-fixtures" onclick="footballTeamTab('fixtures')" style="flex:1;padding:9px;background:none;border:none;border-bottom:2px solid var(--accent,#2563eb);color:var(--text);font-size:12px;font-weight:500;cursor:pointer">📅 Fixtures &amp; Results</button>
+          <button id="team-tab-btn-news" onclick="footballTeamTab('news')" style="flex:1;padding:9px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:12px;cursor:pointer">📰 News</button>
+        </div>
+        <div id="football-team-content" style="padding:12px">
+          <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Loading…</div>
         </div>
       </div>
     </div>
 
+    <!-- New Category modal -->
+    <div id="feeds-newcat-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;align-items:center;justify-content:center">
+      <div class="panel" style="width:340px;max-width:95vw;padding:20px">
+        <div class="panel-title" style="margin-bottom:14px">➕ New Feed Category</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Category Name *</label>
+            <input id="newcat-name" type="text" placeholder="e.g. Podcasts" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:12px;box-sizing:border-box">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Icon (emoji) *</label>
+            <input id="newcat-icon" type="text" placeholder="🎙" maxlength="4" style="width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:16px;box-sizing:border-box">
+          </div>
+          <div style="font-size:10px;color:var(--text3)">Custom categories use standard RSS/Atom feeds — just like the RSS tab.</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button onclick="feedsHideNewCatModal()" class="btn" style="flex:1;padding:8px">Cancel</button>
+          <button onclick="feedsSaveNewCat()" class="btn-primary" style="flex:1;padding:8px">Create Category</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Feed Modal -->
+    <div id="feeds-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:900;display:none;align-items:center;justify-content:center">
+      <div class="panel" style="margin:0;width:420px;max-width:95vw;position:relative">
+        <button onclick="feedsHideAddModal()" style="position:absolute;top:10px;right:10px;background:none;border:none;color:var(--text3);font-size:16px;cursor:pointer">✕</button>
+        <div class="panel-title" id="feeds-add-modal-title">Add Feed</div>
+        <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">NAME</label>
+            <input id="feeds-add-name" type="text" placeholder="e.g. TechCrunch"
+              style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+          <div id="feeds-add-url-row">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px" id="feeds-add-url-label">RSS URL</label>
+            <input id="feeds-add-url" type="text" placeholder="https://..."
+              style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+          <div id="feeds-add-id-row" style="display:none">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px" id="feeds-add-id-label">Channel ID</label>
+            <input id="feeds-add-id" type="text" placeholder="UCsBjURrPoezykLs9EqgamOA"
+              style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-size:13px">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button onclick="feedsHideAddModal()" class="btn" style="flex:1;padding:8px">Cancel</button>
+          <button onclick="feedsSaveAdd()" class="btn blue" style="flex:1;padding:8px">Save</button>
+        </div>
+      </div>
+    </div>
+
+
+
   </div><!-- /content -->
 </div><!-- /main -->
+
+<!-- ── Right Sidebar Panel ── -->
+<div id="right-sidebar">
+  <div id="right-sidebar-inner">
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,0.07)">
+      <span style="font-size:13px;font-weight:600;color:var(--text)">Quick Panel</span>
+      <button onclick="toggleRightSidebar()" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;line-height:1;padding:2px 5px;border-radius:6px" title="Close">✕</button>
+    </div>
+
+    <!-- System snapshot (unique — not on main dash) -->
+    <div class="rsb-section">
+      <div class="rsb-title">💻 System</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2)">
+          <span>CPU</span><span id="rsb-cpu" style="font-family:var(--mono);color:var(--text)">—</span>
+        </div>
+        <div style="height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden">
+          <div id="rsb-cpu-bar" style="height:100%;background:var(--blue);border-radius:2px;width:0%;transition:width .6s ease"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-top:4px">
+          <span>RAM</span><span id="rsb-ram" style="font-family:var(--mono);color:var(--text)">—</span>
+        </div>
+        <div style="height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden">
+          <div id="rsb-ram-bar" style="height:100%;background:var(--purple);border-radius:2px;width:0%;transition:width .6s ease"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-top:4px">
+          <span>Uptime</span><span id="rsb-uptime" style="font-family:var(--mono);color:var(--text)">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Downloads (unique — real-time from qBit/Radarr/Sonarr) -->
+    <div class="rsb-section">
+      <div class="rsb-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>⬇ Active Downloads</span>
+        <span id="rsb-dl-speed" style="font-size:10px;color:var(--blue);font-family:var(--mono)"></span>
+      </div>
+      <div id="rsb-downloads" style="display:flex;flex-direction:column;gap:5px">
+        <div style="color:var(--text3);font-size:11px;text-align:center;padding:8px">Open panel to load</div>
+      </div>
+    </div>
+
+    <!-- Plex Now Playing (unique — not on main dash) -->
+    <div class="rsb-section">
+      <div class="rsb-title">▶ Now Playing</div>
+      <div id="rsb-nowplaying" style="display:flex;flex-direction:column;gap:6px">
+        <div style="color:var(--text3);font-size:11px;text-align:center;padding:8px">Open panel to load</div>
+      </div>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="rsb-section">
+      <div class="rsb-title">⚡ Quick Links</div>
+      <div style="display:flex;flex-direction:column;gap:3px">
+        <a href="http://localhost:7878" target="_blank" rel="noopener" class="rsb-link">🎥 Radarr <span class="rsb-port">:7878</span></a>
+        <a href="http://localhost:8989" target="_blank" rel="noopener" class="rsb-link">📺 Sonarr <span class="rsb-port">:8989</span></a>
+        <a href="http://localhost:9696" target="_blank" rel="noopener" class="rsb-link">🔍 Prowlarr <span class="rsb-port">:9696</span></a>
+        <a href="http://localhost:8090" target="_blank" rel="noopener" class="rsb-link">⬇️ qBittorrent <span class="rsb-port">:8090</span></a>
+        <a href="http://localhost:32400" target="_blank" rel="noopener" class="rsb-link">▶ Plex <span class="rsb-port">:32400</span></a>
+        <a href="http://localhost:5055" target="_blank" rel="noopener" class="rsb-link">🎬 Seerr <span class="rsb-port">:5055</span></a>
+        <a href="http://localhost:6767" target="_blank" rel="noopener" class="rsb-link">💬 Bazarr <span class="rsb-port">:6767</span></a>
+        <a href="http://localhost:8888" target="_blank" rel="noopener" class="rsb-link">🐳 Dozzle <span class="rsb-port">:8888</span></a>
+      </div>
+    </div>
+  </div>
+</div>
+
 </div><!-- /app -->
 
 <!-- ══ MOBILE BOTTOM NAV ══ -->
-<nav id="bottom-nav">
+<nav id="bottom-nav" style="overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none">
   <button class="bn-item active" onclick="showTab('overview',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm10 0a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zm10-3a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1v-7z"/></svg>
-    <span>Overview</span>
+    <span>Home</span>
   </button>
   <button class="bn-item" onclick="showTab('containers',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-    <span>Containers</span>
+    <span>Docker</span>
   </button>
   <button class="bn-item" onclick="showTab('deploy',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
     <span>Deploy</span>
   </button>
-  <button class="bn-item" onclick="showTab('logs',this);closeSidebar()">
-    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-    <span>Logs</span>
+  <button class="bn-item" onclick="showTab('feeds',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7M6 17a1 1 0 110 2 1 1 0 010-2z"/></svg>
+    <span>Feeds</span>
+  </button>
+  <button class="bn-item" onclick="showTab('iptv',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+    <span>IPTV</span>
   </button>
   <button class="bn-item" onclick="toggleSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -3951,7 +7461,7 @@ let currentTab = 'overview';
 let allContainers = [];
 let ctrFilter = 'all';
 let allCatalog = [];
-let catFilter = 'all';
+let catFilter = 'All';
 
 // ── Container table view state ─────────────────────────────────────────
 let ctrViewMode = 'grid';         // 'grid' | 'table'
@@ -4084,20 +7594,23 @@ function showTab(name, el) {
     if (panel) { panel.classList.add('active'); panel.classList.add('fade-in'); }
     if (el) el.classList.add('active');
     currentTab = name;
+    // Auto-close sidebar on mobile after tab selection
+    if (window.innerWidth <= 900) closeSidebar();
 
     // Lazy-load on first show
-    if (name === 'overview') loadServiceLauncher();
+    if (name === 'overview') { updateGreeting(); loadServiceLauncher(); }
     else if (name === 'containers') loadContainers();
-    else if (name === 'stornet') { loadStorage(); loadNetwork(); }
+    else if (name === 'stornet') { loadStorage(); loadNetwork(); loadHardware(); }
     else if (name === 'ports') loadPortMap();
-    else if (name === 'hardware') loadHardware();
     else if (name === 'logs') loadLogs();
     else if (name === 'deploy') loadCatalog();
     else if (name === 'stack') { loadStackManager(); loadDeployHistory(); }
     else if (name === 'backup') loadBackups();
     else if (name === 'updates') checkUpdates();
     else if (name === 'settings') loadSettings();
-    else if (name === 'rss') loadRSSFeeds();
+    else if (name === 'feeds') loadFeedsTab();
+    else if (name === 'epl') footballInit();
+    else if (name === 'iptv') iptvInit();
 }
 
 function openExternalLink(url) {
@@ -4112,23 +7625,24 @@ let _cpuChart = null, _memChart = null;
 
 function _makeGaugeChart(canvasId, color) {
     const ctx = document.getElementById(canvasId);
-    if (!ctx) return null;
+    if (!ctx || typeof Chart === 'undefined') return null;
     return new Chart(ctx.getContext('2d'), {
         type: 'doughnut',
         data: {
             datasets: [{
                 data: [0, 100],
-                backgroundColor: [color, 'rgba(48,54,61,0.8)'],
+                backgroundColor: [color, 'rgba(48,54,61,0.6)'],
                 borderWidth: 0,
+                borderRadius: 6,
                 hoverOffset: 0
             }]
         },
         options: {
             responsive: false,
             cutout: '72%',
-            circumference: 270,
-            rotation: 225,
-            animation: { duration: 400 },
+            circumference: 360,
+            rotation: -90,
+            animation: { duration: 500, easing: 'easeOutQuart' },
             plugins: { legend: { display: false }, tooltip: { enabled: false } }
         }
     });
@@ -4157,7 +7671,7 @@ function pbarColor(pct) {
 }
 
 // ── SSE live stream ───────────────────────────────────────────────────
-// Uses exponential backoff on reconnect so a post-wizard gunicorn restart
+// Uses exponential backoff on reconnect so a post-wizard uvicorn restart
 // (which makes the first few retries fail quickly) doesn't flood the server.
 // Backoff: 3s → 6s → 12s → 24s → 30s (capped), resets to 3s on success.
 let evtSource = null;
@@ -4191,6 +7705,19 @@ function startSSE() {
             const cpu = d.cpu_percent; const ram = d.mem_percent;
             setEl('tb-cpu', cpu + '%');
             setEl('tb-ram', ram + '%');
+            // Update right sidebar stats if open
+            if (_rsbOpen) {
+                const cpuEl = document.getElementById('rsb-cpu');
+                const cpuBar = document.getElementById('rsb-cpu-bar');
+                const ramEl = document.getElementById('rsb-ram');
+                const ramBar = document.getElementById('rsb-ram-bar');
+                if (cpuEl) cpuEl.textContent = cpu+'%';
+                if (cpuBar) { cpuBar.style.width=cpu+'%'; cpuBar.style.background=cpu>85?'var(--red)':cpu>65?'var(--orange)':'var(--blue)'; }
+                if (ramEl) ramEl.textContent = ram+'%';
+                if (ramBar) { ramBar.style.width=ram+'%'; ramBar.style.background=ram>85?'var(--red)':ram>65?'var(--orange)':'var(--purple)'; }
+                const uptEl = document.getElementById('rsb-uptime');
+                if (uptEl && d.uptime) uptEl.textContent = d.uptime;
+            }
             setEl('tb-load', d.load_1m);
             colorEl('tb-cpu', cpu < 50 ? '' : cpu < 80 ? 'orange' : 'red');
             colorEl('tb-ram', ram < 50 ? '' : ram < 80 ? 'orange' : 'red');
@@ -4207,6 +7734,15 @@ function startSSE() {
             setEl('load-15m', d.load_15m);
             setEl('uptime-val', d.uptime);
             setEl('mem-detail', d.mem_used_gb + ' / ' + d.mem_total_gb + ' GB');
+            // Load average bars — cap at cpuCount cores (fallback 8)
+            const _cores = window._cpuCount || 8;
+            const _loadPct = (v) => Math.min(parseFloat(v) / _cores * 100, 100).toFixed(1);
+            const lb1 = document.getElementById('load-1m-bar');
+            const lb5 = document.getElementById('load-5m-bar');
+            const lb15 = document.getElementById('load-15m-bar');
+            if (lb1) { const p=_loadPct(d.load_1m); lb1.style.width=p+'%'; lb1.className='pbar '+(p<50?'blue':p<80?'':''); lb1.style.background=p>=80?'var(--red)':p>=50?'var(--yellow)':''; }
+            if (lb5) { const p=_loadPct(d.load_5m); lb5.style.width=p+'%'; lb5.className='pbar '+(p<50?'blue':''); lb5.style.background=p>=80?'var(--red)':p>=50?'var(--yellow)':''; }
+            if (lb15) { const p=_loadPct(d.load_15m); lb15.style.width=p+'%'; lb15.className='pbar '+(p<50?'blue':''); lb15.style.background=p>=80?'var(--red)':p>=50?'var(--yellow)':''; }
         } catch(err) {}
     };
 
@@ -4257,6 +7793,8 @@ async function loadOverview() {
         setEl('si-kernel', d.kernel || '—');
         setEl('si-arch', d.arch || '—');
         setEl('si-python', d.python || '—');
+        setEl('si-hostname', d.hostname || '—');
+        setEl('si-uptime', d.uptime_display || '—');
         setEl('cpu-cores', (d.cpu_count || '—') + ' cores');
         if (d.cpu_percent !== undefined) {
             updateGauge(_cpuChart,'cpu-gauge-text', d.cpu_percent, 100);
@@ -4382,7 +7920,10 @@ function setCtrView(mode) {
 function _ctrCardHTML(c) {
     const sc = statusClass(c.status);
     const icon = ctrIcon(c.name);
-    const ports = c.ports && c.ports.length ? c.ports.join(', ') : '—';
+    // Containers with no ports (e.g. Recyclarr, Watchtower) are background services
+    const ports = c.ports && c.ports.length
+        ? c.ports.join(', ')
+        : '<span style="color:var(--text3);font-size:11px;font-style:italic">No web UI</span>';
     const uptime = c.uptime || '—';
     const isRunning = c.status === 'running';
     return `
@@ -4748,7 +8289,12 @@ async function openLogs(name) {
         const r = await fetch(API + `/api/container/${name}/logs`);
         const d = await r.json();
         const el = document.getElementById('log-modal-body');
-        el.textContent = d.logs || '(empty)';
+        const lines = (d.logs || '').split('\n');
+        if (!lines.length || (lines.length === 1 && !lines[0])) {
+            el.textContent = '(empty)';
+        } else {
+            el.innerHTML = lines.map(_colorLogLine).join('\n');
+        }
         el.scrollTop = el.scrollHeight;
     } catch(e) { document.getElementById('log-modal-body').textContent = 'Failed to load logs'; }
 }
@@ -4772,7 +8318,10 @@ async function loadStorage() {
             el.innerHTML = '<div class="empty"><div class="empty-icon">💾</div><div class="empty-text">No filesystem data</div></div>';
             return;
         }
+        const _seenDevices = new Set();
         d.filesystems.forEach(fs => {
+            if (fs.device && _seenDevices.has(fs.device)) return;
+            if (fs.device) _seenDevices.add(fs.device);
             const pct = Math.round(fs.percent || 0);
             const mount = fs.mountpoint || fs.device;
             const safeId = 'disk-' + mount.replace(/[^a-zA-Z0-9]/g, '_');
@@ -4786,10 +8335,14 @@ async function loadStorage() {
                 card.className = 'panel';
                 card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;';
                 card.innerHTML = `
-                  <canvas id="c-${safeId}" width="130" height="130"></canvas>
+                  <div style="position:relative;width:130px;height:130px">
+                    <canvas id="c-${safeId}" width="130" height="130"></canvas>
+                    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+                      <span id="pct-${safeId}" style="font-size:22px;font-weight:700;font-family:var(--mono);color:${clr}">${pct}%</span>
+                    </div>
+                  </div>
                   <div style="font-size:12px;font-weight:600;color:var(--text);text-align:center;word-break:break-all">${mount}</div>
-                  <div style="font-size:11px;color:var(--text3)">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}</div>
-                  <div style="font-size:20px;font-weight:700;color:${clr}" id="pct-${safeId}">${pct}%</div>`;
+                  <div style="font-size:11px;color:var(--text3)">${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}</div>`;
                 el.appendChild(card);
             } else {
                 // Update percentage label color
@@ -4815,6 +8368,59 @@ async function loadStorage() {
                     });
                 }
             }
+        });
+    } catch(e) {}
+}
+
+// ── Dashboard Storage widget (compact bar-style, reuses /api/storage) ─
+async function loadDashStorage() {
+    const el = document.getElementById('dash-storage-list');
+    if (!el) return;
+    try {
+        const r = await fetch(API + '/api/storage');
+        const d = await r.json();
+        if (!d.filesystems || !d.filesystems.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:16px">No filesystem data</div>';
+            return;
+        }
+        const fsList = d.filesystems.filter(fs =>
+            !['tmpfs','devtmpfs','squashfs','overlay','none'].includes(fs.fstype || '') &&
+            !((fs.device || '').startsWith('/dev/loop'))
+        );
+        el.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;padding:4px 2px;overflow-y:auto;max-height:300px';
+        // Destroy existing charts before rebuild
+        if (!window._dashDiskCharts) window._dashDiskCharts = {};
+        Object.values(window._dashDiskCharts).forEach(c => { try { c.destroy(); } catch(e){} });
+        window._dashDiskCharts = {};
+        el.innerHTML = fsList.map(fs => {
+            const pct  = Math.round(fs.percent || 0);
+            const mount = (fs.mountpoint || fs.device || '?');
+            const label = mount.length > 12 ? mount.split('/').pop() || mount.slice(-10) : mount;
+            const safeId = 'ds-' + mount.replace(/[^a-zA-Z0-9]/g,'_');
+            const clr = pct < 70 ? '#3fb950' : pct < 90 ? '#e3b341' : '#f85149';
+            return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:var(--bg3);border:1px solid var(--border);border-radius:8px" title="${mount}&#10;${fmtBytes(fs.used)} / ${fmtBytes(fs.total)}">
+              <div style="position:relative;width:64px;height:64px">
+                <canvas id="${safeId}" width="64" height="64"></canvas>
+                <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+                  <span style="font-size:13px;font-weight:700;font-family:var(--mono);color:${clr}">${pct}%</span>
+                </div>
+              </div>
+              <div style="font-size:9px;color:var(--text2);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:76px" title="${mount}">${label}</div>
+            </div>`;
+        }).join('');
+        // Draw donuts
+        fsList.forEach(fs => {
+            const pct  = Math.round(fs.percent || 0);
+            const mount = fs.mountpoint || fs.device || '?';
+            const safeId = 'ds-' + mount.replace(/[^a-zA-Z0-9]/g,'_');
+            const canvas = document.getElementById(safeId);
+            if (!canvas || typeof Chart === 'undefined') return;
+            const clr = pct < 70 ? '#3fb950' : pct < 90 ? '#e3b341' : '#f85149';
+            window._dashDiskCharts[safeId] = new Chart(canvas.getContext('2d'), {
+                type: 'doughnut',
+                data: { datasets: [{ data: [pct, 100-pct], backgroundColor: [clr, 'rgba(48,54,61,0.6)'], borderWidth: 0, borderRadius: 4, hoverOffset: 0 }] },
+                options: { cutout:'70%', circumference:360, rotation:-90, responsive:false, animation:{duration:600}, plugins:{legend:{display:false},tooltip:{enabled:false}} }
+            });
         });
     } catch(e) {}
 }
@@ -4885,9 +8491,9 @@ async function loadNetwork() {
             _netHistory.tx.shift(); _netHistory.rx.shift(); _netHistory.labels.shift();
         }
 
-        // Init charts on first call
-        if (!_netTxChart) _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)');
-        if (!_netRxChart) _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)');
+        // Init charts on first call (force resize to handle zero-dimension canvas on tab-open)
+        if (!_netTxChart) { _netTxChart = _netChartInit('net-tx-chart', 'TX', 'rgb(56,139,253)'); if (_netTxChart) setTimeout(() => _netTxChart.resize(), 50); }
+        if (!_netRxChart) { _netRxChart = _netChartInit('net-rx-chart', 'RX', 'rgb(63,185,80)'); if (_netRxChart) setTimeout(() => _netRxChart.resize(), 50); }
 
         if (_netTxChart) {
             _netTxChart.data.labels = [..._netHistory.labels];
@@ -4995,34 +8601,88 @@ function pmCollapseAll() {
 }
 
 // ── Hardware ─────────────────────────────────────────────────────────
+let _hwCpuChart = null, _hwMemChart = null;
+
 async function loadHardware() {
     try {
         const r = await fetch(API + '/api/hardware');
         const d = await r.json();
-        const cpuEl = document.getElementById('hw-cpu');
+
+        // Store core count globally for load-bar scaling
+        if (d.cpu && d.cpu.count) window._cpuCount = d.cpu.count;
+
+        // ── CPU pie chart ──
         if (d.cpu) {
-            cpuEl.innerHTML = `
-              <div class="stat-card"><div class="stat-card-val">${d.cpu.count||'—'}</div><div class="stat-card-label">Logical Cores</div></div>
-              <div class="stat-card"><div class="stat-card-val">${d.cpu.freq?.current ? Math.round(d.cpu.freq.current)+'MHz':'—'}</div><div class="stat-card-label">Frequency</div></div>`;
+            const pct   = d.cpu.percent ?? 0;
+            const color = pct < 50 ? '#3fb950' : pct < 80 ? '#e3b341' : '#f85149';
+            const cpuCtx = document.getElementById('hw-cpu-chart');
+            if (cpuCtx) {
+                if (_hwCpuChart) { _hwCpuChart.destroy(); _hwCpuChart = null; }
+                _hwCpuChart = new Chart(cpuCtx, {
+                    type: 'doughnut',
+                    data: { datasets: [{ data: [pct, 100-pct],
+                        backgroundColor: [color, 'rgba(48,54,61,0.6)'], borderWidth: 0, hoverOffset: 0 }] },
+                    options: { responsive: false, cutout: '70%',
+                        animation: { duration: 600 },
+                        plugins: { legend: { display: false }, tooltip: { enabled: false } } }
+                });
+            }
+            document.getElementById('hw-cpu-pct').textContent  = Math.round(pct) + '%';
+            document.getElementById('hw-cpu-detail').textContent =
+                `${d.cpu.count||'—'} cores · ${d.cpu.freq?.current ? Math.round(d.cpu.freq.current)+'MHz' : '—'}`;
         }
-        const memEl = document.getElementById('hw-mem');
+
+        // ── Memory pie chart ──
         if (d.memory) {
-            const m = d.memory;
-            memEl.innerHTML = `<div class="ctr-row"><span>Total</span><span>${fmtBytes(m.total)}</span></div>
-              <div class="ctr-row"><span>Available</span><span>${fmtBytes(m.available)}</span></div>
-              <div class="ctr-row"><span>Used</span><span>${fmtBytes(m.used)}</span></div>`;
+            const m    = d.memory;
+            const pct  = m.percent ?? 0;
+            const color = pct < 50 ? '#3fb950' : pct < 80 ? '#e3b341' : '#f85149';
+            const memCtx = document.getElementById('hw-mem-chart');
+            if (memCtx) {
+                if (_hwMemChart) { _hwMemChart.destroy(); _hwMemChart = null; }
+                _hwMemChart = new Chart(memCtx, {
+                    type: 'doughnut',
+                    data: { datasets: [{ data: [pct, 100-pct],
+                        backgroundColor: [color, 'rgba(48,54,61,0.6)'], borderWidth: 0, hoverOffset: 0 }] },
+                    options: { responsive: false, cutout: '70%',
+                        animation: { duration: 600 },
+                        plugins: { legend: { display: false }, tooltip: { enabled: false } } }
+                });
+            }
+            document.getElementById('hw-mem-pct').textContent    = Math.round(pct) + '%';
+            document.getElementById('hw-mem-detail').textContent  =
+                `${fmtBytes(m.used)} / ${fmtBytes(m.total)}`;
         }
     } catch(e) {}
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────
+function _colorLogLine(line) {
+    const esc = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const lo = line.toLowerCase();
+    let color = '';
+    if (/\b(emerg|emergency|crit|critical|alert|panic)\b/.test(lo))
+        color = 'color:#ff4444;font-weight:700';
+    else if (/\b(err|error|failed|failure|exception|traceback)\b/.test(lo))
+        color = 'color:var(--red,#f85149)';
+    else if (/\b(warn|warning|deprecated)\b/.test(lo))
+        color = 'color:var(--orange,#d29922)';
+    else if (/\b(info|started|starting|loaded|ready|success|ok)\b/.test(lo))
+        color = 'color:var(--green,#3fb950)';
+    else if (/\b(debug|trace|verbose)\b/.test(lo))
+        color = 'color:var(--text3,#6e7681)';
+    return color ? `<span style="${color}">${esc}</span>` : `<span>${esc}</span>`;
+}
+
 async function loadLogs() {
     const el = document.getElementById('log-output');
     el.textContent = 'Loading...';
     try {
         const r = await fetch(API + '/api/logs');
         const d = await r.json();
-        el.textContent = (d.lines || []).join('\n') || '(empty)';
+        const lines = d.lines || [];
+        if (!lines.length) { el.textContent = '(empty)'; return; }
+        el.innerHTML = lines.map(_colorLogLine).join('\n');
         el.scrollTop = el.scrollHeight;
     } catch(e) { el.textContent = 'Failed to load logs'; }
 }
@@ -5048,26 +8708,153 @@ function toggleFavorite(appId) {
 }
 function isFavorite(appId) { return getFavorites().includes(appId); }
 
+// ── Catalog icon helper ───────────────────────────────────────────────
+// Maps app IDs to their walkxcode/dashboard-icons filenames when different
+const _ICON_OVERRIDES = {
+    actual_budget:    'actual-budget',
+    adguardhome:      'adguard-home',
+    arrhub_webui:     null,            // custom — no CDN icon
+    calibre_web:      'calibre-web',
+    code_server:      'code-server',
+    fileflows:        'fileflows',
+    freshrss:         'freshrss',
+    jdownloader2:     'jdownloader-2',
+    matrix_synapse:   'matrix',
+    mylar3:           'mylar3',
+    n8n:              'n8n',
+    nextcloud:        'nextcloud',
+    node_red:         'node-red',
+    npm:              'nginx-proxy-manager',
+    paperless_ngx:    'paperless-ngx',
+    pihole:           'pi-hole',
+    pinchflat:        'pinchflat',
+    postgres:         'postgresql',
+    prowlarr:         'prowlarr',
+    qbitrr:           null,            // niche — no CDN icon
+    recyclarr:        'recyclarr',
+    seerr:            'jellyseerr',
+    speedtest:        'speedtest-tracker',
+    stirling_pdf:     'stirling-pdf',
+    syncthing:        'syncthing',
+    tailscale:        'tailscale',
+    tdarr:            'tdarr',
+    technitium:       'technitium',
+    unpackerr:        'unpackerr',
+    uptime_kuma:      'uptime-kuma',
+    vaultwarden:      'vaultwarden',
+    wallabag:         'wallabag',
+    watchtower:       'watchtower',
+    wg_easy:          'wg-easy',
+    wireguard:        'wireguard',
+    whisparr:         'whisparr',
+    wizarr:           'wizarr',
+};
+
+const _ICON_CDN = 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons@main/png/';
+
+/** Returns an <img> tag that falls back to the emoji on error */
+function _catalogIconImg(a, size) {
+    const sz = size || 38;
+    const override = Object.prototype.hasOwnProperty.call(_ICON_OVERRIDES, a.id) ? _ICON_OVERRIDES[a.id] : undefined;
+    const iconName = override !== undefined ? override : a.id.replace(/_/g, '-');
+    const emoji = a.icon || '📦';
+    if (!iconName) {
+        // No CDN icon — use emoji span
+        return `<span style="font-size:${Math.round(sz*0.8)}px;line-height:1">${emoji}</span>`;
+    }
+    const url = _ICON_CDN + iconName + '.png';
+    return `<img src="${url}" width="${sz}" height="${sz}" style="object-fit:contain"
+              onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${emoji}',style:'font-size:${Math.round(sz*0.8)}px;line-height:1'}))"
+              alt="${a.name}" loading="lazy">`;
+}
+
 // ── Catalog ───────────────────────────────────────────────────────────
-async function loadCatalog() {
-    showSkeleton('cat-grid', 6);
+let _catalogReady = false;
+
+async function loadCatalog(forceRefresh = false) {
+    // If already loaded and no forced refresh, just render from cache immediately
+    if (_catalogReady && !forceRefresh) {
+        _restoreCatalogUI();
+        return;
+    }
+    showSkeleton('cat-grid', 9);
     try {
         const r = await fetch(API + '/api/catalog');
         const d = await r.json();
         allCatalog = d.apps || [];
+        _catalogReady = true;
+
+        // Update hero count
+        const totalEl = document.getElementById('store-total-count');
+        if (totalEl) totalEl.textContent = allCatalog.length;
+
         // Build category pills — include "Favorites" pill
         const cats = ['All', 'Favorites', ...new Set(allCatalog.map(a=>a.category).filter(Boolean))].sort((a,b)=>{
-            // Pin All/Favorites to front
             if (a==='All') return -1; if (b==='All') return 1;
             if (a==='Favorites') return -1; if (b==='Favorites') return 1;
             return a.localeCompare(b);
         });
         const catEl = document.getElementById('cat-categories');
-        catEl.innerHTML = cats.map(c=>`<div class="filter-pill${c==='All'?' active':''}" onclick="filterCat('${c}',this)">${c==='Favorites'?'⭐ ':''  }${c}</div>`).join('');
+        catEl.innerHTML = cats.map(c=>`<div class="filter-pill${c==='All'?' active':''}" onclick="filterCat('${c}',this)">${c==='Favorites'?'⭐ ':''}${c}</div>`).join('');
+
+        // Build featured strip — pick 8 diverse apps from different categories
+        _buildFeaturedStrip();
         renderCatalog();
     } catch(e) {
-        document.getElementById('cat-grid').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Catalog unavailable</div></div>';
+        document.getElementById('cat-grid').innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">⚠️</div><div class="empty-text">Catalog unavailable</div></div>';
     }
+}
+
+// Restore catalog UI from in-memory cache (no network fetch)
+function _restoreCatalogUI() {
+    // Ensure hero count is correct
+    const totalEl = document.getElementById('store-total-count');
+    if (totalEl) totalEl.textContent = allCatalog.length;
+
+    // Rebuild category pills from cached data
+    const cats = ['All', 'Favorites', ...new Set(allCatalog.map(a=>a.category).filter(Boolean))].sort((a,b)=>{
+        if (a==='All') return -1; if (b==='All') return 1;
+        if (a==='Favorites') return -1; if (b==='Favorites') return 1;
+        return a.localeCompare(b);
+    });
+    const catEl = document.getElementById('cat-categories');
+    if (catEl) {
+        catEl.innerHTML = cats.map(c=>`<div class="filter-pill${c==='All'?' active':''}" onclick="filterCat('${c}',this)">${c==='Favorites'?'⭐ ':''}${c}</div>`).join('');
+    }
+
+    // Rebuild featured strip and grid from cache
+    _buildFeaturedStrip();
+    renderCatalog();
+}
+
+// Build the horizontal featured strip with one app per category
+function _buildFeaturedStrip() {
+    const strip = document.getElementById('store-featured-strip');
+    if (!strip || !allCatalog.length) return;
+    // Pick one featured app per category (first alphabetically per cat)
+    const seen = new Set();
+    const featured = allCatalog
+        .slice().sort((a,b) => a.name.localeCompare(b.name))
+        .filter(a => { if (seen.has(a.category)) return false; seen.add(a.category); return true; })
+        .slice(0, 10);
+    const catColors = {
+        'Media': '#0a84ff', 'Download': '#34c759', 'Monitoring': '#ff9f0a',
+        'Utilities': '#5e5ce6', 'Security': '#ff3b30', 'Network': '#64d2ff',
+        'Database': '#bf5af2', 'Home Automation': '#30d158', 'Storage': '#ff9f0a',
+    };
+    strip.innerHTML = featured.map(a => {
+        const bg = catColors[a.category] || '#0a84ff';
+        return `<div class="store-featured-card" onclick="storeAppModal('${a.id}')">
+          <div class="store-fc-banner" style="background:linear-gradient(135deg,${bg}28 0%,${bg}10 100%)">
+            <div class="store-fc-icon">${_catalogIconImg(a, 44)}</div>
+          </div>
+          <div class="store-fc-body">
+            <div class="store-fc-name">${a.name}</div>
+            <div class="store-fc-cat">${a.category||''}</div>
+            <button class="store-fc-btn" onclick="event.stopPropagation();deployApp('${a.id}','${a.name}')">GET</button>
+          </div>
+        </div>`;
+    }).join('');
 }
 
 function filterCat(cat, el) {
@@ -5077,24 +8864,64 @@ function filterCat(cat, el) {
     renderCatalog();
 }
 
-// Real-time search filter (called by oninput)
-function filterCatalog() { renderCatalog(); }
+// Real-time search filter
+function filterCatalog() {
+    const search = document.getElementById('cat-search')?.value || '';
+    // Hide featured strip when searching
+    const featWrap = document.getElementById('store-featured-wrap');
+    if (featWrap) featWrap.style.display = search ? 'none' : '';
+    renderCatalog();
+}
 
-function _buildAppCard(a, showFavStar=true) {
+// Build a single store-style app card
+function _buildStoreCard(a) {
     const starred = isFavorite(a.id);
-    return `
-      <div class="cat-card">
-        <div class="cat-card-header">
-          <div class="cat-icon">${a.icon||'📦'}</div>
-          <div style="flex:1;min-width:0"><div class="cat-name">${a.name}</div><div class="cat-cat">${a.category}</div></div>
-          ${showFavStar ? `<button class="fav-btn${starred?' starred':''}" onclick="toggleFavorite('${a.id}')" title="${starred?'Remove from favorites':'Add to favorites'}">${starred?'⭐':'☆'}</button>` : ''}
+    const imgName = (a.image||'').split(':')[0].split('/').pop();
+    return `<div class="store-app-card" onclick="storeAppModal('${a.id}')">
+      <button class="store-fav-btn${starred?' starred':''}" onclick="event.stopPropagation();toggleFavorite('${a.id}')" title="${starred?'Remove from favorites':'Add to favorites'}">${starred?'★':'☆'}</button>
+      <div class="store-app-icon">${_catalogIconImg(a, 38)}</div>
+      <div class="store-app-name">${a.name}</div>
+      <div class="store-app-cat">${a.category||''}</div>
+      <div class="store-app-desc">${a.description||''}</div>
+      <div class="store-app-footer">
+        <div class="store-app-image">${imgName}</div>
+        <button class="store-app-deploy-btn" onclick="event.stopPropagation();deployApp('${a.id}','${a.name}')">GET</button>
+      </div>
+    </div>`;
+}
+
+// App detail modal (inline expand)
+let _storeModalId = null;
+function storeAppModal(id) {
+    const a = allCatalog.find(x => x.id === id);
+    if (!a) return;
+    // If already showing this app, deploy it
+    const existing = document.getElementById('store-modal-overlay');
+    if (existing) { existing.remove(); if (_storeModalId === id) { _storeModalId = null; return; } }
+    _storeModalId = id;
+    const starred = isFavorite(a.id);
+    const overlay = document.createElement('div');
+    overlay.id = 'store-modal-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)';
+    overlay.onclick = e => { if(e.target===overlay){ overlay.remove(); _storeModalId=null; } };
+    overlay.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--glass-border-hi);border-radius:var(--r-lg);padding:24px;max-width:480px;width:90%;box-shadow:var(--glass-shadow-lg);position:relative">
+        <button onclick="document.getElementById('store-modal-overlay').remove();_storeModalId=null" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer">✕</button>
+        <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:16px">
+          <div class="store-modal-icon">${_catalogIconImg(a, 52)}</div>
+          <div>
+            <div style="font-size:18px;font-weight:700;color:var(--text)">${a.name}</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:3px">${a.category||''}</div>
+            <div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-top:4px">${a.image||''}</div>
+          </div>
         </div>
-        <div class="cat-desc">${a.description||''}</div>
-        <div class="cat-footer">
-          <div class="cat-image">${(a.image||'').split(':')[0].split('/').pop()}</div>
-          <button class="btn blue" onclick="deployApp('${a.id}','${a.name}')">Deploy</button>
+        <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${a.description||'No description available.'}</p>
+        <div style="display:flex;gap:8px">
+          <button class="btn-primary" style="flex:1;padding:9px;font-size:13px;font-weight:700" onclick="deployApp('${a.id}','${a.name}');document.getElementById('store-modal-overlay')?.remove()">🚀 Deploy</button>
+          <button class="btn${starred?' starred':''}" style="padding:9px 16px;font-size:13px" onclick="toggleFavorite('${a.id}');this.innerHTML=isFavorite('${a.id}')?'★ Saved':'☆ Save';this.classList.toggle('starred',isFavorite('${a.id}'))">${starred?'★ Saved':'☆ Save'}</button>
         </div>
       </div>`;
+    document.body.appendChild(overlay);
 }
 
 function renderCatalog() {
@@ -5102,14 +8929,14 @@ function renderCatalog() {
     const sortVal = document.getElementById('cat-sort')?.value || 'az';
     const favs = getFavorites();
 
-    // Render favorites section at top
+    // Render favorites section
     const favApps = allCatalog.filter(a => favs.includes(a.id));
     const favSection = document.getElementById('fav-section');
     const favGrid = document.getElementById('fav-grid');
     if (favSection && favGrid) {
-        if (favApps.length > 0) {
+        if (favApps.length > 0 && !search) {
             favSection.style.display = '';
-            favGrid.innerHTML = favApps.map(a => _buildAppCard(a, true)).join('');
+            favGrid.innerHTML = favApps.map(a => _buildStoreCard(a)).join('');
         } else {
             favSection.style.display = 'none';
         }
@@ -5117,36 +8944,46 @@ function renderCatalog() {
 
     let apps = allCatalog;
 
-    // Apply category filter
-    if (catFilter === 'Favorites') {
-        apps = apps.filter(a => favs.includes(a.id));
-    } else if (catFilter !== 'All') {
-        apps = apps.filter(a => a.category === catFilter);
-    }
+    if (catFilter === 'Favorites') apps = apps.filter(a => favs.includes(a.id));
+    else if (catFilter !== 'All') apps = apps.filter(a => a.category === catFilter);
 
-    // Apply search
-    if (search) apps = apps.filter(a => (a.name + a.description + a.category + a.id).toLowerCase().includes(search));
+    if (search) apps = apps.filter(a => (a.name + (a.description||'') + a.category + a.id).toLowerCase().includes(search));
 
-    // Apply sort
     if (sortVal === 'az') apps = [...apps].sort((a,b) => a.name.localeCompare(b.name));
     else if (sortVal === 'za') apps = [...apps].sort((a,b) => b.name.localeCompare(a.name));
     else if (sortVal === 'cat') apps = [...apps].sort((a,b) => (a.category||'').localeCompare(b.category||'') || a.name.localeCompare(b.name));
 
     const grid = document.getElementById('cat-grid');
     const countEl = document.getElementById('cat-count');
-
-    // Update count badge
-    if (countEl) countEl.textContent = `Showing ${apps.length} of ${allCatalog.length} apps`;
+    if (countEl) countEl.textContent = `${apps.length} of ${allCatalog.length} apps`;
 
     if (!apps.length) {
         grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
           <div class="empty-icon">🔍</div>
-          <div class="empty-text">No apps match your search</div>
-          <div style="font-size:12px;color:var(--text3);margin-top:4px">Try adjusting your filters or search term</div>
+          <div class="empty-text">No apps found</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:4px">Try a different search or category</div>
         </div>`;
         return;
     }
-    grid.innerHTML = apps.map(a => _buildAppCard(a, true)).join('');
+
+    // When searching, use list rows instead of cards for quicker scanning
+    if (search) {
+        grid.style.display = 'block';
+        grid.innerHTML = apps.map(a => {
+            const starred = isFavorite(a.id);
+            return `<div class="store-list-row" onclick="storeAppModal('${a.id}')">
+              <div class="store-list-icon">${_catalogIconImg(a, 28)}</div>
+              <div class="store-list-info">
+                <div class="store-list-name">${a.name} <span style="font-size:10px;color:var(--text3);font-weight:400">${a.category||''}</span></div>
+                <div class="store-list-desc">${a.description||''}</div>
+              </div>
+              <button class="store-app-deploy-btn" onclick="event.stopPropagation();deployApp('${a.id}','${a.name}')">GET</button>
+            </div>`;
+        }).join('');
+    } else {
+        grid.style.display = '';
+        grid.innerHTML = apps.map(a => _buildStoreCard(a)).join('');
+    }
 }
 
 async function deployApp(id, name) {
@@ -5310,6 +9147,23 @@ async function loadSettings() {
         setInput('svc-plex-token',  s.plex_token);
         setInput('svc-seerr-url',   s.seerr_url);
         setInput('svc-seerr-key',   s.seerr_api_key);
+        setInput('svc-football-key', s.football_api_key);
+        setInput('cfg-weather-city',    s.weather_city);
+        setInput('cfg-weather-country', s.weather_country);
+        setInput('cfg-reddit-client-id',     s.reddit_client_id     || '');
+        setInput('cfg-reddit-client-secret', s.reddit_client_secret || '');
+        setInput('cfg-reddit-username',      s.reddit_username      || '');
+        setInput('cfg-reddit-password',      s.reddit_password      || '');
+        setInput('svc-qbit-url',    s.qbittorrent_url);
+        setInput('svc-qbit-user',   s.qbittorrent_user);
+        setInput('svc-qbit-pass',   s.qbittorrent_pass);
+        // Downloader settings
+        if (document.getElementById('svc-dl-type')) { document.getElementById('svc-dl-type').value = s.downloader_type || 'qbittorrent'; dlTypeChanged(); }
+        if (document.getElementById('svc-transmission-url')) document.getElementById('svc-transmission-url').value = s.transmission_url || '';
+        if (document.getElementById('svc-transmission-user')) document.getElementById('svc-transmission-user').value = s.transmission_user || '';
+        if (document.getElementById('svc-transmission-pass')) document.getElementById('svc-transmission-pass').value = s.transmission_pass || '';
+        if (document.getElementById('svc-deluge-url')) document.getElementById('svc-deluge-url').value = s.deluge_url || '';
+        if (document.getElementById('svc-deluge-pass')) document.getElementById('svc-deluge-pass').value = s.deluge_pass || '';
     } catch(e) {}
 }
 
@@ -5342,29 +9196,35 @@ async function loadWeather() {
         if (!d.daily || d.daily.length === 0) return;
         const w = d.daily[0];   // today
 
-        // Current conditions (from open-meteo /current)
-        const temp = w.temp_max !== undefined ? Math.round(w.temp_max) : '—';
+        // Current conditions
+        const temp = d.current_temp != null ? Math.round(d.current_temp) : (w.temp_max != null ? Math.round(w.temp_max) : '—');
         setEl('weather-temp', temp + '°C');
         setEl('weather-desc', w.desc || 'Clear');
         setEl('weather-location', d.location || '');
         setEl('weather-humidity', d.humidity != null ? d.humidity + '%' : '—');
-        setEl('weather-wind', d.wind_mph != null ? d.wind_mph + ' mph' : '—');
+        setEl('weather-wind', d.wind_mph != null ? Math.round(d.wind_mph) + ' mph' : '—');
         setEl('weather-feels', d.feels_like != null ? Math.round(d.feels_like) + '°C' : '—');
         const iconEl = document.getElementById('weather-icon');
         if (iconEl && w.icon) iconEl.textContent = w.icon;
 
-        // 5-day forecast strip
+        // Glance-style 7-day forecast grid
         const forecastEl = document.getElementById('weather-forecast');
         if (forecastEl && d.daily) {
-            forecastEl.innerHTML = d.daily.map((day, i) => {
-                const label = i === 0 ? 'Today' : new Date(day.date + 'T12:00').toLocaleDateString(undefined, {weekday:'short'});
-                const hi = day.temp_max != null ? Math.round(day.temp_max) + '°' : '—';
-                const lo = day.temp_min != null ? Math.round(day.temp_min) + '°' : '—';
-                return `<div style="flex:1;min-width:56px;text-align:center;background:var(--surface);border-radius:var(--r);padding:6px 4px;">
-                  <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${label}</div>
-                  <div style="font-size:20px;line-height:1.2">${day.icon || '🌤️'}</div>
-                  <div style="font-size:11px;font-weight:600;color:var(--text)">${hi}</div>
-                  <div style="font-size:10px;color:var(--text3)">${lo}</div>
+            const days = d.daily.slice(0, 7);
+            forecastEl.style.gridTemplateColumns = `repeat(${days.length}, 1fr)`;
+            forecastEl.innerHTML = days.map((day, i) => {
+                const dt = new Date(day.date + 'T12:00');
+                const dayLabel = i === 0 ? 'Today' : dt.toLocaleDateString(undefined, {weekday:'short'});
+                const dateNum  = dt.getDate();
+                const hi = day.temp_max != null ? Math.round(day.temp_max) : '—';
+                const lo = day.temp_min != null ? Math.round(day.temp_min) : '—';
+                const isToday = i === 0;
+                return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 2px;background:${isToday?'var(--bg3)':'transparent'};border-radius:var(--r);text-align:center">
+                  <div style="font-size:10px;font-weight:${isToday?'700':'400'};color:${isToday?'var(--blue)':'var(--text3)'}">${dayLabel}</div>
+                  <div style="font-size:10px;color:var(--text3)">${dateNum}</div>
+                  <div style="font-size:22px;line-height:1.3;margin:2px 0">${day.icon || '🌤️'}</div>
+                  <div style="font-size:12px;font-weight:600;color:var(--text)">${hi}°</div>
+                  <div style="font-size:10px;color:var(--text3)">${lo}°</div>
                 </div>`;
             }).join('');
         }
@@ -5381,6 +9241,1114 @@ async function loadDockerInfo() {
         setEl('docker-networks', d.networks || '—');
         setEl('docker-disk', d.disk_usage || '—');
     } catch(e) {}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FEEDS TAB — RSS · Reddit · YouTube · Hacker News
+// ══════════════════════════════════════════════════════════════════════
+let _feedsSubs     = {rss:[], reddit:[], youtube:[]};
+let _feedsPage     = 'rss';
+let _feedsRssActive = null;   // currently selected RSS source id
+let _feedsRedditActive = null;
+let _feedsYTActive = null;
+let _feedsAddType  = 'rss';
+// Feed view/sort/pagination state
+let _feedsViewMode  = {};   // gridId → 'grid'|'list'
+let _feedsAllItems  = {};   // gridId → full item array
+let _feedsOffset    = {};   // gridId → current render offset
+const _FEEDS_PAGE_SIZE = 12;
+// Reddit pagination / sort state
+let _feedsRedditSort  = 'hot';
+let _feedsRedditAfter = null;
+// HN sort state
+let _hnSort = 'frontpage';
+let _hnAllItems = [];
+let _hnOffset = 0;
+const _hnFeedUrls = {
+    frontpage: 'https://hnrss.org/frontpage',
+    newest:    'https://hnrss.org/newest',
+    ask:       'https://hnrss.org/ask',
+    show:      'https://hnrss.org/show'
+};
+
+// All known category types (built-in + custom from _type_meta)
+let _feedsAllTypes = ['rss','reddit','youtube','hn','twitter']; // built-in order; custom appended
+let _feedsTwitterActive = null;
+
+function _feedsBuildNavPills() {
+    const row = document.getElementById('feeds-pills-row');
+    if (!row) return;
+    const meta = _feedsSubs._type_meta || {};
+    // Built-in types always shown first
+    const builtIn = ['rss','reddit','youtube','hn'];
+    const custom   = Object.keys(meta).filter(k => !builtIn.includes(k) && k !== '_type_meta');
+    _feedsAllTypes = [...builtIn, ...custom];
+
+    row.innerHTML = [
+        ..._feedsAllTypes.map(p => {
+            const icon = p === 'rss' ? '📰' : p === 'reddit' ? '🤖' : p === 'youtube' ? '▶' : p === 'hn' ? '🔶' : (meta[p]?.icon || '📡');
+            const name = p === 'rss' ? 'RSS' : p === 'reddit' ? 'Reddit' : p === 'youtube' ? 'YouTube' : p === 'hn' ? 'HN' : (meta[p]?.name || p);
+            return `<button class="filter-pill${p===_feedsPage?' active':''}" id="feeds-pill-${p}" onclick="feedsNav('${p}',this)">${icon} ${name}</button>`;
+        }),
+        `<button class="filter-pill${_feedsPage==='manage'?' active':''}" id="feeds-pill-manage" onclick="feedsNav('manage',this)" style="margin-left:auto">⚙ Manage</button>`
+    ].join('');
+}
+
+function feedsNav(page, el) {
+    _feedsPage = page;
+    // Hide all known pages
+    [..._feedsAllTypes, 'manage'].forEach(p => {
+        const pg = document.getElementById('feeds-page-' + p);
+        if (pg) pg.style.display = (p === page) ? '' : 'none';
+        const pill = document.getElementById('feeds-pill-' + p);
+        if (pill) pill.classList.toggle('active', p === page);
+    });
+    if (page === 'rss')     _feedsLoadRssPage();
+    else if (page === 'reddit')  _feedsLoadRedditPage();
+    else if (page === 'youtube') _feedsLoadYTPage();
+    else if (page === 'hn')      _feedsLoadHN(false);
+    else if (page === 'twitter') _feedsLoadTwitterPage();
+    else if (page === 'manage')  _feedsRenderManage();
+    else                         _feedsLoadCustomPage(page);
+}
+
+function feedsRefreshCurrent() { feedsNav(_feedsPage, null); }
+
+// ── Bootstrap (called when Feeds tab is shown) ───────────────────────
+async function loadFeedsTab() {
+    try {
+        const r = await fetch(API + '/api/feeds/subscriptions');
+        _feedsSubs = await r.json();
+    } catch(e) { _feedsSubs = {rss:[], reddit:[], youtube:[], _type_meta:{}}; }
+    // Ensure _type_meta exists
+    if (!_feedsSubs._type_meta) _feedsSubs._type_meta = {};
+    _feedsBuildNavPills();
+    // Inject custom page divs
+    _feedsInjectCustomPageDivs();
+    feedsNav('rss', document.getElementById('feeds-pill-rss'));
+    // Background: warm server-side cache for ALL subscribed RSS & YouTube feeds in parallel
+    // so switching tabs is instant instead of waiting for a fresh fetch each time.
+    const _warmUrls = [
+        ...(_feedsSubs.rss || []).map(s => s.url).filter(Boolean),
+        ...(_feedsSubs.youtube || []).map(s => s.url).filter(Boolean),
+    ];
+    if (_warmUrls.length) {
+        _warmUrls.forEach(url => {
+            fetch(API + '/api/rss/fetch?url=' + encodeURIComponent(url)).catch(() => {});
+        });
+    }
+}
+
+function _feedsInjectCustomPageDivs() {
+    const container = document.getElementById('feeds-custom-pages');
+    if (!container) return;
+    const meta = _feedsSubs._type_meta || {};
+    const builtIn = ['rss','reddit','youtube','hn'];
+    const custom = Object.keys(meta).filter(k => !builtIn.includes(k));
+    container.innerHTML = custom.map(k => `
+      <div id="feeds-page-${k}" style="display:none">
+        <div id="feeds-${k}-source-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+        <div id="feeds-${k}-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px"></div>
+        <div style="text-align:center;margin-top:14px"><button id="feeds-${k}-more-btn" onclick="feedsLoadMore('${k}')" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text2);padding:6px 22px;border-radius:var(--r);cursor:pointer;font-size:12px">Load More</button></div>
+      </div>`).join('');
+}
+
+// ── RSS sub-page ─────────────────────────────────────────────────────
+function _feedsLoadRssPage() {
+    const tabs = document.getElementById('feeds-rss-source-tabs');
+    const grid = document.getElementById('feeds-rss-grid');
+    if (!tabs || !grid) return;
+    const sources = _feedsSubs.rss || [];
+    if (!sources.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">📰</div><div class="empty-text">No RSS feeds — add some in Manage</div></div>';
+        return;
+    }
+    // Source pills
+    tabs.innerHTML = sources.map(s =>
+        `<button class="filter-pill${s.id === _feedsRssActive ? ' active' : ''}"
+            onclick="_feedsSelectRss('${s.id}',this)">${s.name}</button>`
+    ).join('');
+    // Auto-select first if none active
+    if (!_feedsRssActive || !sources.find(s => s.id === _feedsRssActive))
+        _feedsRssActive = sources[0].id;
+    // Update active pill
+    tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    const activePill = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (sources.find(s=>s.id===_feedsRssActive)?.name));
+    if (activePill) activePill.classList.add('active');
+    _feedsFetchAndRenderCards(sources.find(s => s.id === _feedsRssActive)?.url, grid, 'rss');
+}
+
+function _feedsSelectRss(id, el) {
+    _feedsRssActive = id;
+    document.querySelectorAll('#feeds-rss-source-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const src = (_feedsSubs.rss || []).find(s => s.id === id);
+    if (src) _feedsFetchAndRenderCards(src.url, document.getElementById('feeds-rss-grid'), 'rss');
+}
+
+// ── Reddit sub-page ──────────────────────────────────────────────────
+function _feedsLoadRedditPage() {
+    const tabs = document.getElementById('feeds-reddit-source-tabs');
+    const grid = document.getElementById('feeds-reddit-grid');
+    if (!tabs || !grid) return;
+    const sources = _feedsSubs.reddit || [];
+    if (!sources.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">🤖</div><div class="empty-text">No subreddits — add some in Manage</div></div>';
+        return;
+    }
+    tabs.innerHTML = sources.map(s =>
+        `<button class="filter-pill${s.id === _feedsRedditActive ? ' active' : ''}"
+            onclick="_feedsSelectReddit('${s.id}',this)">${s.name}</button>`
+    ).join('');
+    if (!_feedsRedditActive || !sources.find(s => s.id === _feedsRedditActive))
+        _feedsRedditActive = sources[0].id;
+    tabs.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    const activePill = [...tabs.querySelectorAll('.filter-pill')].find(p => p.textContent === (sources.find(s=>s.id===_feedsRedditActive)?.name));
+    if (activePill) activePill.classList.add('active');
+    _feedsFetchRedditDirect(sources.find(s => s.id === _feedsRedditActive)?.url, grid, false);
+}
+
+function _feedsSelectReddit(id, el) {
+    _feedsRedditActive = id;
+    document.querySelectorAll('#feeds-reddit-source-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const src = (_feedsSubs.reddit || []).find(s => s.id === id);
+    if (src) _feedsFetchRedditDirect(src.url, document.getElementById('feeds-reddit-grid'), false);
+}
+
+// ── Reddit: fetch directly from browser (bypasses server IP blocks) ──
+async function _feedsFetchRedditDirect(url, grid, appendMode) {
+    if (!url || !grid) return;
+    const moreBtn = document.getElementById('feeds-reddit-more-btn');
+    if (!appendMode) {
+        grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+        _feedsRedditAfter = null;
+    }
+    const m = (url||'').match(/reddit\.com\/r\/([A-Za-z0-9_]+)/);
+    if (!m) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">Invalid Reddit URL</div></div>'; return; }
+    const sub = m[1];
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const sort = _feedsRedditSort || 'hot';
+    try {
+        // Always use server-side proxy — handles NSFW age-gate and CORS reliably
+        const r2 = await fetch(API + `/api/reddit/feed?sub=${encodeURIComponent(sub)}&sort=${sort}&limit=25${_feedsRedditAfter?'&after='+encodeURIComponent(_feedsRedditAfter):''}`);
+        if (!r2.ok) throw new Error(`Server proxy error: HTTP ${r2.status}`);
+        const resp2 = await r2.json();
+        if (!resp2.ok) throw new Error(resp2.error || 'Reddit fetch failed');
+        var data = {data: resp2.data};
+        _feedsRedditAfter = data?.data?.after || null;
+        const posts = (data?.data?.children || []).filter(p=>p.kind==='t3');
+        if (!posts.length && !appendMode) {
+            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">No posts found</div></div>';
+            if (moreBtn) moreBtn.style.display = 'none';
+            return;
+        }
+        const html = posts.map(post => {
+            const pd = post.data || {};
+            const title = pd.title || 'Untitled';
+            const permalink = 'https://www.reddit.com' + (pd.permalink || '#');
+            const created = pd.created_utc;
+            const dateStr = created ? new Date(created*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+            const postHint = pd.post_hint || '';
+            const isVideo = pd.is_video || false;
+            const isGallery = pd.is_gallery || false;
+            const domain = pd.domain || '';
+            const postUrl = pd.url || permalink;
+            const isVideoLink = isVideo || postHint==='rich:video' || domain.includes('v.redd.it') || domain.includes('youtube.com') || domain.includes('youtu.be');
+            const isGif = /\.(gif|gifv)$/i.test(postUrl) || domain.includes('i.imgur.com');
+            const isImage = postHint==='image' || /\.(jpg|jpeg|png|webp)$/i.test(postUrl);
+            const ptype = isVideoLink ? 'video' : isGif ? 'gif' : isGallery ? 'gallery' : isImage ? 'image' : 'text';
+            let thumb = null;
+            try { const imgs = pd.preview?.images; if (imgs?.length) thumb = imgs[0].source.url.replace(/&amp;/g,'&'); } catch(e){}
+            if (!thumb && isGallery) { try { const k=Object.keys(pd.media_metadata)[0]; thumb=pd.media_metadata[k].s.u.replace(/&amp;/g,'&'); } catch(e){} }
+            if (!thumb) { const tn=pd.thumbnail||''; if(tn.startsWith('http')&&!['self','default','spoiler'].includes(tn)) thumb=tn; }
+            const flair = pd.link_flair_text || '';
+            const score = pd.score || 0;
+            const numC  = pd.num_comments || 0;
+            const typeBadge = ptype==='video'   ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">▶ Video</div>`
+                            : ptype==='gif'     ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#ff6b6b;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">GIF</div>`
+                            : ptype==='gallery' ? `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">🖼 Gallery</div>` : '';
+            const icon = ptype==='video'?'▶':ptype==='gif'?'🎞':ptype==='gallery'?'🖼':ptype==='image'?'🖼':'🤖';
+            const encodedTitle = encodeURIComponent(title.slice(0,200));
+            const encodedPermalink = encodeURIComponent(pd.permalink || permalink);
+            return `<a href="${permalink}" onclick="feedsOpenComments(decodeURIComponent('${encodedPermalink}'),decodeURIComponent('${encodedTitle}'));return false;" style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer" onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'" onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              ${thumb
+                ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2);overflow:hidden"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${icon}</div>'">${typeBadge}</div>`
+                : ptype === 'text' && pd.selftext
+                ? `<div style="width:100%;padding-top:52%;position:relative;background:var(--surface2)"><div style="position:absolute;inset:6px;overflow:hidden;font-size:11px;color:var(--text2);line-height:1.5;padding:4px">${safe((pd.selftext||'').slice(0,300))}</div></div>`
+                : `<div style="width:100%;padding-top:52%;position:relative;background:var(--surface2)"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${icon}</div>${typeBadge}</div>`}
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(title)}</div>
+                <div style="display:flex;align-items:center;gap:10px;font-size:10px;color:var(--text3);margin-top:3px">
+                  ${flair?`<span style="background:var(--surface2);padding:1px 5px;border-radius:3px;color:var(--text2);font-size:9px">${safe(flair)}</span>`:''}
+                  <span>▲ ${score.toLocaleString()}</span><span>💬 ${numC.toLocaleString()}</span>
+                </div>
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">${safe(dateStr)}</div>
+              </div>
+            </a>`;
+        }).join('');
+        if (appendMode) grid.insertAdjacentHTML('beforeend', html);
+        else grid.innerHTML = html;
+        if (moreBtn) moreBtn.style.display = _feedsRedditAfter ? '' : 'none';
+    } catch(e) {
+        if (!appendMode) {
+            const needsSettings = e.message.includes('Settings') || e.message.includes('username') || e.message.includes('login');
+            grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
+              <div class="empty-icon">⚠️</div>
+              <div class="empty-text" style="color:var(--red);max-width:460px;line-height:1.6">${e.message}</div>
+              ${needsSettings ? `<button class="btn blue" style="margin-top:12px" onclick="showTab('settings',null)">⚙️ Open Settings</button>` : ''}
+            </div>`;
+        }
+    }
+}
+
+// ── YouTube sub-page ─────────────────────────────────────────────────
+function _feedsLoadYTPage() {
+    const tabs = document.getElementById('feeds-yt-channel-tabs');
+    const grid = document.getElementById('feeds-yt-grid');
+    if (!tabs || !grid) return;
+    const channels = _feedsSubs.youtube || [];
+    if (!channels.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = '<div class="empty"><div class="empty-icon">▶</div><div class="empty-text">No YouTube channels — add some in Manage</div></div>';
+        return;
+    }
+    // Build channel tabs — "All" first, then individual channels
+    tabs.innerHTML = `<button class="filter-pill${_feedsYTActive === '__all__' ? ' active' : ''}" onclick="_feedsSelectYT('__all__',this)">🎬 All</button>`
+        + channels.map(c =>
+            `<button class="filter-pill${c.id === _feedsYTActive ? ' active' : ''}"
+                onclick="_feedsSelectYT('${c.id}',this)">${c.name}</button>`
+        ).join('');
+    if (!_feedsYTActive) _feedsYTActive = '__all__';
+    if (_feedsYTActive === '__all__') _feedsLoadYTAll(grid);
+    else {
+        const ch = channels.find(c => c.id === _feedsYTActive);
+        if (ch) _feedsFetchAndRenderCards(ch.url, grid, 'youtube');
+    }
+}
+
+async function _feedsLoadYTAll(grid) {
+    // Fetch ALL subscribed channels in parallel and merge/sort by date
+    const channels = _feedsSubs.youtube || [];
+    if (!grid) return;
+    const moreBtnId = 'feeds-yt-more-btn';
+    grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+    try {
+        const results = await Promise.allSettled(
+            channels.map(c => fetch(API + `/api/rss/fetch?url=${encodeURIComponent(c.url)}`).then(r => r.json()))
+        );
+        let allItems = [];
+        results.forEach((res, i) => {
+            if (res.status === 'fulfilled') {
+                const items = res.value.items || [];
+                const chName = channels[i]?.name || '';
+                items.forEach(it => { it._channel = chName; });
+                allItems = allItems.concat(items);
+            }
+        });
+        // Sort by date descending (newest first)
+        allItems.sort((a, b) => {
+            const da = a.date ? new Date(a.date) : 0;
+            const db = b.date ? new Date(b.date) : 0;
+            return db - da;
+        });
+        if (!allItems.length) {
+            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-icon">▶</div><div class="empty-text">No videos found</div></div>';
+            const mb = document.getElementById(moreBtnId); if(mb) mb.style.display='none';
+            return;
+        }
+        const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const enriched = allItems.map(item => {
+            const thumb = item.thumb;
+            const ytIdMatch = (item.link||'').match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/);
+            const ytId = ytIdMatch ? ytIdMatch[1] : null;
+            item._html = `
+            <a href="${item.link}" ${ytId ? `data-yt-id="${ytId}" onclick="feedsOpenYT('${ytId}',this.dataset.ytTitle||'');return false;"` : 'target="_blank" rel="noopener"'} data-yt-title="${safe(item.title)}"
+              style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer"
+              onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              <div style="position:relative;width:100%;padding-top:56.25%;background:var(--surface2);overflow:hidden">
+                ${thumb
+                  ? `<img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
+                         onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>▶</div>'">`
+                  : `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">▶</div>`}
+                ${ytId ? `<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:#ff0000;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700">▶ YT</div>` : ''}
+              </div>
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">
+                  ${item._channel ? `<span style="color:var(--blue);font-weight:600">${safe(item._channel)}</span> · ` : ''}${safe(item.date||'')}
+                </div>
+              </div>
+            </a>`;
+            return item;
+        });
+        _feedsAllItems[grid.id] = enriched;
+        _feedsOffset[grid.id] = _FEEDS_PAGE_SIZE;
+        _feedsRenderItems(grid, enriched, 0, _FEEDS_PAGE_SIZE, 'grid', false);
+        const mb = document.getElementById(moreBtnId);
+        if (mb) mb.style.display = enriched.length > _FEEDS_PAGE_SIZE ? '' : 'none';
+    } catch(e) {
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-text" style="color:var(--red)">Failed to load videos: ${e.message}</div></div>`;
+    }
+}
+
+function _feedsSelectYT(id, el) {
+    _feedsYTActive = id;
+    document.querySelectorAll('#feeds-yt-channel-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const grid = document.getElementById('feeds-yt-grid');
+    if (id === '__all__') { _feedsLoadYTAll(grid); return; }
+    const ch = (_feedsSubs.youtube || []).find(c => c.id === id);
+    if (ch) _feedsFetchAndRenderCards(ch.url, grid, 'youtube');
+}
+
+// ── Hacker News ──────────────────────────────────────────────────────
+async function _feedsLoadHN(appendMode) {
+    const grid = document.getElementById('feeds-hn-grid');
+    const moreBtn = document.getElementById('feeds-hn-more-btn');
+    if (!grid) return;
+    const feedUrl = _hnFeedUrls[_hnSort] || _hnFeedUrls.frontpage;
+    if (!appendMode) {
+        grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+        _hnAllItems = [];
+        _hnOffset = 0;
+    }
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    try {
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(feedUrl)}`);
+        const d = await r.json();
+        const newItems = d.items || [];
+        if (!newItems.length && !appendMode) {
+            grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="empty-text">No HN stories</div></div>';
+            if (moreBtn) moreBtn.style.display = 'none';
+            return;
+        }
+        _hnAllItems = appendMode ? _hnAllItems.concat(newItems) : newItems;
+        const from = appendMode ? _hnOffset : 0;
+        const to   = from + _FEEDS_PAGE_SIZE;
+        _hnOffset  = to;
+        const slice = _hnAllItems.slice(from, to);
+        const html = slice.map((item, idx) => {
+            const domain = (() => { try { return new URL(item.link||'').hostname.replace('www.',''); } catch(e) { return ''; } })();
+            const thumb = item.thumb;
+            return `<a href="${item.link||'#'}" target="_blank" rel="noopener"
+              style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s"
+              onmouseover="this.style.borderColor='var(--yellow,#e3b341)';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              ${thumb
+                ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2);overflow:hidden"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:30px\\'>🟠</div>'"></div>`
+                : `<div style="width:100%;padding-top:52%;position:relative;background:var(--surface2)" ${item.link&&item.link.startsWith('http')?`data-og-url="${item.link}"`:''}>
+                     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px">🟠</div>
+                   </div>`}
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px;display:flex;align-items:center;gap:6px">
+                  ${domain?`<span style="background:var(--surface2);padding:1px 5px;border-radius:3px">${safe(domain)}</span>`:''}
+                  <span>${item.date||''}</span>
+                </div>
+              </div>
+            </a>`;
+        }).join('');
+        if (appendMode) grid.insertAdjacentHTML('beforeend', html);
+        else grid.innerHTML = html;
+        if (moreBtn) moreBtn.style.display = _hnOffset < _hnAllItems.length ? '' : (_hnAllItems.length >= _FEEDS_PAGE_SIZE ? '' : 'none');
+        // Lazy-load og:image
+        setTimeout(() => _feedsLazyLoadThumbs(grid), 100);
+    } catch(e) {
+        if (!appendMode) grid.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load Hacker News: ${e.message}</div>`;
+    }
+}
+
+// ── Generic card fetcher + renderer ─────────────────────────────────
+async function _feedsFetchAndRenderCards(url, grid, mode) {
+    if (!url || !grid) return;
+    const gridId = grid.id;
+    const moreBtnId = gridId.endsWith('-grid') ? gridId.replace(/-grid$/, '-more-btn') : null;
+    grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+    try {
+        const r = await fetch(API + `/api/rss/fetch?url=${encodeURIComponent(url)}&_t=${Date.now()}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (!items.length) {
+            const errMsg = d.error ? `Error: ${d.error}` : 'No items found';
+            grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📭</div><div class="empty-text">${errMsg}</div></div>`;
+            if (moreBtnId) { const b=document.getElementById(moreBtnId); if(b) b.style.display='none'; }
+            return;
+        }
+        const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+        // Store full item list with pre-rendered HTML for card mode
+        const enriched = items.map(item => {
+            const isYT   = mode === 'youtube' || (item.link||'').includes('youtube.com');
+            const isReddit = mode === 'reddit';
+            const ptype  = item.post_type || (isYT ? 'youtube' : 'article');
+            const thumb  = item.thumb;
+            const typeBadge = (() => {
+                if (ptype === 'video')   return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">▶ Video</div>`;
+                if (ptype === 'gif')     return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#ff6b6b;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">GIF</div>`;
+                if (ptype === 'gallery') return `<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600">🖼 Gallery</div>`;
+                if (isYT)                return `<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:red;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">▶ YT</div>`;
+                return '';
+            })();
+            const placeholderIcon = ptype === 'video' ? '▶' : ptype === 'gif' ? '🎞' : ptype === 'gallery' ? '🖼' : ptype === 'image' ? '🖼' : isYT ? '▶' : '📰';
+            const redditMeta = isReddit ? `
+                <div style="display:flex;align-items:center;gap:10px;font-size:10px;color:var(--text3);margin-top:3px">
+                  ${item.flair ? `<span style="background:var(--surface2);padding:1px 5px;border-radius:3px;color:var(--text2);font-size:9px">${safe(item.flair)}</span>` : ''}
+                  <span>▲ ${(item.score||0).toLocaleString()}</span>
+                  <span>💬 ${(item.num_comments||0).toLocaleString()}</span>
+                </div>` : '';
+            const aspectRatio = isYT || ptype === 'video' ? '56.25%' : '52%';
+            const ytIdMatch = isYT ? (item.link||'').match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/) : null;
+            const ytId = ytIdMatch ? ytIdMatch[1] : null;
+            const cardStyle = `display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer`;
+            item._html = `
+            <a href="${item.link}" ${ytId ? `data-yt-id="${ytId}" onclick="feedsOpenYT(this.dataset.ytId,this.dataset.ytTitle||'');return false;"` : 'target="_blank" rel="noopener"'} data-yt-title="${safe(item.title)}" style="${cardStyle}"
+              onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              ${thumb
+                ? `<div style="position:relative;width:100%;padding-top:${aspectRatio};background:var(--surface2);overflow:hidden">
+                     <img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
+                          onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${placeholderIcon}</div>'">
+                     ${typeBadge}
+                   </div>`
+                : `<div style="width:100%;padding-top:${aspectRatio};position:relative;background:var(--surface2)" ${!isYT && item.link && item.link.startsWith('http') ? `data-og-url="${item.link}"` : ''}>
+                     <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${placeholderIcon}</div>
+                     ${typeBadge}
+                   </div>`}
+              <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:${isReddit?2:3};-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                ${(item.excerpt && !isYT) ? `<div style="font-size:11px;color:var(--text2);line-height:1.4;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.excerpt)}</div>` : ''}
+                ${redditMeta}
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px;display:flex;align-items:center;gap:4px">
+                  <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
+                  ${safe(item.date || '')}
+                </div>
+              </div>
+            </a>`;
+            return item;
+        });
+
+        // Store for sort/pagination
+        _feedsAllItems[gridId] = enriched;
+        _feedsOffset[gridId] = _FEEDS_PAGE_SIZE;
+        const viewMode = _feedsViewMode[gridId] || 'grid';
+        _feedsRenderItems(grid, enriched, 0, _FEEDS_PAGE_SIZE, viewMode, false);
+
+        // Show/hide Load More
+        if (moreBtnId) {
+            const b = document.getElementById(moreBtnId);
+            if (b) b.style.display = enriched.length > _FEEDS_PAGE_SIZE ? '' : 'none';
+        }
+        // Lazy-load og:image for cards without thumbnails
+        setTimeout(() => _feedsLazyLoadThumbs(grid), 100);
+    } catch(e) {
+        grid.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px;grid-column:1/-1">Failed to load feed: ${e.message}</div>`;
+    }
+}
+
+// ── og:image lazy thumbnail loader ───────────────────────────────────
+async function _feedsLazyLoadThumbs(grid) {
+    if (!grid) return;
+    const placeholders = Array.from(grid.querySelectorAll('[data-og-url]'));
+    if (!placeholders.length) return;
+    // Fetch all og:images in parallel (max 8 at a time to avoid overwhelming server)
+    const BATCH = 8;
+    for (let i = 0; i < placeholders.length; i += BATCH) {
+        const batch = placeholders.slice(i, i + BATCH);
+        await Promise.all(batch.map(async ph => {
+            const artUrl = ph.dataset.ogUrl;
+            if (!artUrl) return;
+            try {
+                const r = await fetch(`/api/feeds/og?url=${encodeURIComponent(artUrl)}`);
+                const d = await r.json();
+                if (d.img) {
+                    ph.innerHTML = `<img src="${d.img}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'">`;
+                    ph.removeAttribute('data-og-url');
+                }
+            } catch(e) { /* silently skip */ }
+        }));
+    }
+}
+
+// ── Reddit post reader modal ──────────────────────────────────────────
+function feedsOpenRedditPost(title, text, url) {
+    const modal = document.getElementById('feeds-reddit-modal');
+    const titleEl = document.getElementById('feeds-reddit-modal-title');
+    const body = document.getElementById('feeds-reddit-modal-body');
+    const link = document.getElementById('feeds-reddit-modal-link');
+    if (!modal) return;
+    if (titleEl) titleEl.textContent = title || '';
+    if (body) body.textContent = text || '';
+    if (link) link.href = url || '#';
+    // Escape any hidden parent by moving modal to body level
+    if (modal.parentElement !== document.body) document.body.appendChild(modal);
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function feedsCloseRedditPost() {
+    const modal = document.getElementById('feeds-reddit-modal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+// ── Reddit Comments Modal ─────────────────────────────────────────────
+async function feedsOpenComments(permalink, title) {
+    const modal   = document.getElementById('feeds-reddit-comments-modal');
+    const titleEl = document.getElementById('feeds-comments-title');
+    const bodyEl  = document.getElementById('feeds-comments-post-body');
+    const metaEl  = document.getElementById('feeds-comments-meta');
+    const listEl  = document.getElementById('feeds-comments-list');
+    const linkEl  = document.getElementById('feeds-comments-link');
+    if (!modal) return;
+    const fullLink = permalink.startsWith('http') ? permalink : 'https://www.reddit.com' + permalink;
+    if (titleEl) titleEl.textContent = title || 'Post';
+    if (bodyEl)  bodyEl.textContent  = '';
+    if (metaEl)  metaEl.innerHTML    = '';
+    if (listEl)  listEl.innerHTML    = '<div style="color:var(--text3);font-size:12px">Loading comments…</div>';
+    if (linkEl)  linkEl.href         = fullLink;
+    // Escape any hidden parent by moving modal to body level
+    if (modal.parentElement !== document.body) document.body.appendChild(modal);
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    function renderComment(c, depth) {
+        const d = c.data || {};
+        if (!d.author || d.author === '[deleted]' && !d.body) return '';
+        const indent = depth * 14;
+        const body = (d.body || '').replace(/\n\n/g,'<br><br>').replace(/\n/g,'<br>');
+        const replies = (d.replies?.data?.children||[]).filter(r=>r.kind==='t1');
+        return `<div style="margin-left:${indent}px;border-left:${depth>0?'2px solid var(--border)':'none'};padding-left:${depth>0?'10px':'0'};margin-top:6px">
+          <div style="background:var(--surface);border-radius:6px;padding:8px 10px">
+            <div style="font-size:10px;color:var(--blue);font-weight:600;margin-bottom:4px">${safe(d.author||'?')} <span style="color:var(--text3);font-weight:400">· ▲ ${d.score||0}</span></div>
+            <div style="font-size:12px;color:var(--text2);line-height:1.6">${body}</div>
+          </div>
+          ${replies.slice(0,5).map(r=>renderComment(r,depth+1)).join('')}
+        </div>`;
+    }
+    try {
+        // Direct browser fetch for comments — www.reddit.com JSON API
+        const commentUrl = (fullLink.startsWith('http') ? fullLink : 'https://www.reddit.com'+fullLink).replace(/\/?$/, '.json') + '?limit=50&raw_json=1&include_over_18=1';
+        let data;
+        try {
+            const r = await fetch(commentUrl);
+            if (!r.ok) throw new Error('browser fetch failed');
+            data = await r.json();
+        } catch(e2) {
+            // Fallback to server proxy
+            const r2 = await fetch(API + `/api/reddit/comments?url=${encodeURIComponent(commentUrl)}`);
+            data = await r2.json();
+        }
+        const post = data[0]?.data?.children?.[0]?.data || {};
+        const comments = data[1]?.data?.children || [];
+        if (bodyEl) bodyEl.textContent = post.selftext || (post.url && post.url !== fullLink ? post.url : '');
+        if (metaEl) metaEl.innerHTML = `
+          <span>▲ ${(post.score||0).toLocaleString()} points</span>
+          <span>💬 ${(post.num_comments||0).toLocaleString()} comments</span>
+          <span>📌 r/${safe(post.subreddit||'')}</span>
+          <span>👤 u/${safe(post.author||'')}</span>`;
+        if (listEl) {
+            const rendered = comments.filter(c=>c.kind==='t1').slice(0,30).map(c=>renderComment(c,0)).join('');
+            listEl.innerHTML = rendered || '<div style="color:var(--text3);font-size:12px;padding:8px">No comments yet</div>';
+        }
+    } catch(e) {
+        if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:12px">Failed to load comments: ${e.message}</div>`;
+    }
+}
+function feedsCloseComments() {
+    const modal = document.getElementById('feeds-reddit-comments-modal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+// ── Feed view / sort / pagination helpers ────────────────────────────
+function feedsToggleView(gridId, btnId) {
+    const grid = document.getElementById(gridId);
+    const btn  = document.getElementById(btnId);
+    if (!grid) return;
+    const current = _feedsViewMode[gridId] || 'grid';
+    const next = current === 'grid' ? 'list' : 'grid';
+    _feedsViewMode[gridId] = next;
+    if (btn) btn.textContent = next === 'grid' ? '☰' : '⊞';
+    const items = _feedsAllItems[gridId];
+    if (items && items.length) {
+        const offset = _feedsOffset[gridId] || _FEEDS_PAGE_SIZE;
+        _feedsRenderItems(grid, items, 0, offset, next, false);
+    }
+    // Apply list mode styles
+    if (next === 'list') {
+        grid.style.gridTemplateColumns = '1fr';
+        grid.style.gap = '6px';
+    } else {
+        grid.style.gridTemplateColumns = '';
+        grid.style.gap = '12px';
+    }
+}
+
+function feedsSortGrid(gridId, sortVal) {
+    const grid  = document.getElementById(gridId);
+    if (!grid) return;
+    let items = (_feedsAllItems[gridId] || []).slice();
+    if (sortVal === 'oldest') items.reverse();
+    else if (sortVal === 'az') items.sort((a,b) => (a.title||'').localeCompare(b.title||''));
+    _feedsAllItems[gridId] = items;
+    _feedsOffset[gridId] = _FEEDS_PAGE_SIZE;
+    const mode = _feedsViewMode[gridId] || 'grid';
+    _feedsRenderItems(grid, items, 0, _FEEDS_PAGE_SIZE, mode, false);
+    // Update Load More button
+    const moreId = gridId.endsWith('-grid') ? gridId.replace(/-grid$/, '-more-btn') : null;
+    if (moreId) { const b = document.getElementById(moreId); if (b) b.style.display = items.length > _FEEDS_PAGE_SIZE ? '' : 'none'; }
+}
+
+function _feedsRenderItems(grid, items, from, to, mode, append) {
+    const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const slice = items.slice(from, to);
+    const html = slice.map(item => {
+        const isYT = (item.link||'').includes('youtube.com') || (item.link||'').includes('youtu.be');
+        const thumb = item.thumb;
+        const ytId = isYT ? (()=>{ try { const u=new URL(item.link); return u.searchParams.get('v')||u.pathname.split('/').pop(); } catch(e){return null;} })() : null;
+        const domainStr = (() => { try { return new URL(item.link||'').hostname.replace('www.',''); } catch(e){return '';} })();
+        if (mode === 'list') {
+            return `<a href="${item.link||'#'}" ${ytId?`data-yt-id="${ytId}" onclick="feedsOpenYT(this.dataset.ytId,this.dataset.ytTitle||'');return false;" data-yt-title="${safe(item.title)}"`:' target="_blank" rel="noopener"'} style="display:flex;align-items:center;gap:10px;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;transition:border-color .15s" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+              ${thumb ? `<img src="${thumb}" loading="lazy" style="width:56px;height:40px;object-fit:cover;border-radius:4px;flex-shrink:0" onerror="this.style.display='none'">` : `<div style="width:56px;height:40px;background:var(--bg3);border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px">${isYT?'▶':'📰'}</div>`}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:2px">${domainStr ? `${domainStr} · ` : ''}${item.date||''}</div>
+              </div>
+            </a>`;
+        }
+        // Card mode — delegate to the card HTML the item already produced (passed as raw)
+        return item._html || `<a href="${item.link||'#'}" ${ytId?`data-yt-id="${ytId}" onclick="feedsOpenYT(this.dataset.ytId,this.dataset.ytTitle||'');return false;" data-yt-title="${safe(item.title)}"`:' target="_blank" rel="noopener"'} style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+          ${thumb ? `<div style="position:relative;width:100%;padding-top:52%;background:var(--surface2)"><img src="${thumb}" loading="lazy" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;font-size:36px\\'>${isYT?'▶':'📰'}</div>'"></div>` : `<div style="width:100%;padding-top:52%;background:var(--surface2);position:relative"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px">${isYT?'▶':'📰'}</div></div>`}
+          <div style="padding:9px 12px 11px;flex:1;display:flex;flex-direction:column;gap:3px">
+            <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">${domainStr ? `${domainStr} · ` : ''}${item.date||''}</div>
+          </div>
+        </a>`;
+    }).join('');
+    if (append) grid.insertAdjacentHTML('beforeend', html);
+    else grid.innerHTML = html;
+    // Trigger og:image lazy loading for any new placeholders
+    setTimeout(() => _feedsLazyLoadThumbs(grid), 120);
+}
+
+function feedsLoadMore(type) {
+    const gridId = type === 'youtube' ? 'feeds-yt-grid' : `feeds-${type}-grid`;
+    const moreBtnId = type === 'youtube' ? 'feeds-yt-more-btn' : `feeds-${type}-more-btn`;
+    const grid = document.getElementById(gridId);
+    const moreBtn = document.getElementById(moreBtnId);
+    if (!grid) return;
+    const items = _feedsAllItems[gridId] || [];
+    const from = _feedsOffset[gridId] || _FEEDS_PAGE_SIZE;
+    const to = from + _FEEDS_PAGE_SIZE;
+    _feedsOffset[gridId] = to;
+    const mode = _feedsViewMode[gridId] || 'grid';
+    _feedsRenderItems(grid, items, from, to, mode, true);
+    if (moreBtn) moreBtn.style.display = to >= items.length ? 'none' : '';
+}
+
+function feedsRedditChangeSort(val) {
+    _feedsRedditSort = val;
+    _feedsRedditAfter = null;
+    const moreBtn = document.getElementById('feeds-reddit-more-btn');
+    if (moreBtn) moreBtn.style.display = 'none';
+    const grid = document.getElementById('feeds-reddit-grid');
+    const src = (_feedsSubs.reddit||[]).find(s => s.id === _feedsRedditActive);
+    if (src && grid) _feedsFetchRedditDirect(src.url, grid, false);
+}
+
+function feedsRedditLoadMore() {
+    const grid = document.getElementById('feeds-reddit-grid');
+    const src = (_feedsSubs.reddit||[]).find(s => s.id === _feedsRedditActive);
+    if (src && grid) _feedsFetchRedditDirect(src.url, grid, true);
+}
+
+function feedsHNChangeSort(sort, btnEl) {
+    _hnSort = sort;
+    _hnAllItems = [];
+    _hnOffset = 0;
+    document.querySelectorAll('[id^="hn-sort-"]').forEach(b=>b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    _feedsLoadHN(false);
+}
+
+let _twitterViewMode = 'cards';
+function twitterSetMode(mode) {
+    _twitterViewMode = mode;
+    const cardsEl  = document.getElementById('feeds-twitter-cards-mode');
+    const viewerEl = document.getElementById('feeds-twitter-viewer-mode');
+    const cardBtn  = document.getElementById('tw-mode-cards-btn');
+    const viewBtn  = document.getElementById('tw-mode-viewer-btn');
+    if (cardsEl)  cardsEl.style.display  = mode === 'cards'  ? '' : 'none';
+    if (viewerEl) viewerEl.style.display = mode === 'viewer' ? '' : 'none';
+    if (cardBtn)  { cardBtn.style.background = mode==='cards'  ? 'var(--accent,#2563eb)' : 'var(--bg3)'; cardBtn.style.color = mode==='cards'  ? '#fff' : 'var(--text2)'; cardBtn.style.border = mode==='cards'  ? 'none' : '1px solid var(--border)'; }
+    if (viewBtn)  { viewBtn.style.background  = mode==='viewer' ? 'var(--accent,#2563eb)' : 'var(--bg3)'; viewBtn.style.color  = mode==='viewer' ? '#fff' : 'var(--text2)'; viewBtn.style.border  = mode==='viewer' ? 'none' : '1px solid var(--border)'; }
+    if (mode === 'viewer') {
+        // X.com blocks embedding — just set the direct link for the active handle
+        const activePill = document.querySelector('#feeds-twitter-handle-tabs .filter-pill.active');
+        if (activePill) {
+            const handle = (activePill.dataset.handle || activePill.textContent || '').replace(/^@/, '').replace(/^[^@]*@?(\w+)\s*$/, '$1').trim();
+            const extLink = document.getElementById('feeds-twitter-webviewer-extlink');
+            if (extLink && handle) extLink.href = `https://x.com/${handle}`;
+        }
+    }
+}
+
+function _feedsLoadTwitterPage() {
+    const tabs    = document.getElementById('feeds-twitter-handle-tabs');
+    const grid    = document.getElementById('feeds-twitter-grid');
+    const emptyEl = document.getElementById('feeds-twitter-empty');
+    const moreBtn = document.getElementById('feeds-twitter-more-btn');
+    if (!tabs) return;
+    const handles = _feedsSubs.twitter || [];
+    if (!handles.length) {
+        if (grid) grid.innerHTML = '';
+        if (emptyEl) emptyEl.style.display = '';
+        if (moreBtn) moreBtn.style.display = 'none';
+        tabs.innerHTML = '';
+        return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+    if (!_feedsTwitterActive || !handles.find(h => h.id === _feedsTwitterActive))
+        _feedsTwitterActive = handles[0].id;
+    tabs.innerHTML = handles.map(h =>
+        `<button class="filter-pill${h.id===_feedsTwitterActive?' active':''}" data-handle="${(h.url||'').replace(/^@/,'')}" onclick="_feedsSelectTwitter('${h.id}',this)">𝕏 ${h.name}</button>`
+    ).join('');
+    const active = handles.find(h => h.id === _feedsTwitterActive);
+    if (active && grid) _feedsFetchTwitterCards(active.url, grid, false);
+}
+
+function _feedsSelectTwitter(id, el) {
+    _feedsTwitterActive = id;
+    document.querySelectorAll('#feeds-twitter-handle-tabs .filter-pill').forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const h = (_feedsSubs.twitter || []).find(s => s.id === id);
+    const grid = document.getElementById('feeds-twitter-grid');
+    const openLink = document.getElementById('feeds-twitter-open-link');
+    if (openLink) openLink.href = `https://x.com/${(h && h.url ? h.url : '').replace(/^@/,'')}`;
+    if (h && grid) _feedsFetchTwitterCards(h.url, grid, false);
+    // Also update viewer panel link if in viewer mode
+    if (_twitterViewMode === 'viewer' && h) {
+        const handle = (h.url || '').replace(/^@/, '');
+        const extLink = document.getElementById('feeds-twitter-webviewer-extlink');
+        if (extLink) extLink.href = `https://x.com/${handle}`;
+    }
+}
+
+async function _feedsFetchTwitterCards(handle, grid, appendMode) {
+    if (!grid) return;
+    const moreBtn = document.getElementById('feeds-twitter-more-btn');
+    const cleanHandle = (handle || '').replace(/^@/, '');
+    if (!cleanHandle) return;
+    if (!appendMode) {
+        grid.innerHTML = '<div class="skeleton" style="height:200px;border-radius:var(--r)"></div>'.repeat(6);
+        if (moreBtn) moreBtn.style.display = 'none';
+    }
+    try {
+        const r = await fetch(API + `/api/twitter/feed?handle=${encodeURIComponent(cleanHandle)}&_t=${Date.now()}`);
+        const d = await r.json();
+        const items = d.items || [];
+        if (!items.length) {
+            const msg = d.error ? `Could not load tweets: ${d.error}` : 'No tweets found';
+            grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">𝕏</div><div class="empty-text" style="color:var(--text3)">${msg}<br><br><a href="https://x.com/${cleanHandle}" target="_blank" rel="noopener" style="color:var(--blue)">↗ Open @${cleanHandle} on X</a></div></div>`;
+            return;
+        }
+        const safe = t => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const gridId = grid.id;
+        const enriched = items.map(item => {
+            item._html = `
+            <a href="${item.link||'#'}" target="_blank" rel="noopener"
+              style="display:flex;flex-direction:column;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s,transform .1s;cursor:pointer"
+              onmouseover="this.style.borderColor='#1d9bf0';this.style.transform='translateY(-2px)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
+              <div style="padding:14px;flex:1;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;color:#1d9bf0">
+                  <span style="font-size:15px">𝕏</span> @${safe(cleanHandle)}
+                </div>
+                <div style="font-size:13px;color:var(--text);line-height:1.5;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden">${safe(item.title)}</div>
+                ${item.excerpt && item.excerpt !== item.title ? `<div style="font-size:11px;color:var(--text2);line-height:1.4">${safe(item.excerpt.slice(0,120))}</div>` : ''}
+                <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:4px">${safe(item.date||'')}</div>
+              </div>
+            </a>`;
+            return item;
+        });
+        _feedsAllItems[gridId] = enriched;
+        _feedsOffset[gridId] = _FEEDS_PAGE_SIZE;
+        _feedsRenderItems(grid, enriched, 0, _FEEDS_PAGE_SIZE, 'grid', false);
+        if (moreBtn) moreBtn.style.display = enriched.length > _FEEDS_PAGE_SIZE ? '' : 'none';
+    } catch(e) {
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">𝕏</div><div class="empty-text" style="color:var(--red)">Failed: ${e.message}<br><br><a href="https://x.com/${cleanHandle}" target="_blank" rel="noopener" style="color:var(--blue)">↗ Open @${cleanHandle} on X</a></div></div>`;
+    }
+}
+
+function feedsHNLoadMore() {
+    _feedsLoadHN(true);
+}
+
+// ── Media player modal (YouTube embed) ───────────────────────────────
+function feedsOpenYT(videoId, title) {
+    if (!videoId) return;
+    // Use inline player panel (stays within Feeds tab) — no modal overlay needed
+    const panel   = document.getElementById('feeds-yt-player-panel');
+    const frame   = document.getElementById('feeds-yt-player-frame');
+    const titleEl = document.getElementById('feeds-yt-player-title');
+    const extLink = document.getElementById('feeds-yt-player-extlink');
+    if (panel && frame) {
+        frame.src = '';
+        requestAnimationFrame(() => {
+            frame.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&origin=${encodeURIComponent(location.origin)}`;
+        });
+        if (titleEl) titleEl.textContent = title || '';
+        if (extLink) extLink.href = `https://www.youtube.com/watch?v=${videoId}`;
+        panel.style.display = '';
+        // Scroll player into view
+        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return;
+    }
+    // Fallback: open directly on YouTube if panel not found
+    window.open('https://www.youtube.com/watch?v=' + videoId, '_blank');
+}
+function feedsCloseYTPlayer() {
+    const panel = document.getElementById('feeds-yt-player-panel');
+    const frame = document.getElementById('feeds-yt-player-frame');
+    if (frame) frame.src = '';
+    if (panel) panel.style.display = 'none';
+}
+// feedsTwitterViewerLoaded / feedsTwitterViewerError removed — viewer now uses direct-link panel
+function feedsCloseMedia() {
+    const modal = document.getElementById('feeds-media-modal');
+    const iframe = document.getElementById('feeds-media-iframe');
+    if (iframe) iframe.src = '';
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+// close modals on Escape key
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        feedsCloseMedia();
+        feedsCloseRedditPost();
+        iptvHideBrowse();
+    }
+});
+
+// ── Manage sub-page ──────────────────────────────────────────────────
+// ── Custom type page loader ───────────────────────────────────────────
+function _feedsLoadCustomPage(type) {
+    const tabs = document.getElementById(`feeds-${type}-source-tabs`);
+    const grid = document.getElementById(`feeds-${type}-grid`);
+    const moreBtn = document.getElementById(`feeds-${type}-more-btn`);
+    if (!tabs || !grid) return;
+    const meta = _feedsSubs._type_meta || {};
+    const icon = meta[type]?.icon || '📡';
+    const sources = _feedsSubs[type] || [];
+    if (!sources.length) {
+        tabs.innerHTML = '';
+        grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">${icon}</div><div class="empty-text">No feeds yet — add some in Manage</div></div>`;
+        if (moreBtn) moreBtn.style.display = 'none';
+        return;
+    }
+    let activeId = sources[0].id;
+    tabs.innerHTML = sources.map(s =>
+        `<button class="filter-pill${s.id===activeId?' active':''}" onclick="_feedsSelectCustom('${type}','${s.id}',this)">${s.name}</button>`
+    ).join('');
+    _feedsFetchAndRenderCards(sources[0].url, grid, 'rss');
+}
+
+function _feedsSelectCustom(type, id, el) {
+    document.querySelectorAll(`#feeds-${type}-source-tabs .filter-pill`).forEach(p => p.classList.remove('active'));
+    if (el) el.classList.add('active');
+    const src = (_feedsSubs[type] || []).find(s => s.id === id);
+    if (src) _feedsFetchAndRenderCards(src.url, document.getElementById(`feeds-${type}-grid`), 'rss');
+}
+
+// ── Manage sub-page ──────────────────────────────────────────────────
+function _feedsRenderManage() {
+    const grid = document.getElementById('feeds-manage-grid');
+    if (!grid) return;
+    const meta = _feedsSubs._type_meta || {};
+    const builtIn = ['rss','reddit','youtube','twitter'];
+    const allTypes = [...builtIn, ...Object.keys(meta).filter(k => !builtIn.includes(k))];
+    const icons = {rss:'📰', reddit:'🤖', youtube:'▶', twitter:'𝕏'};
+    const names = {rss:'RSS Feeds', reddit:'Reddit', youtube:'YouTube', twitter:'Twitter / X'};
+
+    grid.innerHTML = allTypes.map(type => {
+        const icon = icons[type] || meta[type]?.icon || '📡';
+        const name = names[type] || meta[type]?.name || type;
+        const list = _feedsSubs[type] || [];
+        const isCustom = !builtIn.includes(type);
+        return `
+          <div class="panel">
+            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
+              <span>${icon} ${name}</span>
+              <div style="display:flex;gap:4px">
+                <button class="btn blue" style="padding:3px 8px;font-size:11px" onclick="feedsShowAddModal('${type}')">+ Add</button>
+                ${isCustom ? `<button class="btn" style="padding:3px 8px;font-size:11px;color:var(--red)" onclick="_feedsDeleteCategory('${type}')" title="Delete category">🗑</button>` : ''}
+              </div>
+            </div>
+            <div id="feeds-manage-${type}" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto">
+              ${list.length ? list.map(s => `
+                <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px">
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:12px;font-weight:600;color:var(--text)">${s.name}</div>
+                    <div style="font-size:10px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.url || s.id}</div>
+                  </div>
+                  <button onclick="_feedsDeleteSub('${type}','${s.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 4px;flex-shrink:0" title="Remove">✕</button>
+                </div>`).join('') : `<div style="font-size:12px;color:var(--text3);padding:6px">No sources yet</div>`}
+            </div>
+          </div>`;
+    }).join('');
+}
+
+async function _feedsDeleteSub(type, id) {
+    if (!confirm('Remove this subscription?')) return;
+    try {
+        await fetch(API + `/api/feeds/subscriptions/${type}/${encodeURIComponent(id)}`, {method:'DELETE'});
+        const subs = _feedsSubs[type] || [];
+        _feedsSubs[type] = subs.filter(s => s.id !== id);
+        _feedsRenderManage();
+        showToast('Subscription removed', 'success', 2000);
+    } catch(e) { showToast('Failed to remove', 'error'); }
+}
+
+// ── Add modal ────────────────────────────────────────────────────────
+function feedsShowAddModal(type) {
+    _feedsAddType = type;
+    const modal = document.getElementById('feeds-add-modal');
+    const title = document.getElementById('feeds-add-modal-title');
+    const urlRow = document.getElementById('feeds-add-url-row');
+    const idRow  = document.getElementById('feeds-add-id-row');
+    const urlLbl = document.getElementById('feeds-add-url-label');
+    const idLbl  = document.getElementById('feeds-add-id-label');
+    if (!modal) return;
+    document.getElementById('feeds-add-name').value = '';
+    document.getElementById('feeds-add-url').value  = '';
+    document.getElementById('feeds-add-id').value   = '';
+    const meta = _feedsSubs._type_meta || {};
+    if (type === 'rss') {
+        title.textContent = '📰 Add RSS Feed';
+        urlRow.style.display = '';
+        urlLbl.textContent = 'RSS Feed URL';
+        idRow.style.display = 'none';
+        document.getElementById('feeds-add-url').placeholder = 'https://techcrunch.com/feed/';
+    } else if (type === 'reddit') {
+        title.textContent = '🤖 Add Subreddit';
+        urlRow.style.display = 'none';
+        idRow.style.display = '';
+        idLbl.textContent = 'Subreddit (e.g. homelab or selfhosted)';
+        document.getElementById('feeds-add-id').placeholder = 'homelab';
+    } else if (type === 'youtube') {
+        title.textContent = '▶ Add YouTube Channel';
+        urlRow.style.display = '';
+        urlLbl.textContent = 'Channel ID (from youtube.com/channel/UC...)';
+        idRow.style.display = 'none';
+        document.getElementById('feeds-add-url').placeholder = 'UCsBjURrPoezykLs9EqgamOA';
+    } else {
+        // Custom category — always RSS-style URL
+        const icon = meta[type]?.icon || '📡';
+        const name = meta[type]?.name || type;
+        title.textContent = `${icon} Add Feed to ${name}`;
+        urlRow.style.display = '';
+        urlLbl.textContent = 'RSS / Atom Feed URL';
+        idRow.style.display = 'none';
+        document.getElementById('feeds-add-url').placeholder = 'https://example.com/feed.xml';
+    }
+    modal.style.display = 'flex';
+}
+
+// ── New Category modal ────────────────────────────────────────────────
+function feedsShowNewCatModal() {
+    const m = document.getElementById('feeds-newcat-modal');
+    if (m) { document.getElementById('newcat-name').value=''; document.getElementById('newcat-icon').value=''; m.style.display='flex'; }
+}
+function feedsHideNewCatModal() {
+    const m = document.getElementById('feeds-newcat-modal');
+    if (m) m.style.display='none';
+}
+async function feedsSaveNewCat() {
+    const name = document.getElementById('newcat-name').value.trim();
+    const icon = document.getElementById('newcat-icon').value.trim() || '📡';
+    if (!name) { showToast('Category name is required','error',2000); return; }
+    const id = name.toLowerCase().replace(/[^a-z0-9_]/g,'_').replace(/_+/g,'_');
+    try {
+        const r = await fetch(API+'/api/feeds/categories', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name,icon})});
+        const d = await r.json();
+        if (d.error) { showToast('Error: '+d.error,'error'); return; }
+        feedsHideNewCatModal();
+        // Reload subs and rebuild nav
+        const sr = await fetch(API+'/api/feeds/subscriptions');
+        _feedsSubs = await sr.json();
+        if (!_feedsSubs._type_meta) _feedsSubs._type_meta = {};
+        _feedsBuildNavPills();
+        _feedsInjectCustomPageDivs();
+        _feedsRenderManage();
+        showToast(`Category "${name}" created`,'success');
+    } catch(e) { showToast('Failed to create category','error'); }
+}
+
+async function _feedsDeleteCategory(type) {
+    if (!confirm(`Delete the "${type}" category and all its subscriptions?`)) return;
+    try {
+        await fetch(API+`/api/feeds/categories/${encodeURIComponent(type)}`, {method:'DELETE'});
+        delete _feedsSubs[type];
+        if (_feedsSubs._type_meta) delete _feedsSubs._type_meta[type];
+        _feedsBuildNavPills();
+        _feedsInjectCustomPageDivs();
+        _feedsRenderManage();
+        if (_feedsPage === type) feedsNav('rss', document.getElementById('feeds-pill-rss'));
+        showToast(`Category removed`,'success');
+    } catch(e) { showToast('Failed to delete category','error'); }
+}
+
+function feedsHideAddModal() {
+    const modal = document.getElementById('feeds-add-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function feedsSaveAdd() {
+    const type = _feedsAddType;
+    const name = document.getElementById('feeds-add-name').value.trim();
+    const urlVal = document.getElementById('feeds-add-url').value.trim();
+    const idVal  = document.getElementById('feeds-add-id').value.trim();
+    if (!name) { showToast('Name is required', 'error', 2000); return; }
+
+    let id, url;
+    if (type === 'rss') {
+        url = urlVal;
+        id  = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        if (!url) { showToast('URL is required', 'error', 2000); return; }
+    } else if (type === 'reddit') {
+        const sub = idVal.replace(/^r\//,'').replace(/\s/g,'');
+        if (!sub) { showToast('Subreddit name required', 'error', 2000); return; }
+        id  = sub.toLowerCase();
+        url = `https://old.reddit.com/r/${sub}/.rss`;
+    } else if (type === 'youtube') {
+        const chId = urlVal.replace(/\s/g,'');
+        if (!chId) { showToast('Channel ID required', 'error', 2000); return; }
+        id  = chId;
+        url = `https://www.youtube.com/feeds/videos.xml?channel_id=${chId}`;
+    } else {
+        // Custom category: generic RSS URL
+        url = urlVal;
+        id  = urlVal.replace(/[^a-z0-9]/gi, '_').slice(0,32) || ('feed_' + Date.now());
+    }
+
+    try {
+        const r = await fetch(API + '/api/feeds/subscriptions', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({type, id, name, url})
+        });
+        const d = await r.json();
+        if (d.error) { showToast(d.error, 'error'); return; }
+        if (!_feedsSubs[type]) _feedsSubs[type] = [];
+        if (!_feedsSubs[type].find(s => s.id === id))
+            _feedsSubs[type].push({id, name, url});
+        feedsHideAddModal();
+        _feedsRenderManage();
+        showToast(`${name} added!`, 'success', 2000);
+    } catch(e) { showToast('Save failed', 'error'); }
 }
 
 // ── RSS Feeds ─────────────────────────────────────────────────────────
@@ -5532,25 +10500,60 @@ async function loadFeedItems(catId, encodedUrl, encodedName, btnEl) {
             return;
         }
 
-        // Rich card layout: thumbnail left, title+excerpt+date right
-        itemsEl.innerHTML = items.slice(0, 12).map(item => `
+        // Reddit gets bigger cards; everything else gets compact row layout
+        const isReddit = catId === 'Reddit' || url.includes('reddit.com');
+        if (isReddit) {
+            // Big Reddit-style cards with resizable layout
+            const cardSize = parseInt(itemsEl.closest('.rss-col')?.dataset.cardSize || '1');
+            itemsEl.innerHTML = `
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                <span style="font-size:11px;color:var(--text3)">Card size:</span>
+                <input type="range" min="0" max="2" value="${cardSize}" style="width:80px;accent-color:var(--blue)"
+                  oninput="rssSetCardSize('${catId}',+this.value)">
+              </div>
+              <div id="reddit-cards-${catId}" style="display:grid;gap:12px;${['grid-template-columns:1fr','grid-template-columns:repeat(2,1fr)','grid-template-columns:repeat(3,1fr)'][cardSize]}">
+              ${items.slice(0,20).map(item => `
+                <a href="${item.link}" target="_blank" rel="noopener"
+                   style="display:flex;flex-direction:column;gap:8px;text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;transition:border-color .15s"
+                   onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+                  ${item.thumb
+                    ? `<img src="${item.thumb}" loading="lazy" style="width:100%;height:140px;object-fit:cover;background:var(--surface2)" onerror="this.style.display='none'">`
+                    : `<div style="width:100%;height:80px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:32px">🤖</div>`}
+                  <div style="padding:10px 12px 12px;flex:1;display:flex;flex-direction:column;gap:4px">
+                    <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${item.title}</div>
+                    ${item.excerpt ? `<div style="font-size:11px;color:var(--text2);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px">${item.excerpt}</div>` : ''}
+                    <div style="font-size:10px;color:var(--text3);margin-top:auto;padding-top:6px">${item.date || ''}</div>
+                  </div>
+                </a>`).join('')}
+              </div>`;
+        } else {
+        // Rich card layout for non-Reddit feeds — bigger tiles
+        itemsEl.innerHTML = `<div style="display:grid;gap:8px">` + items.slice(0, 15).map(item => `
             <a href="${item.link}" target="_blank" rel="noopener"
-               style="display:flex;gap:10px;text-decoration:none;padding:8px 4px;border-bottom:1px solid var(--border);transition:background .12s ease;"
-               onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+               style="display:flex;gap:12px;align-items:flex-start;text-decoration:none;
+                      background:var(--surface);border:1px solid var(--border);border-radius:8px;
+                      padding:10px 12px;transition:border-color .15s,transform .1s;"
+               onmouseover="this.style.borderColor='var(--blue)';this.style.transform='translateY(-1px)'"
+               onmouseout="this.style.borderColor='var(--border)';this.style.transform=''">
               ${item.thumb
-                ? `<img src="${item.thumb}" loading="lazy" style="width:72px;height:52px;object-fit:cover;border-radius:5px;flex-shrink:0;background:var(--surface2)"
-                        onerror="this.style.display='none'">`
-                : `<div style="width:72px;height:52px;flex-shrink:0;background:var(--surface2);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text3)">📰</div>`}
-              <div style="flex:1;min-width:0;overflow:hidden">
-                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:3px;
+                ? `<img src="${item.thumb}" loading="lazy"
+                        style="width:88px;height:66px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--surface2)"
+                        onerror="this.outerHTML='<div style=\\'width:88px;height:66px;flex-shrink:0;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:26px\\'>📰</div>'">`
+                : `<div style="width:88px;height:66px;flex-shrink:0;background:var(--surface2);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:26px;color:var(--text3)">📰</div>`}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.4;margin-bottom:4px;
                      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.title}</div>
                 ${item.excerpt
-                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.3;margin-bottom:3px;
+                    ? `<div style="font-size:11px;color:var(--text2);line-height:1.45;margin-bottom:5px;
                             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.excerpt}</div>`
                     : ''}
-                <div style="font-size:10px;color:var(--text3)">${item.date || ''}</div>
+                <div style="font-size:10px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                  <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2"/></svg>
+                  ${item.date || ''}
+                </div>
               </div>
-            </a>`).join('');
+            </a>`).join('') + `</div>`;
+        }
 
         // Update chevron badge with article count
         _rssUpdateCount(catId, items.length);
@@ -5566,10 +10569,1499 @@ function _rssUpdateCount(catId, n) {
     countEl.textContent = n > 0 ? `${n} article${n!==1?'s':''}` : 'no articles';
 }
 
+// Reddit card-size slider (0=1col, 1=2col, 2=3col)
+function rssSetCardSize(catId, size) {
+    const col = document.getElementById('rss-col-' + catId);
+    if (col) col.dataset.cardSize = size;
+    const grid = document.getElementById('reddit-cards-' + catId);
+    if (!grid) return;
+    const cols = ['1fr','repeat(2,1fr)','repeat(3,1fr)'][size] || '1fr';
+    grid.style.gridTemplateColumns = cols;
+}
+
+// ── Add Feed Modal ─────────────────────────────────────────────
+let _addFeedType = 'rss';
+
+function openAddFeedModal() {
+  const modal = document.getElementById('add-feed-modal');
+  if (modal) { modal.style.display = 'flex'; }
+}
+function closeAddFeedModal() {
+  const modal = document.getElementById('add-feed-modal');
+  if (modal) modal.style.display = 'none';
+  // Clear inputs
+  ['add-feed-name-rss','add-feed-url-rss','add-feed-sub'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const st = document.getElementById('add-feed-status');
+  if (st) st.textContent = '';
+}
+function setAddFeedType(t) {
+  _addFeedType = t;
+  document.getElementById('add-feed-form-rss').style.display = t === 'rss' ? '' : 'none';
+  document.getElementById('add-feed-form-reddit').style.display = t === 'reddit' ? '' : 'none';
+  document.getElementById('add-feed-type-rss').classList.toggle('active', t === 'rss');
+  document.getElementById('add-feed-type-reddit').classList.toggle('active', t === 'reddit');
+}
+async function submitAddFeed() {
+  const status = document.getElementById('add-feed-status');
+  let payload;
+  if (_addFeedType === 'rss') {
+    const name = (document.getElementById('add-feed-name-rss')?.value || '').trim();
+    const url  = (document.getElementById('add-feed-url-rss')?.value || '').trim();
+    if (!name || !url) { if (status) status.textContent = 'Name and URL are required.'; return; }
+    payload = { name, url, icon: '📰', type: 'rss' };
+  } else {
+    const sub  = (document.getElementById('add-feed-sub')?.value || '').trim().replace(/^r\//, '');
+    if (!sub) { if (status) status.textContent = 'Subreddit name is required.'; return; }
+    payload = { name: 'r/' + sub, url: `https://www.reddit.com/r/${sub}/.rss`, icon: '🤖', type: 'reddit' };
+  }
+  if (status) status.textContent = 'Saving…';
+  try {
+    const r = await fetch(API + '/api/rss/custom', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const d = await r.json();
+    if (d.error) { if (status) status.textContent = 'Error: ' + d.error; return; }
+    if (status) status.textContent = '✓ Feed added!';
+    setTimeout(() => { closeAddFeedModal(); loadRSSFeeds(); }, 800);
+  } catch(e) {
+    if (status) status.textContent = 'Failed to save feed.';
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════
-// 10. ALERTS BAR
+// 10a. FOOTBALL HUB (multi-league)
+// ══════════════════════════════════════════════════════════════════════
+// Utility: show loading indicator without wiping existing content (no flicker)
+function _fbSetLoading(el, msg) {
+    if (!el) return;
+    const isEmpty = !el.innerHTML.trim() || !!el.querySelector('.fb-loading-placeholder');
+    if (isEmpty) {
+        el.innerHTML = '<div class="fb-loading-placeholder" style="color:var(--text3);font-size:12px;padding:20px;text-align:center">'+msg+'</div>';
+    } else {
+        // Keep old content visible, just dim it
+        el.style.opacity = '0.45';
+        el.style.pointerEvents = 'none';
+        el.style.transition = 'opacity .15s';
+    }
+}
+function _fbClearLoading(el) {
+    if (!el) return;
+    el.style.opacity = '';
+    el.style.pointerEvents = '';
+    el.style.transition = '';
+}
+const FOOTBALL_LEAGUES = {
+    'eng.1':            { name:'Premier League',    flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿', highlights:['premier league','english premier','epl'] },
+    'esp.1':            { name:'La Liga',            flag:'🇪🇸', highlights:['la liga','laliga','spanish primera'] },
+    'ger.1':            { name:'Bundesliga',         flag:'🇩🇪', highlights:['bundesliga','german bundesliga'] },
+    'ita.1':            { name:'Serie A',            flag:'🇮🇹', highlights:['serie a','italian serie'] },
+    'fra.1':            { name:'Ligue 1',            flag:'🇫🇷', highlights:['ligue 1','french ligue'] },
+    'usa.1':            { name:'MLS',                flag:'🇺🇸', highlights:['mls','major league soccer'] },
+    'uefa.champions':   { name:'Champions League',  flag:'🏆', highlights:['champions league','ucl'] },
+    'uefa.europa':      { name:'Europa League',      flag:'🥈', highlights:['europa league','uel'] },
+    'fifa.world':       { name:'World Cup',          flag:'🌍', highlights:['world cup','fifa world'] },
+    'uefa.euro':        { name:'Euros',              flag:'🇪🇺', highlights:['euro 2024','euros','european championship'] },
+    'conmebol.america': { name:'Copa America',       flag:'🌎', highlights:['copa america'] },
+    'caf.nations':      { name:'AFCON',              flag:'🌍', highlights:['africa cup','afcon'] },
+};
+let _footballInited = false;
+let _footballCurrentView = 'table';
+let _footballLeague = 'eng.1';
+let _footballTeamId = null;
+let _footballTeamLeague = null;
+let _footballTeamTabActive = 'fixtures';
+
+function footballInit() {
+    if (!_footballInited) {
+        _footballInited = true;
+        footballLoadStandings();
+    }
+}
+
+function footballSelectLeague(code) {
+    if (!FOOTBALL_LEAGUES[code]) return;
+    _footballLeague = code;
+    // Update pill buttons
+    document.querySelectorAll('.league-pill').forEach(b => {
+        const oc = b.getAttribute('onclick') || '';
+        b.classList.toggle('active', oc.includes("'"+code+"'"));
+    });
+    // Update league title bar
+    const info = FOOTBALL_LEAGUES[code];
+    const titleEl = document.getElementById('football-league-title');
+    if (titleEl) titleEl.textContent = info.flag + ' ' + info.name;
+    // Reload current view
+    _footballDispatch(_footballCurrentView);
+}
+
+function footballSetView(view) {
+    _footballCurrentView = view;
+    ['table','fixtures','results','highlights','news'].forEach(v => {
+        const el = document.getElementById('football-'+v+'-view');
+        if (el) el.style.display = v === view ? '' : 'none';
+        const btn = document.getElementById('football-view-'+v);
+        if (btn) btn.classList.toggle('active', v === view);
+    });
+    _footballDispatch(view);
+}
+
+function _footballDispatch(view) {
+    if (view === 'table')      footballLoadStandings();
+    else if (view === 'fixtures')   footballLoadFixtures();
+    else if (view === 'results')    footballLoadResults();
+    else if (view === 'highlights') footballLoadHighlights();
+    else if (view === 'news')       footballLoadNews();
+}
+
+function footballRefresh() {
+    _footballInited = false;
+    footballSetView(_footballCurrentView);
+}
+
+async function footballLoadStandings() {
+    const el = document.getElementById('football-standings');
+    if (!el) return;
+    const league = _footballLeague;
+    const info = FOOTBALL_LEAGUES[league] || {};
+    _fbSetLoading(el, 'Loading standings…');
+    try {
+        const r = await fetch('https://site.api.espn.com/apis/v2/sports/soccer/'+league+'/standings');
+        const raw = await r.json();
+        let entries = [];
+        for (const child of (raw.children || [])) entries.push(...(child.standings?.entries || []));
+        if (!entries.length) entries = raw.standings?.entries || [];
+        if (!entries.length) {
+            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No standings for '+info.name+' right now.<br><span style="font-size:11px;color:var(--text3)">Competition may be between seasons or in knockout stage.</span></div>';
+            return;
+        }
+        const rows = entries.map(e => {
+            const team = e.team || {};
+            const s = {};
+            (e.stats || []).forEach(st => s[st.name] = st.value != null ? st.value : st.displayValue);
+            return {
+                id: team.id || '',
+                pos: parseInt(s.rank || 0), team: team.shortDisplayName || team.displayName || '?',
+                crest: (team.logos || [{}])[0]?.href || '',
+                played: parseInt(s.gamesPlayed || 0),
+                won: parseInt(s.wins || 0), drawn: parseInt(s.ties || 0), lost: parseInt(s.losses || 0),
+                gf: parseInt(s.pointsFor || 0), ga: parseInt(s.pointsAgainst || 0),
+                gd: parseInt(s.pointDifferential || 0), pts: parseInt(s.points || 0)
+            };
+        }).sort((a,b) => a.pos - b.pos);
+        const relegZone = rows.length - 3;
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+        html += '<thead><tr style="border-bottom:2px solid var(--border);color:var(--text2);text-align:left">';
+        html += '<th style="padding:8px 6px;width:30px">#</th>';
+        html += '<th style="padding:8px 6px">Team</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">P</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">W</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">D</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:36px">L</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px">GF</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px">GA</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px">GD</th>';
+        html += '<th style="padding:8px 6px;text-align:center;width:44px;font-weight:700">Pts</th>';
+        html += '</tr></thead><tbody>';
+        rows.forEach((t, i) => {
+            const bg = i < 4 ? 'rgba(56,142,60,.08)' : i >= relegZone ? 'rgba(211,47,47,.08)' : 'transparent';
+            const border = i < 4 ? '3px solid #388e3c' : i >= relegZone ? '3px solid #d32f2f' : '3px solid transparent';
+            const safeTeam = t.team.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+            const safeCrest = t.crest.replace(/"/g,'&quot;');
+            html += '<tr style="border-bottom:1px solid var(--border);background:'+bg+'">';
+            html += '<td style="padding:8px 6px;border-left:'+border+';font-weight:600">'+t.pos+'</td>';
+            html += '<td style="padding:6px 6px">';
+            if (t.id) {
+                html += '<div style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:2px 0" onclick="footballShowTeam(\''+t.id+'\',\''+safeTeam+'\',\''+safeCrest+'\')" title="View '+safeTeam+' fixtures &amp; news">';
+            } else {
+                html += '<div style="display:flex;align-items:center;gap:8px">';
+            }
+            if (t.crest) html += '<img src="'+t.crest+'" style="width:20px;height:20px;object-fit:contain" onerror="this.style.display=\'none\'">';
+            html += '<span style="font-weight:500">'+t.team+'</span>';
+            if (t.id) html += '<svg style="width:10px;height:10px;opacity:.35;flex-shrink:0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>';
+            html += '</div></td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.played+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.won+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.drawn+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.lost+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.gf+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center">'+t.ga+'</td>';
+            const gdColor = t.gd > 0 ? '#4caf50' : t.gd < 0 ? '#f44336' : 'var(--text2)';
+            html += '<td style="padding:8px 6px;text-align:center;color:'+gdColor+'">'+(t.gd > 0 ? '+' : '')+t.gd+'</td>';
+            html += '<td style="padding:8px 6px;text-align:center;font-weight:700;font-size:13px">'+t.pts+'</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:10px;color:var(--text3)">';
+        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#388e3c;border-radius:2px;display:inline-block"></span> Top positions</span>';
+        html += '<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#d32f2f;border-radius:2px;display:inline-block"></span> Relegation zone</span>';
+        html += '<span style="display:flex;align-items:center;gap:4px"><svg style="width:10px;opacity:.4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg> Click team for fixtures &amp; news</span>';
+        html += '</div>';
+        _fbClearLoading(el); el.innerHTML = html;
+    } catch(e) {
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load standings: '+e.message+'</div>';
+    }
+}
+
+async function _footballFetchMatches(league, type) {
+    // Server-side proxy: tries football-data.org → TheSportsDB → ESPN (90-day lookahead for upcoming)
+    const r = await fetch(API + '/api/epl/matches?type=' + encodeURIComponent(type) + '&league=' + encodeURIComponent(league));
+    const raw = await r.json();
+    return raw.matches || [];
+}
+
+function _footballMatchRow(m) {
+    const dt = m.date ? new Date(m.date) : null;
+    const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
+    const isFinal = m.status === 'FINISHED';
+    const score = m.scoreH != null ? m.scoreH+' - '+m.scoreA : 'vs';
+    const homeW = isFinal && m.scoreH > m.scoreA, awayW = isFinal && m.scoreA > m.scoreH;
+    const roundBadge = m.matchday ? '<div style="font-size:9px;color:var(--text3);margin-bottom:2px">GW '+m.matchday+'</div>' : '';
+    const centerEl = m.status === 'IN_PLAY'
+        ? '<span style="background:#f44336;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">LIVE</span>'
+        : isFinal
+            ? roundBadge+'<div style="font-weight:700;font-size:15px;letter-spacing:1px">'+score+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
+            : roundBadge+'<span style="font-size:10px;color:var(--text3)">'+dateStr+'</span>';
+    let row = '<div style="display:flex;align-items:center;padding:10px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);gap:10px">';
+    row += '<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-align:right">';
+    row += '<span style="font-weight:'+(homeW?'700':'500')+';font-size:13px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+m.home+'</span>';
+    if (m.homeCrest) row += '<img src="'+m.homeCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+    row += '</div><div style="min-width:88px;text-align:center">'+centerEl+'</div>';
+    row += '<div style="flex:1;display:flex;align-items:center;gap:6px">';
+    if (m.awayCrest) row += '<img src="'+m.awayCrest+'" style="width:22px;height:22px;object-fit:contain" onerror="this.style.display=\'none\'">';
+    row += '<span style="font-weight:'+(awayW?'700':'500')+';font-size:13px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+m.away+'</span>';
+    row += '</div></div>';
+    return row;
+}
+
+async function footballLoadFixtures() {
+    const el = document.getElementById('football-fixtures-list');
+    if (!el) return;
+    _fbSetLoading(el, 'Loading fixtures…');
+    try {
+        const matches = await _footballFetchMatches(_footballLeague, 'upcoming');
+        if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No upcoming fixtures found.</div>'; return; }
+        const grouped = {};
+        matches.forEach(m => {
+            const dt = m.date ? new Date(m.date) : null;
+            const key = dt ? dt.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'}) : 'Upcoming';
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(m);
+        });
+        let html = '';
+        Object.entries(grouped).forEach(([label, list]) => {
+            html += '<div style="font-size:12px;font-weight:600;color:var(--text2);margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)">'+label+'</div>';
+            list.forEach(m => { html += _footballMatchRow(m); });
+        });
+        _fbClearLoading(el); el.innerHTML = html;
+    } catch(e) {
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load fixtures: '+e.message+'</div>';
+    }
+}
+
+async function footballLoadResults() {
+    const el = document.getElementById('football-results-list');
+    if (!el) return;
+    _fbSetLoading(el, 'Loading results…');
+    try {
+        const matches = (await _footballFetchMatches(_footballLeague, 'results')).reverse();
+        if (!matches.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No recent results.</div>'; return; }
+        let html = '';
+        matches.forEach(m => { html += _footballMatchRow(m); });
+        _fbClearLoading(el); el.innerHTML = html;
+    } catch(e) {
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load results: '+e.message+'</div>';
+    }
+}
+
+// ── Render a single highlight card (Scorebat embed) ──────────────────────────
+function _fbHighlightCard(h) {
+    const dt = h.date ? new Date(h.date) : null;
+    const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '';
+    let s = '<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="footballPlayHighlight(this)">';
+    if (h.thumb) {
+        s += '<div style="position:relative;padding-top:56.25%;background:#111">';
+        s += '<img src="'+h.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display=&quot;none&quot;">';
+        s += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(0,0,0,.7);border-radius:50%;display:flex;align-items:center;justify-content:center">';
+        s += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div>';
+    } else {
+        s += '<div style="position:relative;padding-top:56.25%;background:#111"><div style="display:flex;align-items:center;justify-content:center;position:absolute;top:0;left:0;width:100%;height:100%;font-size:40px">⚽</div></div>';
+    }
+    s += '<div style="padding:10px 12px"><div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+h.title+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div>';
+    if (h.embed) s += '<div class="football-embed-data" style="display:none">'+h.embed.replace(/</g,'\\x3c').replace(/>/g,'\\x3e')+'</div>';
+    s += '</div>';
+    return s;
+}
+
+// ── Render a single YouTube card (CBS Sports Golazo / YouTube source) ─────────
+function _fbYTCard(v) {
+    const dt = v.date ? new Date(v.date) : null;
+    const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '';
+    const esc = s => s.replace(/'/g,"\\'");
+    let s = `<div style="background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden;cursor:pointer" onclick="footballPlayYouTube('${esc(v.id)}','${esc(v.title)}')">`;
+    s += '<div style="position:relative;padding-top:56.25%;background:#111">';
+    if (v.thumb) {
+        s += '<img src="'+v.thumb+'" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover" onerror="this.style.display=\'none\'">';
+    }
+    s += '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44px;height:44px;background:rgba(220,0,0,.85);border-radius:50%;display:flex;align-items:center;justify-content:center">';
+    s += '<svg width="18" height="18" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>';
+    s += '<div style="position:absolute;top:6px;right:6px;background:rgba(220,0,0,.9);color:#fff;font-size:9px;font-weight:700;padding:2px 5px;border-radius:3px">YT</div>';
+    s += '</div>';
+    s += '<div style="padding:10px 12px"><div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">'+v.title+'</div><div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div>';
+    s += '</div>';
+    return s;
+}
+
+function footballPlayYouTube(videoId, title) {
+    if (!videoId) return;
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:950;display:flex;align-items:center;justify-content:center;cursor:pointer';
+    overlay.onclick = () => overlay.remove();
+    overlay.innerHTML = '<div style="width:92%;max-width:920px;aspect-ratio:16/9;position:relative" onclick="event.stopPropagation()">'
+        + `<iframe src="https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0" `
+        + 'style="width:100%;height:100%;border:none;border-radius:8px" '
+        + 'allow="accelerometer; autoplay; clipboard-write; encrypted-media; fullscreen; gyroscope; picture-in-picture"></iframe>'
+        + '<button onclick="this.parentNode.parentNode.remove()" style="position:absolute;top:-36px;right:0;background:none;border:none;color:#fff;font-size:24px;cursor:pointer">✕</button>'
+        + '</div>';
+    document.body.appendChild(overlay);
+}
+
+async function footballLoadHighlights() {
+    const el = document.getElementById('football-highlights-grid');
+    if (!el) return;
+    _fbSetLoading(el, 'Loading highlights…');
+    const info = FOOTBALL_LEAGUES[_footballLeague] || {};
+    const keys = info.highlights || [];
+
+    // Fetch Scorebat and CBS Sports Golazo in parallel
+    const [scorebatResult, golazoResult] = await Promise.allSettled([
+        (async () => {
+            try {
+                const r = await fetch('https://www.scorebat.com/video-api/v3/feed/?token=free');
+                const allVids = await r.json();
+                const vids = Array.isArray(allVids) ? allVids : (allVids.response || []);
+                const out = [];
+                for (const v of vids) {
+                    const comp = (v.competition || v.competitionName || '').toLowerCase();
+                    if (!keys.some(k => comp.includes(k))) continue;
+                    let embed = '';
+                    for (const ev of (v.videos || [])) { if (ev.embed) { embed = ev.embed; break; } }
+                    out.push({ title: v.title||'', thumb: v.thumbnail||'', embed, date: v.date||'' });
+                    if (out.length >= 20) break;
+                }
+                return out;
+            } catch {
+                const r2 = await fetch('/api/epl/highlights');
+                const d2 = await r2.json();
+                return (d2.highlights || []).filter(h => {
+                    const comp = (h.competition || '').toLowerCase();
+                    return keys.some(k => comp.includes(k));
+                });
+            }
+        })(),
+        fetch('/api/yt/channel_feed?handle=cbssportsgolazo').then(r => r.json()).catch(() => ({ videos: [] }))
+    ]);
+
+    const highlights  = scorebatResult.status === 'fulfilled' ? (scorebatResult.value  || []) : [];
+    const golazoVids  = golazoResult.status  === 'fulfilled' ? (golazoResult.value?.videos || []) : [];
+
+    if (!highlights.length && !golazoVids.length) {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center;grid-column:1/-1">No highlights for '+info.name+' right now.</div>';
+        return;
+    }
+
+    let html = '';
+
+    // ── Scorebat section ──────────────────────────────────────────────────────
+    if (highlights.length) {
+        html += '<div style="grid-column:1/-1;font-size:12px;font-weight:700;color:var(--text2);padding:4px 0 2px;border-bottom:1px solid var(--border);margin-bottom:4px">⚽ Match Highlights (Scorebat)</div>';
+        highlights.forEach(h => { html += _fbHighlightCard(h); });
+    }
+
+    // ── CBS Sports Golazo YouTube section ─────────────────────────────────────
+    if (golazoVids.length) {
+        html += '<div style="grid-column:1/-1;font-size:12px;font-weight:700;color:var(--text2);padding:8px 0 2px;border-bottom:1px solid var(--border);margin-bottom:4px;margin-top:8px">'
+             + '▶ CBS Sports Golazo <span style="color:var(--text3);font-weight:400;font-size:10px">· YouTube</span></div>';
+        golazoVids.forEach(v => { html += _fbYTCard(v); });
+    }
+
+    _fbClearLoading(el); el.innerHTML = html;
+}
+
+async function footballLoadNews() {
+    const el = document.getElementById('football-news-list');
+    if (!el) return;
+    const info = FOOTBALL_LEAGUES[_footballLeague] || {};
+    _fbSetLoading(el, 'Loading news…');
+    try {
+        const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/'+_footballLeague+'/news?limit=20');
+        const raw = await r.json();
+        const articles = raw.articles || [];
+        if (!articles.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No news for '+info.name+' right now.</div>'; return; }
+        let html = '';
+        articles.forEach(a => {
+            const dt = a.published ? new Date(a.published) : null;
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
+            const imgUrl = (a.images || [])[0]?.url || '';
+            const link = a.links?.web?.href || a.links?.mobile?.href || '';
+            html += '<div style="display:flex;gap:12px;padding:12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);cursor:pointer" onclick="if(\''+link+'\')window.open(\''+link+'\',\'_blank\')">';
+            if (imgUrl) html += '<img src="'+imgUrl+'" style="width:88px;height:62px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.display=\'none\'">';
+            html += '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12px;line-height:1.4;margin-bottom:4px">'+a.headline+'</div>';
+            if (a.description) html += '<div style="font-size:11px;color:var(--text2);line-height:1.4;margin-bottom:4px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">'+a.description+'</div>';
+            html += '<div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div></div>';
+        });
+        _fbClearLoading(el); el.innerHTML = html;
+    } catch(e) {
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load news: '+e.message+'</div>';
+    }
+}
+
+function footballPlayHighlight(card) {
+    const embedEl = card.querySelector('.football-embed-data');
+    if (!embedEl) return;
+    const embedHtml = embedEl.textContent.replace(/\\x3c/g,'<').replace(/\\x3e/g,'>');
+    const srcMatch = embedHtml.match(/src=["']([^"']+)["']/);
+    if (srcMatch) {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:950;display:flex;align-items:center;justify-content:center;cursor:pointer';
+        overlay.onclick = () => overlay.remove();
+        overlay.innerHTML = '<div style="width:90%;max-width:900px;aspect-ratio:16/9;position:relative" onclick="event.stopPropagation()">'
+            +'<iframe src="'+srcMatch[1]+'" style="width:100%;height:100%;border:none;border-radius:8px" allow="autoplay;fullscreen;encrypted-media"></iframe>'
+            +'<button onclick="this.parentNode.parentNode.remove()" style="position:absolute;top:-36px;right:0;background:none;border:none;color:#fff;font-size:24px;cursor:pointer">✕</button>'
+            +'</div>';
+        document.body.appendChild(overlay);
+    }
+}
+
+// ── Team Detail Modal ────────────────────────────────────────────────
+function footballShowTeam(teamId, teamName, teamCrest) {
+    if (!teamId) return;
+    _footballTeamId = teamId;
+    _footballTeamLeague = _footballLeague;
+    _footballTeamTabActive = 'fixtures';
+    document.getElementById('football-team-name').textContent = teamName;
+    const crestEl = document.getElementById('football-team-crest');
+    if (teamCrest) { crestEl.src = teamCrest; crestEl.style.display = ''; }
+    else { crestEl.style.display = 'none'; }
+    const modal = document.getElementById('football-team-modal');
+    modal.style.display = 'flex';
+    footballTeamTab('fixtures');
+}
+
+function footballCloseTeamModal() {
+    document.getElementById('football-team-modal').style.display = 'none';
+}
+
+function footballTeamTab(tab) {
+    _footballTeamTabActive = tab;
+    ['fixtures','news'].forEach(t => {
+        const btn = document.getElementById('team-tab-btn-'+t);
+        if (!btn) return;
+        const isActive = t === tab;
+        btn.style.color = isActive ? 'var(--text)' : 'var(--text2)';
+        btn.style.fontWeight = isActive ? '600' : 'normal';
+        btn.style.borderBottomColor = isActive ? 'var(--accent,#2563eb)' : 'transparent';
+    });
+    if (tab === 'fixtures') _footballTeamLoadFixtures();
+    else if (tab === 'news') _footballTeamLoadNews();
+}
+
+async function _footballTeamLoadFixtures() {
+    const el = document.getElementById('football-team-content');
+    if (!el) return;
+    _fbSetLoading(el, 'Loading schedule…');
+    try {
+        // Use server-side proxy: correct season year + multi-competition (regular + cups)
+        const r = await fetch(API + '/api/football/team_fixtures?team_id='+encodeURIComponent(_footballTeamId)+'&league='+encodeURIComponent(_footballTeamLeague));
+        const raw = await r.json();
+        if (raw.error) throw new Error(raw.error);
+        const events = raw.events || [];
+        if (!events.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No schedule found for this team.</div>'; return; }
+        const nowMs = Date.now();
+        const upcoming = [], past = [];
+        for (const event of events) {
+            const comp = (event.competitions || [])[0] || {};
+            const statusName = comp.status?.type?.name || '';
+            const isFinal = statusName === 'STATUS_FINAL';
+            const isLive = statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME';
+            const competitors = comp.competitors || [];
+            const home = competitors.find(c => c.homeAway === 'home') || {};
+            const away = competitors.find(c => c.homeAway === 'away') || {};
+            const ht = home.team || {}, at = away.team || {};
+            const dt = event.date ? new Date(event.date) : null;
+            const eventMs = dt ? dt.getTime() : 0;
+            // Competition label (e.g. FA Cup, Champions League)
+            const compName = event.season?.slug || event.name || '';
+            const compLabel = comp.tournament?.displayName || comp.notes?.[0]?.headline || '';
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' · '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
+            const scoreH = (isFinal||isLive) ? parseInt(home.score||0) : null;
+            const scoreA = (isFinal||isLive) ? parseInt(away.score||0) : null;
+            const homeW = isFinal && scoreH > scoreA, awayW = isFinal && scoreA > scoreH;
+            const compBadge = compLabel ? '<div style="font-size:9px;color:var(--text3);text-align:center;margin-bottom:2px">'+compLabel+'</div>' : '';
+            const centerEl = isLive
+                ? '<span style="background:#f44336;color:#fff;padding:2px 5px;border-radius:3px;font-size:9px;font-weight:600">LIVE</span>'
+                : isFinal
+                    ? '<div style="font-weight:700;font-size:14px;letter-spacing:1px">'+scoreH+' - '+scoreA+'</div><div style="font-size:9px;color:var(--text3)">'+dateStr+'</div>'
+                    : compBadge+'<div style="font-size:10px;color:var(--text3);text-align:center;line-height:1.3">'+dateStr+'</div>';
+            const row = '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);gap:8px;margin-bottom:6px">'
+                +'<div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:5px;text-align:right">'
+                +(ht.logo?'<img src="'+ht.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
+                +'<span style="font-weight:'+(homeW?'700':'500')+';font-size:12px;color:'+(homeW?'var(--text)':'var(--text2)')+'">'+( ht.shortDisplayName||ht.displayName||'?')+'</span></div>'
+                +'<div style="min-width:76px;text-align:center">'+centerEl+'</div>'
+                +'<div style="flex:1;display:flex;align-items:center;gap:5px">'
+                +(at.logo?'<img src="'+at.logo+'" style="width:18px;height:18px;object-fit:contain" onerror="this.style.display=\'none\'">':'')
+                +'<span style="font-weight:'+(awayW?'700':'500')+';font-size:12px;color:'+(awayW?'var(--text)':'var(--text2)')+'">'+( at.shortDisplayName||at.displayName||'?')+'</span></div>'
+                +'</div>';
+            const entry = {date: eventMs, row};
+            // Classify: final → past; live or date >= now-2hr → upcoming/live; date < now-2hr and not final → treat as past
+            if (isFinal || (!isLive && eventMs < nowMs - 7200000)) past.push(entry);
+            else upcoming.push(entry);
+        }
+        // Sort: upcoming ascending (soonest first), past descending (most recent first)
+        upcoming.sort((a,b) => a.date - b.date);
+        past.sort((a,b) => b.date - a.date);
+        let html = '';
+        if (upcoming.length) {
+            html += '<div style="font-size:11px;font-weight:600;color:var(--blue);margin:0 0 8px;padding:4px 0;border-bottom:1px solid var(--border)">📅 Upcoming Fixtures ('+upcoming.length+')</div>';
+            html += upcoming.map(e => e.row).join('');
+        } else {
+            html += '<div style="color:var(--text3);font-size:12px;padding:12px 0;text-align:center">No upcoming fixtures found — season may be complete or on a break.</div>';
+        }
+        // Recent results collapsed behind a toggle — user asked for upcoming only by default
+        if (past.length) {
+            const pastShown = past.slice(0, 10);
+            const moreCount = past.length > 10 ? ` of ${past.length}` : '';
+            html += `<details style="margin-top:14px">
+              <summary style="font-size:11px;font-weight:600;color:var(--text2);cursor:pointer;padding:4px 0;border-bottom:1px solid var(--border);list-style:none;display:flex;align-items:center;gap:6px">
+                <span style="font-size:10px;color:var(--text3)">▶</span>
+                ✅ Recent Results (${pastShown.length}${moreCount})
+              </summary>
+              <div style="margin-top:8px">${pastShown.map(e => e.row).join('')}</div>
+            </details>`;
+        }
+        if (!html) html = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No events found.</div>';
+        _fbClearLoading(el); el.innerHTML = html;
+    } catch(e) {
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load fixtures: '+e.message+'</div>';
+    }
+}
+
+async function _footballTeamLoadNews() {
+    const el = document.getElementById('football-team-content');
+    if (!el) return;
+    _fbSetLoading(el, 'Loading news…');
+    try {
+        // Use server-side proxy to avoid browser CORS/rate-limit issues with ESPN
+        const r = await fetch(API + '/api/football/team_news?team_id='+encodeURIComponent(_footballTeamId)+'&league='+encodeURIComponent(_footballTeamLeague));
+        const raw = await r.json();
+        if (raw.error && !raw.articles) throw new Error(raw.error);
+        const articles = raw.articles || [];
+        if (!articles.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No news available for this team.</div>'; return; }
+        let html = '';
+        articles.forEach(a => {
+            const dt = a.published ? new Date(a.published) : null;
+            const dateStr = dt ? dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'}) : '';
+            const imgUrl = (a.images || [])[0]?.url || '';
+            const link = a.links?.web?.href || a.links?.mobile?.href || '';
+            const safeLink = (link||'').replace(/'/g,"\\'");
+            html += '<div style="display:flex;gap:10px;padding:10px;background:var(--bg3);border-radius:6px;border:1px solid var(--border);margin-bottom:6px;cursor:pointer" onclick="if(\''+safeLink+'\')window.open(\''+safeLink+'\',\'_blank\')">';
+            if (imgUrl) html += '<img src="'+imgUrl+'" style="width:72px;height:54px;object-fit:cover;border-radius:4px;flex-shrink:0" onerror="this.style.display=\'none\'">';
+            html += '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12px;line-height:1.4;margin-bottom:4px">'+a.headline+'</div>';
+            if (a.description) html += '<div style="font-size:10px;color:var(--text2);line-height:1.4;margin-bottom:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">'+a.description+'</div>';
+            html += '<div style="font-size:10px;color:var(--text3)">'+dateStr+'</div></div></div>';
+        });
+        _fbClearLoading(el); el.innerHTML = html;
+    } catch(e) {
+        _fbClearLoading(el); el.innerHTML = '<div style="color:#f66;font-size:12px;padding:20px;text-align:center">Failed to load news: '+e.message+'</div>';
+    }
+}
+
+// 10. IPTV PLAYER
+// ══════════════════════════════════════════════════════════════════════
+let _iptvChannels    = [];
+let _iptvFiltered    = [];
+let _iptvCatFilter   = 'All';
+let _iptvCurrentId   = null;
+let _iptvCurrentName = '';
+let _iptvView        = 'channels';
+let _iptvMVCells     = [];   // multiview channel IDs per cell
+let _iptvMVCols      = 2, _iptvMVRows = 2;
+let _iptvInited      = false;
+let _iptvSource      = localStorage.getItem('iptv_source') || 'moviebite';
+let _iptvTZOffset    = parseInt(localStorage.getItem('iptv_tz_offset') || '0', 10);
+
+// ── DaddyLive domain — changes frequently; user can override in Settings ──
+// Stream URL: <domain>/embed/stream.php?id=<id>&player=1&source=tv
+let _daddyliveDomain   = localStorage.getItem('iptv_daddylive_domain')   || 'daddylive.cv';
+function iptvSetDaddyliveDomain(d) {
+    _daddyliveDomain = (d || 'daddylive.cv').replace(/^https?:\/\//, '').replace(/\/$/, '');
+    localStorage.setItem('iptv_daddylive_domain', _daddyliveDomain);
+}
+
+function iptvDaddylivePreset(val) {
+    const customInput = document.getElementById('iptv-dl-domain');
+    if (val === 'custom') {
+        if (customInput) customInput.style.display = '';
+    } else {
+        if (customInput) customInput.style.display = 'none';
+        iptvSetDaddyliveDomain(val);
+        // Sync preset dropdown to selected value
+        const preset = document.getElementById('iptv-dl-domain-preset');
+        if (preset) preset.value = val;
+    }
+}
+
+function _daddyliveStreamUrl(id) {
+    return `https://${_daddyliveDomain}/embed/stream.php?id=${id}&player=1&source=tv`;
+}
+
+// ── BinTV hard-coded channel list ────────────────────────────────────
+// Slugs from https://www.bintv.net/  (format: /channel/<slug>)
+const _BINTV_CHANNELS = [
+    { id: 'sky-sports-main-event',      name: 'Sky Sports Main Event',   group: 'Sports'      },
+    { id: 'sky-sports-premier-league',  name: 'Sky Sports Premier League',group: 'Sports'     },
+    { id: 'sky-sports-football',        name: 'Sky Sports Football',      group: 'Sports'      },
+    { id: 'sky-sports-cricket',         name: 'Sky Sports Cricket',       group: 'Sports'      },
+    { id: 'sky-sports-f1',             name: 'Sky Sports F1',            group: 'Sports'      },
+    { id: 'sky-sports-golf',           name: 'Sky Sports Golf',          group: 'Sports'      },
+    { id: 'sky-sports-action',         name: 'Sky Sports Action',        group: 'Sports'      },
+    { id: 'sky-sports-arena',          name: 'Sky Sports Arena',         group: 'Sports'      },
+    { id: 'sky-sports-mix',            name: 'Sky Sports Mix',           group: 'Sports'      },
+    { id: 'sky-sports-news',           name: 'Sky Sports News',          group: 'Sports'      },
+    { id: 'bt-sport-1',               name: 'TNT Sports 1',             group: 'Sports'      },
+    { id: 'bt-sport-2',               name: 'TNT Sports 2',             group: 'Sports'      },
+    { id: 'bt-sport-3',               name: 'TNT Sports 3',             group: 'Sports'      },
+    { id: 'bt-sport-4',               name: 'TNT Sports 4',             group: 'Sports'      },
+    { id: 'espn-uk',                  name: 'ESPN UK',                  group: 'Sports'      },
+    { id: 'eurosport-1',              name: 'Eurosport 1',              group: 'Sports'      },
+    { id: 'eurosport-2',              name: 'Eurosport 2',              group: 'Sports'      },
+    { id: 'bbc-one',                  name: 'BBC One',                  group: 'Entertainment'},
+    { id: 'bbc-two',                  name: 'BBC Two',                  group: 'Entertainment'},
+    { id: 'itv',                      name: 'ITV',                      group: 'Entertainment'},
+    { id: 'channel-4',               name: 'Channel 4',                group: 'Entertainment'},
+    { id: 'channel-5',               name: 'Channel 5',                group: 'Entertainment'},
+    { id: 'sky-one',                  name: 'Sky One',                  group: 'Entertainment'},
+    { id: 'sky-news',                 name: 'Sky News',                 group: 'News'         },
+    { id: 'bbc-news',                 name: 'BBC News',                 group: 'News'         },
+    { id: 'cnn-international',        name: 'CNN International',        group: 'News'         },
+    { id: 'al-jazeera',              name: 'Al Jazeera',               group: 'News'         },
+];
+
+// ── DaddyLive hard-coded channel list ────────────────────────────────
+// Stream IDs from daddylive.me/stream/stream-<id>.php
+const _DADDYLIVE_CHANNELS = [
+    { id: '1',  name: 'Sky Sports Main Event',    group: 'Sports'  },
+    { id: '2',  name: 'Sky Sports Premier League', group: 'Sports' },
+    { id: '3',  name: 'Sky Sports Football',       group: 'Sports'  },
+    { id: '4',  name: 'Sky Sports Cricket',        group: 'Sports'  },
+    { id: '5',  name: 'Sky Sports F1',            group: 'Sports'  },
+    { id: '6',  name: 'Sky Sports Golf',          group: 'Sports'  },
+    { id: '7',  name: 'Sky Sports Action',        group: 'Sports'  },
+    { id: '8',  name: 'Sky Sports Arena',         group: 'Sports'  },
+    { id: '9',  name: 'Sky Sports News',          group: 'Sports'  },
+    { id: '10', name: 'Sky Sports Mix',           group: 'Sports'  },
+    { id: '11', name: 'TNT Sports 1',            group: 'Sports'  },
+    { id: '12', name: 'TNT Sports 2',            group: 'Sports'  },
+    { id: '13', name: 'TNT Sports 3',            group: 'Sports'  },
+    { id: '14', name: 'TNT Sports 4',            group: 'Sports'  },
+    { id: '15', name: 'ESPN US',                 group: 'Sports'  },
+    { id: '16', name: 'ESPN2 US',                group: 'Sports'  },
+    { id: '17', name: 'ESPN3 US',                group: 'Sports'  },
+    { id: '18', name: 'Eurosport 1',             group: 'Sports'  },
+    { id: '19', name: 'Eurosport 2',             group: 'Sports'  },
+    { id: '20', name: 'DAZN 1',                  group: 'Sports'  },
+    { id: '21', name: 'DAZN 2',                  group: 'Sports'  },
+    { id: '22', name: 'Fox Sports 1',            group: 'Sports'  },
+    { id: '23', name: 'Fox Sports 2',            group: 'Sports'  },
+    { id: '24', name: 'NBC Sports',              group: 'Sports'  },
+    { id: '25', name: 'beIN Sports 1',           group: 'Sports'  },
+    { id: '26', name: 'beIN Sports 2',           group: 'Sports'  },
+    { id: '27', name: 'beIN Sports 3',           group: 'Sports'  },
+    { id: '28', name: 'Movistar LaLiga',         group: 'Sports'  },
+    { id: '29', name: 'Movistar Champions',      group: 'Sports'  },
+    { id: '30', name: 'Canal+ Sport',            group: 'Sports'  },
+    { id: '31', name: 'SuperSport 1',            group: 'Sports'  },
+    { id: '32', name: 'SuperSport 2',            group: 'Sports'  },
+    { id: '33', name: 'SuperSport Football',     group: 'Sports'  },
+    { id: '34', name: 'Sport TV1',               group: 'Sports'  },
+    { id: '35', name: 'Sport TV2',               group: 'Sports'  },
+    { id: '36', name: 'MUTV',                    group: 'Sports'  },
+    { id: '37', name: 'Chelsea TV',              group: 'Sports'  },
+    { id: '38', name: 'Liverpool TV',            group: 'Sports'  },
+    { id: '39', name: 'Eleven Sports 1',         group: 'Sports'  },
+    { id: '40', name: 'Eleven Sports 2',         group: 'Sports'  },
+    { id: '41', name: 'CNN International',       group: 'News'    },
+    { id: '42', name: 'BBC News',                group: 'News'    },
+    { id: '43', name: 'Sky News',                group: 'News'    },
+    { id: '44', name: 'Al Jazeera English',      group: 'News'    },
+    { id: '45', name: 'Fox News',                group: 'News'    },
+    { id: '46', name: 'MSNBC',                   group: 'News'    },
+    { id: '47', name: 'Euronews',                group: 'News'    },
+    { id: '48', name: 'BBC One',                 group: 'UK TV'   },
+    { id: '49', name: 'BBC Two',                 group: 'UK TV'   },
+    { id: '50', name: 'ITV',                     group: 'UK TV'   },
+];
+
+function iptvSetSource(src) {
+    _iptvSource = src;
+    localStorage.setItem('iptv_source', src);
+    const sel = document.getElementById('iptv-source-select');
+    if (sel) sel.value = src;
+    _iptvChannels = [];
+    _iptvInited = false;   // force re-init so new source channels load
+    _iptvInitUI();         // show/hide domain input
+    iptvInit();
+}
+
+function iptvSetTZOffset(val) {
+    _iptvTZOffset = parseInt(val, 10);
+    localStorage.setItem('iptv_tz_offset', val);
+}
+
+function _iptvInitUI() {
+    // Restore saved source/TZ
+    const srcSel = document.getElementById('iptv-source-select');
+    if (srcSel) srcSel.value = _iptvSource;
+    const tzSel = document.getElementById('iptv-tz-offset');
+    if (tzSel) tzSel.value = String(_iptvTZOffset);
+    // Show domain input only for DaddyLive
+    const dlWrap = document.getElementById('iptv-dl-domain-wrap');
+    if (dlWrap) dlWrap.style.display = _iptvSource === 'daddylive' ? 'flex' : 'none';
+    const dlInput = document.getElementById('iptv-dl-domain');
+    if (dlInput) dlInput.value = _daddyliveDomain;
+    const dlPreset = document.getElementById('iptv-dl-domain-preset');
+    if (dlPreset) {
+        // Select matching preset or 'custom'
+        const opts = Array.from(dlPreset.options).map(o => o.value);
+        dlPreset.value = opts.includes(_daddyliveDomain) ? _daddyliveDomain : 'custom';
+        const customInput = document.getElementById('iptv-dl-domain');
+        if (customInput) customInput.style.display = dlPreset.value === 'custom' ? '' : 'none';
+        if (customInput && dlPreset.value === 'custom') customInput.value = _daddyliveDomain;
+    }
+}
+
+function iptvSetView(v) {
+    _iptvView = v;
+    document.getElementById('iptv-channels-view').style.display  = v==='channels'  ? '' : 'none';
+    document.getElementById('iptv-schedule-view').style.display  = v==='schedule'  ? '' : 'none';
+    document.getElementById('iptv-multiview-view').style.display = v==='multiview' ? '' : 'none';
+    ['channels','schedule','multiview'].forEach(n => {
+        const b = document.getElementById('iptv-view-'+n);
+        if (b) b.classList.toggle('active', n===v);
+    });
+    if (v==='schedule') iptvLoadSchedule('live', document.getElementById('iptv-sched-live'));
+    if (v==='multiview') iptvRenderMV();
+}
+
+async function iptvInit() {
+    if (_iptvInited && _iptvChannels.length) return;
+    _iptvInited = true;
+    _iptvInitUI();
+    await iptvLoadSourceChannels();
+}
+
+async function iptvLoadSourceChannels() {
+    if (_iptvSource === 'bintv') {
+        _iptvChannels = _BINTV_CHANNELS.map(c => ({...c, logo:''}));
+        iptvBuildCatPills();
+        iptvFilterChannels();
+    } else if (_iptvSource === 'daddylive') {
+        _iptvChannels = _DADDYLIVE_CHANNELS.map(c => ({...c, logo:''}));
+        iptvBuildCatPills();
+        iptvFilterChannels();
+    } else if (_iptvSource === 'moviebite') {
+        // SportsBite live matches — replaces dead static news-channel list
+        await iptvFetchSportsBiteMatches();
+    } else if (_iptvSource === 'sid_m3u8') {
+        await iptvFetchM3UPlaylist('https://s.id/d9M3U8');
+    } else {
+        await iptvFetchChannels();
+    }
+}
+
+async function iptvFetchSportsBiteMatches(sport) {
+    const listEl = document.getElementById('iptv-channel-list');
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">⏳ Loading live matches…</div>';
+    try {
+        const qs = sport ? `?sport=${encodeURIComponent(sport)}` : '';
+        const r = await fetch(API + '/api/iptv/sportsbite/matches' + qs);
+        const d = await r.json();
+        if (d.error && !d.channels?.length) {
+            if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">⚠️ ${d.error}</div>`;
+            return;
+        }
+        _iptvChannels = (d.channels || []).map(c => ({...c, type: 'sportsbite'}));
+        iptvBuildCatPills();
+        iptvFilterChannels();
+    } catch(e) {
+        if (listEl) listEl.innerHTML = '<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">⚠️ Failed to load matches</div>';
+    }
+}
+
+async function iptvFetchM3UPlaylist(playlistUrl) {
+    const listEl = document.getElementById('iptv-channel-list');
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">⏳ Fetching M3U playlist…</div>';
+    try {
+        const r = await fetch(API + '/api/iptv/m3u_proxy?url=' + encodeURIComponent(playlistUrl));
+        const d = await r.json();
+        if (d.error && !d.channels?.length) {
+            if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">⚠️ ${d.error}</div>`;
+            return;
+        }
+        _iptvChannels = d.channels || [];
+        iptvBuildCatPills();
+        iptvFilterChannels();
+        if (listEl && !_iptvChannels.length) {
+            listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No channels found in playlist</div>';
+        }
+    } catch(e) {
+        if (listEl) listEl.innerHTML = '<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">Failed to fetch playlist</div>';
+    }
+}
+
+async function iptvFetchChannels() {
+    const listEl = document.getElementById('iptv-channel-list');
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading channels…</div>';
+    try {
+        const r = await fetch(API + '/api/iptv/channels');
+        const d = await r.json();
+        _iptvChannels = d.channels || [];
+        if (d.fallback) {
+            // Add a small note
+            const note = document.createElement('div');
+            note.style = 'font-size:10px;color:var(--text3);padding:4px 8px;text-align:center';
+            note.textContent = '⚠️ Showing cached list — live API unreachable';
+            listEl?.prepend(note);
+        }
+        iptvBuildCatPills();
+        iptvFilterChannels();
+    } catch(e) {
+        if (listEl) listEl.innerHTML = '<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">Failed to load channels</div>';
+    }
+}
+
+function iptvBuildCatPills() {
+    const cats = ['All', ...new Set(_iptvChannels.map(c => c.group||'General').filter(Boolean))].sort((a,b)=>{
+        if(a==='All') return -1; if(b==='All') return 1; return a.localeCompare(b);
+    });
+    const el = document.getElementById('iptv-cat-pills');
+    if (!el) return;
+    el.innerHTML = cats.map(c => `<div class="filter-pill${c===_iptvCatFilter?' active':''}" onclick="iptvSetCat('${c}')">${c}</div>`).join('');
+}
+
+function iptvSetCat(cat) {
+    _iptvCatFilter = cat;
+    document.querySelectorAll('#iptv-cat-pills .filter-pill').forEach(p =>
+        p.classList.toggle('active', p.textContent===cat));
+    iptvFilterChannels();
+}
+
+function iptvFilterChannels() {
+    const q    = (document.getElementById('iptv-search')?.value||'').toLowerCase();
+    const cat  = _iptvCatFilter;
+    _iptvFiltered = _iptvChannels.filter(c => {
+        const matchCat  = cat==='All' || c.group===cat;
+        const matchName = !q || c.name.toLowerCase().includes(q);
+        return matchCat && matchName;
+    });
+    iptvRenderList();
+}
+
+function iptvRenderList() {
+    const el = document.getElementById('iptv-channel-list');
+    if (!el) return;
+    if (!_iptvFiltered.length) {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:16px;text-align:center">No channels found</div>';
+        return;
+    }
+    el.innerHTML = _iptvFiltered.map(ch => `
+        <div style="display:flex;align-items:center;border-radius:5px;transition:background .1s;${_iptvCurrentId===ch.id?'background:var(--blue2);color:var(--blue);':'color:var(--text2);'}">
+          <div onclick="iptvPlayChannel('${ch.id}','${ch.name.replace(/'/g,"\\'")}',this.parentElement)"
+               style="display:flex;align-items:center;gap:8px;padding:7px 8px;flex:1;min-width:0;cursor:pointer"
+               onmouseover="if('${ch.id}'!=='${_iptvCurrentId}')this.parentElement.style.background='var(--surface)'"
+               onmouseout="if('${ch.id}'!=='${_iptvCurrentId}')this.parentElement.style.background=''">
+            <span style="font-size:14px;width:22px;text-align:center;flex-shrink:0">${ch.logo ? `<img src="${ch.logo}" style="width:18px;height:18px;object-fit:contain" onerror="this.replaceWith('📺')">` : '📺'}</span>
+            <span style="font-size:12px;font-weight:${_iptvCurrentId===ch.id?600:400};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">${ch.name}</span>
+            ${ch.group?`<span style="font-size:9px;color:var(--text3);flex-shrink:0;white-space:nowrap;margin-left:4px">${ch.group}</span>`:''}
+          </div>
+          ${ch.custom ? `<button onclick="iptvDeleteCustomChannel('${ch.id}',event)" style="background:none;border:none;color:var(--text3);cursor:pointer;padding:4px 8px;flex-shrink:0;font-size:11px;line-height:1" title="Remove">✕</button>` : ''}
+        </div>`).join('');
+}
+
+function iptvPlayChannel(id, name, rowEl) {
+    _iptvCurrentId   = id;
+    _iptvCurrentName = name;
+    // Highlight selected row
+    document.querySelectorAll('#iptv-channel-list > div').forEach(el => {
+        el.style.background = '';
+        el.style.color      = 'var(--text2)';
+    });
+    if (rowEl) { rowEl.style.background='var(--blue2)'; rowEl.style.color='var(--blue)'; }
+
+    const frame = document.getElementById('iptv-player-frame');
+    const placeholder = document.getElementById('iptv-player-placeholder');
+    const nowPlaying  = document.getElementById('iptv-now-playing');
+    const nowSource   = document.getElementById('iptv-now-source');
+
+    if (nowPlaying) nowPlaying.textContent = name;
+    const sourceNames = { moviebite: 'SportsBite', bintv: 'BinTV', daddylive: `DaddyLive (${_daddyliveDomain})` };
+    if (nowSource)  nowSource.textContent  = `${sourceNames[_iptvSource]||'Stream'} · ${name}`;
+
+    const popoutBtn = document.getElementById('iptv-popout-btn');
+
+    // ── M3U / HLS-direct sources — route through HLS.js player ─────────────
+    // Covers: sid_m3u8 or ANY channel parsed from an M3U playlist
+    // (type:"hls_direct" set by the backend m3u_proxy parser)
+    const ch = _iptvChannels.find(c => c.id === id);
+    const isHlsDirect = _iptvSource === 'sid_m3u8'
+                     || ch?.type === 'hls_direct';
+
+    if (isHlsDirect) {
+        const streamUrl = ch?.url || id;   // url field always has the raw HLS URL
+        if (frame) frame.style.display = 'none';
+        if (placeholder) {
+            placeholder.innerHTML = `
+              <div style="font-size:40px">📡</div>
+              <div style="font-size:14px;font-weight:600;color:var(--text);margin-top:6px">${name}</div>
+              <div style="font-size:11px;color:var(--text3);margin-top:4px">Loading HLS stream…</div>`;
+            placeholder.style.display = '';
+        }
+        // Hide HLS container briefly while we switch source, then play
+        const hlsCont = document.getElementById('hls-player-container');
+        if (hlsCont) hlsCont.style.display = 'none';
+        const urlInput = document.getElementById('iptv-hls-url');
+        if (urlInput) urlInput.value = streamUrl;
+        if (popoutBtn) popoutBtn.dataset.url = streamUrl;
+        iptvPlayHLS();
+        // Hide placeholder once HLS player takes over
+        if (placeholder) setTimeout(() => { placeholder.style.display = 'none'; }, 1200);
+        return;
+    }
+
+    // ── Build stream URL for iframe-based sources ─────────────────────────
+    const streamUrls = {
+        moviebite: `https://tv.moviebite.cc/channels/${encodeURIComponent(id)}`,
+        bintv:     `https://bintv.net/channel/${id}`,
+        daddylive: _daddyliveStreamUrl(id),
+    };
+    const streamUrl = streamUrls[_iptvSource] || `https://tv.moviebite.cc/channels/${id}`;
+
+    // Make sure the HLS player container is hidden for iframe sources
+    const hlsCont = document.getElementById('hls-player-container');
+    if (hlsCont) hlsCont.style.display = 'none';
+    if (_hlsInstance) { try { _hlsInstance.destroy(); } catch(e){} _hlsInstance = null; }
+
+    if (frame) {
+        frame.src = streamUrl;
+        frame.style.display = '';
+    }
+    if (placeholder) placeholder.style.display = 'none';
+    if (popoutBtn) popoutBtn.dataset.url = streamUrl;
+}
+
+function iptvPopout() {
+    const url = document.getElementById('iptv-popout-btn')?.dataset.url;
+    if (url) window.open(url, '_blank');
+}
+
+function iptvFullscreen() {
+    // Fullscreen the player WRAPPER div (not the iframe) so we can control
+    // the crop reset. We temporarily remove the -55px offset so the entire
+    // viewport is clean, then restore it when exiting fullscreen.
+    const wrap = document.getElementById('iptv-player-wrap');
+    if (!wrap) return;
+    if      (wrap.requestFullscreen)       wrap.requestFullscreen();
+    else if (wrap.webkitRequestFullscreen) wrap.webkitRequestFullscreen();
+    else if (wrap.mozRequestFullScreen)    wrap.mozRequestFullScreen();
+    else if (wrap.msRequestFullscreen)     wrap.msRequestFullscreen();
+}
+
+// ── MovieBite header-crop: undo crop when native fullscreen is active ──
+(function(){
+    const _onFSChange = function() {
+        const frame = document.getElementById('iptv-player-frame');
+        if (!frame) return;
+        const inFS = !!(document.fullscreenElement ||
+                       document.webkitFullscreenElement ||
+                       document.mozFullScreenElement);
+        if (inFS) {
+            // Remove crop — give the player the full viewport
+            frame.style.top    = '0';
+            frame.style.height = '100%';
+        } else {
+            // Restore header-crop (MovieBite only)
+            if (window._iptvSource === 'moviebite' || (typeof _iptvSource !== 'undefined' && _iptvSource === 'moviebite')) {
+                frame.style.top    = '-55px';
+                frame.style.height = 'calc(100% + 55px)';
+            } else {
+                frame.style.top    = '0';
+                frame.style.height = '100%';
+            }
+        }
+    };
+    document.addEventListener('fullscreenchange',       _onFSChange);
+    document.addEventListener('webkitfullscreenchange', _onFSChange);
+    document.addEventListener('mozfullscreenchange',    _onFSChange);
+    document.addEventListener('MSFullscreenChange',     _onFSChange);
+})();
+
+let _hlsInstance = null;
+
+function iptvHlsSetUrl(url) {
+    const inp = document.getElementById('iptv-hls-url');
+    if (inp) { inp.value = url; inp.focus(); }
+}
+
+function iptvHlsClear() {
+    const inp = document.getElementById('iptv-hls-url');
+    if (inp) inp.value = '';
+    const vid = document.getElementById('iptv-hls-player');
+    if (vid) { vid.src=''; vid.pause(); }
+    const container = document.getElementById('hls-player-container');
+    if (container) container.style.display = 'none';
+    if (_hlsInstance) { try { _hlsInstance.destroy(); } catch(e){} _hlsInstance = null; }
+}
+
+function iptvPlayHLS() {
+    const url = document.getElementById('iptv-hls-url')?.value.trim();
+    if (!url) { showToast('Paste an HLS / M3U8 URL first', 'warn'); return; }
+    const vid = document.getElementById('iptv-hls-player');
+    const container = document.getElementById('hls-player-container');
+    const qualSel = document.getElementById('hls-quality-sel');
+    const levelInfo = document.getElementById('hls-level-info');
+    if (!vid) return;
+
+    // Destroy previous HLS instance
+    if (_hlsInstance) { try { _hlsInstance.destroy(); } catch(e){} _hlsInstance = null; }
+    // Reset quality selector
+    if (qualSel) qualSel.innerHTML = '<option value="-1">Auto</option>';
+
+    if (container) container.style.display = '';
+
+    if (window.Hls && Hls.isSupported()) {
+        const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: true,
+            backBufferLength: 90,
+        });
+        _hlsInstance = hls;
+        hls.loadSource(url);
+        hls.attachMedia(vid);
+        hls.on(Hls.Events.MANIFEST_PARSED, (ev, data) => {
+            vid.play().catch(()=>{});
+            // Populate quality levels
+            if (qualSel && data.levels && data.levels.length > 1) {
+                data.levels.forEach((lvl, idx) => {
+                    const opt = document.createElement('option');
+                    opt.value = idx;
+                    opt.textContent = lvl.height ? `${lvl.height}p` : `Level ${idx}`;
+                    qualSel.appendChild(opt);
+                });
+            }
+        });
+        hls.on(Hls.Events.LEVEL_SWITCHED, (ev, data) => {
+            const lvl = hls.levels[data.level];
+            if (levelInfo && lvl) levelInfo.textContent = lvl.height ? `${lvl.height}p · ${Math.round((lvl.bitrate||0)/1000)}kbps` : '';
+        });
+        hls.on(Hls.Events.ERROR, (ev, data) => {
+            if (data.fatal) {
+                showToast('HLS stream error — check URL', 'error');
+                if (container) container.style.display = 'none';
+            }
+        });
+    } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari native HLS
+        vid.src = url;
+        vid.play().catch(()=>{});
+        if (container) container.style.display = '';
+    } else {
+        showToast('HLS playback not supported in this browser', 'error');
+    }
+}
+
+function hlsSetQuality(val) {
+    if (!_hlsInstance) return;
+    _hlsInstance.currentLevel = parseInt(val, 10);
+    if (val === '-1') _hlsInstance.currentLevel = -1;
+}
+
+// ── Schedule ─────────────────────────────────────────────────────────
+async function iptvLoadSchedule(type, btnEl) {
+    const listEl  = document.getElementById('iptv-schedule-list');
+    const statusEl= document.getElementById('iptv-sched-status');
+    document.querySelectorAll('#iptv-schedule-view .filter-pill').forEach(b=>b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">Loading events…</div>';
+    if (statusEl) statusEl.textContent = '';
+    try {
+        const r = await fetch(API + `/api/iptv/schedule?type=${type}`);
+        const matches = await r.json();
+        const list = Array.isArray(matches) ? matches : (matches.matches || []);
+        if (!list.length) {
+            if (listEl) listEl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:20px;text-align:center">No events found</div>';
+            return;
+        }
+        if (statusEl) statusEl.textContent = `${list.length} event${list.length!==1?'s':''}`;
+        listEl.innerHTML = list.slice(0,60).map(m => {
+            const ts      = m.time || m.date || 0;
+            const adjTs   = ts ? ts + (_iptvTZOffset * 3600) : 0;
+            const dt      = adjTs ? new Date(adjTs*1000).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'TBD';
+            const nowSecs = Date.now()/1000;
+            const isLive  = ts && (nowSecs - ts) < 7200 && ts < nowSecs + 300;
+            const srcs  = (m.sources||[]).map(s=>`<span style="font-size:9px;background:var(--surface2);padding:1px 5px;border-radius:3px">${s.source||s.id||'stream'}</span>`).join(' ');
+            return `
+            <div style="display:flex;align-items:center;gap:12px;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);transition:border-color .15s;cursor:default"
+                 onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title||m.name||'Event'}</div>
+                <div style="font-size:11px;color:var(--text3);margin-top:2px">${dt} ${srcs}</div>
+              </div>
+              ${isLive ? '<span style="font-size:10px;background:var(--red2,rgba(248,81,73,0.15));color:var(--red);padding:2px 6px;border-radius:4px;white-space:nowrap">● LIVE</span>' : ''}
+              ${(m.sources||[]).length ? `<button class="btn" style="font-size:11px;padding:3px 10px;flex-shrink:0" onclick="window.open('https://streamed.su/watch/${m.id}','_blank')">▶ Watch</button>` : ''}
+            </div>`;
+        }).join('');
+    } catch(e) {
+        if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:12px;padding:20px;text-align:center">Schedule unavailable — ${e.message}</div>`;
+    }
+}
+
+// ── Multiview ─────────────────────────────────────────────────────────
+function iptvMVLayout(cols, rows, btnEl) {
+    _iptvMVCols = cols; _iptvMVRows = rows;
+    document.querySelectorAll('#iptv-multiview-view .filter-pill').forEach(b=>b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    iptvRenderMV();
+}
+
+function iptvRenderMV() {
+    const grid = document.getElementById('iptv-mv-grid');
+    if (!grid) return;
+    const total = _iptvMVCols * _iptvMVRows;
+    grid.style.gridTemplateColumns = `repeat(${_iptvMVCols},1fr)`;
+    // Ensure _iptvMVCells has enough slots
+    while (_iptvMVCells.length < total) _iptvMVCells.push(null);
+    grid.innerHTML = Array.from({length: total}, (_, i) => {
+        const ch = _iptvMVCells[i] ? _iptvChannels.find(c=>c.id===_iptvMVCells[i]) : null;
+        return `
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative;aspect-ratio:16/9">
+          ${ch
+            ? ((ch.type === 'hls_direct' || _iptvSource === 'sid_m3u8')
+                    // HLS-direct: iframes can't play .m3u8 — show a tap-to-play card instead
+                    ? `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:4px;color:var(--text3);font-size:10px;padding:8px;text-align:center;cursor:pointer"
+                         onclick="iptvSetView('channels');iptvPlayChannel('${ch.id}','${ch.name.replace(/'/g,"\\'")}',null)">
+                         <div style="font-size:22px">▶</div>
+                         <div style="font-weight:600;color:var(--text);font-size:11px">${ch.name}</div>
+                         <div>Tap to play in main player</div>
+                       </div>`
+                    : `<iframe src="${_iptvSource==='daddylive'?_daddyliveStreamUrl(ch.id):_iptvSource==='bintv'?'https://www.bintv.net/channel/'+ch.id:'https://tv.moviebite.cc/channels/'+encodeURIComponent(ch.id)}" style="position:absolute;top:-60px;left:0;width:100%;height:calc(100% + 60px);border:none" allow="autoplay;fullscreen;picture-in-picture"></iframe>`
+              )
+            : `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:6px;color:var(--text3);cursor:pointer" onclick="iptvMVPickChannel(${i})">
+                 <div style="font-size:28px">📺</div>
+                 <div style="font-size:11px">Click to assign channel</div>
+               </div>`}
+          <div style="position:absolute;top:4px;right:4px;display:flex;gap:4px">
+            ${ch?`<button style="background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:4px;font-size:10px;padding:2px 6px;cursor:pointer" onclick="iptvMVPickChannel(${i})">⇄</button>`:''}
+            ${ch?`<button style="background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:4px;font-size:10px;padding:2px 6px;cursor:pointer" onclick="iptvMVClearCell(${i})">✕</button>`:''}
+          </div>
+          ${ch?`<div style="position:absolute;bottom:4px;left:6px;font-size:10px;background:rgba(0,0,0,.6);color:#fff;padding:1px 6px;border-radius:3px">${ch.name}</div>`:''}
+        </div>`;
+    }).join('');
+}
+
+function iptvMVPickChannel(cellIdx) {
+    // Show a small inline picker using the current filtered list
+    const pick = _iptvChannels.slice(0, 50).map(c =>
+        `<div onclick="iptvMVAssign(${cellIdx},'${c.id}')" style="padding:5px 8px;cursor:pointer;font-size:11px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">${c.name}</div>`
+    ).join('');
+    const modal = document.getElementById('iptv-mv-picker') || (() => {
+        const d = document.createElement('div');
+        d.id = 'iptv-mv-picker';
+        d.style = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);z-index:2000;width:260px;max-height:360px;overflow-y:auto;padding:8px;box-shadow:0 8px 32px rgba(0,0,0,.5)';
+        document.body.appendChild(d);
+        return d;
+    })();
+    modal.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:12px;font-weight:600">Pick Channel</span><button onclick="document.getElementById('iptv-mv-picker').style.display='none'" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:14px">✕</button></div><input placeholder="Search…" oninput="iptvMVSearch(this.value,${cellIdx})" style="width:100%;padding:5px 8px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:11px;margin-bottom:6px;box-sizing:border-box"><div id="iptv-mv-pick-list">${pick}</div>`;
+    modal.style.display = '';
+    modal.dataset.cell  = cellIdx;
+}
+
+function iptvMVSearch(q, cellIdx) {
+    const f = q.toLowerCase();
+    const list = _iptvChannels.filter(c=>!f||c.name.toLowerCase().includes(f)).slice(0,50);
+    const el = document.getElementById('iptv-mv-pick-list');
+    if (el) el.innerHTML = list.map(c => `<div onclick="iptvMVAssign(${cellIdx},'${c.id}')" style="padding:5px 8px;cursor:pointer;font-size:11px;border-radius:3px" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">${c.name}</div>`).join('');
+}
+
+function iptvMVAssign(cellIdx, chId) {
+    _iptvMVCells[cellIdx] = chId;
+    const picker = document.getElementById('iptv-mv-picker');
+    if (picker) picker.style.display = 'none';
+    iptvRenderMV();
+}
+
+function iptvMVClearCell(cellIdx) {
+    _iptvMVCells[cellIdx] = null;
+    iptvRenderMV();
+}
+
+function iptvMVClearAll() {
+    _iptvMVCells = [];
+    iptvRenderMV();
+}
+
+function iptvAddToMultiview() {
+    if (!_iptvCurrentId) { showToast('No channel selected','error'); return; }
+    // Find first empty cell
+    const emptyIdx = _iptvMVCells.findIndex(c=>!c);
+    if (emptyIdx === -1) {
+        showToast('Multiview grid is full — clear a slot first','error'); return;
+    }
+    _iptvMVCells[emptyIdx] = _iptvCurrentId;
+    showToast(`${_iptvCurrentName} added to multiview`, 'success');
+}
+
+function iptvReload() {
+    _iptvChannels = []; _iptvFiltered = []; _iptvInited = false;
+    iptvInit();
+}
+
+function iptvBrowseChannels() {
+    const panel = document.getElementById('iptv-browse-modal');
+    const iframe = document.getElementById('iptv-browse-iframe');
+    if (!panel) return;
+    const isVisible = panel.style.display === 'flex';
+    if (isVisible) { iptvHideBrowse(); return; }  // toggle off if already open
+    if (iframe && !iframe.src) {
+        const urls = {
+            moviebite: 'https://tv.moviebite.cc/channel',
+            bintv:     'https://www.bintv.net/',
+            daddylive: `https://${_daddyliveDomain}/`,
+        };
+        iframe.src = urls[_iptvSource] || urls.moviebite;
+    }
+    panel.style.display = 'flex';
+    panel.style.flexDirection = 'column';
+    // Scroll the panel into view smoothly
+    setTimeout(() => panel.scrollIntoView({behavior:'smooth', block:'nearest'}), 50);
+}
+function iptvHideBrowse() {
+    const panel = document.getElementById('iptv-browse-modal');
+    if (panel) panel.style.display = 'none';
+}
+
+// ── Add / delete custom channels ────────────────────────────────────────────
+function iptvShowAddChannel() {
+    const m = document.getElementById('iptv-add-modal');
+    if (!m) return;
+    document.getElementById('iptv-add-name').value = '';
+    document.getElementById('iptv-add-slug').value = '';
+    document.getElementById('iptv-add-group').value = '';
+    m.style.display = 'flex';
+}
+function iptvHideAddChannel() {
+    const m = document.getElementById('iptv-add-modal');
+    if (m) m.style.display = 'none';
+}
+async function iptvSaveAddChannel() {
+    const name  = document.getElementById('iptv-add-name').value.trim();
+    const slug  = document.getElementById('iptv-add-slug').value.trim().toUpperCase().replace(/\s+/g,'-');
+    const group = document.getElementById('iptv-add-group').value.trim() || 'Custom';
+    if (!name || !slug) { showToast('Name and Slug are required','error',2000); return; }
+    try {
+        const r = await fetch(API+'/api/iptv/channels/custom', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({id:slug, name, group})
+        });
+        const d = await r.json();
+        if (d.error) { showToast('Error: '+d.error,'error'); return; }
+        iptvHideAddChannel();
+        showToast(`"${name}" added to channels`,'success');
+        // Reload channel list
+        _iptvChannels = []; _iptvInited = false;
+        await iptvFetchChannels();
+    } catch(e) { showToast('Failed to add channel','error'); }
+}
+async function iptvDeleteCustomChannel(id, event) {
+    if (event) event.stopPropagation();
+    if (!confirm('Remove this channel from your list?')) return;
+    try {
+        await fetch(API+`/api/iptv/channels/custom/${encodeURIComponent(id)}`, {method:'DELETE'});
+        showToast('Channel removed','success',2000);
+        if (_iptvCurrentId === id) {
+            const frame = document.getElementById('iptv-player-frame');
+            const placeholder = document.getElementById('iptv-player-placeholder');
+            if (frame) { frame.src='about:blank'; frame.style.display='none'; }
+            if (placeholder) placeholder.style.display='';
+            _iptvCurrentId = null;
+        }
+        _iptvChannels = []; _iptvInited = false;
+        await iptvFetchChannels();
+    } catch(e) { showToast('Failed to remove channel','error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 11. ALERTS BAR
 // ══════════════════════════════════════════════════════════════════════
 let _alertsCollapsed = false;
+
+// ══════════════════════════════════════════════════════════════════════
+// 11b. MEDIA SUITE SWIPEABLE CARD
+// ══════════════════════════════════════════════════════════════════════
+const _mscSlides = [
+    { title: '🎥 Radarr',          ext: null },
+    { title: '📺 Sonarr',          ext: null },
+    { title: '⬇️ Downloads',       ext: null },
+    { title: '▶ Plex',             ext: null },
+    { title: '🎬 Seerr',           ext: null },
+];
+let _mscIndex = 0;
+
+function mscGoTo(idx) {
+    _mscIndex = Math.max(0, Math.min(_mscSlides.length - 1, idx));
+    const track = document.getElementById('msc-track');
+    if (track) track.style.transform = `translateX(-${_mscIndex * 100}%)`;
+    // Update named tab active state
+    document.querySelectorAll('#msc-tabs .msc-tab').forEach((t, i) =>
+        t.classList.toggle('active', i === _mscIndex));
+    // Update ext button visibility
+    const extBtn = document.getElementById('msc-ext-btn');
+    if (extBtn) extBtn.style.opacity = _mscSlides[_mscIndex].ext ? '0.9' : '0.3';
+}
+function mscNext() { mscGoTo(_mscIndex + 1); }
+function mscPrev() { mscGoTo(_mscIndex - 1); }
+
+function mscSetExternalUrls(radarrUrl, sonarrUrl, qbitUrl, plexUrl, seerrUrl) {
+    _mscSlides[0].ext = radarrUrl;
+    _mscSlides[1].ext = sonarrUrl;
+    _mscSlides[2].ext = qbitUrl;
+    _mscSlides[3].ext = plexUrl;
+    _mscSlides[4].ext = seerrUrl;
+}
+function mscOpenExternal() {
+    const url = _mscSlides[_mscIndex]?.ext;
+    if (url) window.open(url, '_blank');
+}
+
+// Touch/swipe support for the media suite card
+(function() {
+    let touchStartX = 0, touchStartY = 0;
+    document.addEventListener('DOMContentLoaded', () => {
+        const card = document.getElementById('media-suite-card');
+        if (!card) return;
+        card.addEventListener('touchstart', e => {
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+        }, { passive: true });
+        card.addEventListener('touchend', e => {
+            const dx = e.changedTouches[0].clientX - touchStartX;
+            const dy = e.changedTouches[0].clientY - touchStartY;
+            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
+                dx < 0 ? mscNext() : mscPrev();
+            }
+        }, { passive: true });
+    });
+})();
+
+// ── Right Sidebar ──────────────────────────────────────────────────────
+let _rsbOpen = false;
+function toggleRightSidebar() {
+    _rsbOpen = !_rsbOpen;
+    const rsb = document.getElementById('right-sidebar');
+    const btn = document.getElementById('rsb-toggle-btn');
+    if (rsb) rsb.classList.toggle('open', _rsbOpen);
+    if (btn) btn.classList.toggle('active', _rsbOpen);
+    // Refresh sidebar content when opening
+    if (_rsbOpen) rsbRefresh();
+}
+
+async function rsbRefresh() {
+    // 1 — Live system stats
+    try {
+        const r = await fetch(API + '/api/overview');
+        const d = await r.json();
+        const cpuEl  = document.getElementById('rsb-cpu');
+        const cpuBar = document.getElementById('rsb-cpu-bar');
+        const ramEl  = document.getElementById('rsb-ram');
+        const ramBar = document.getElementById('rsb-ram-bar');
+        const uptEl  = document.getElementById('rsb-uptime');
+        if (cpuEl) cpuEl.textContent = `${d.cpu_percent||0}%`;
+        if (cpuBar) {
+            const pct = d.cpu_percent||0;
+            cpuBar.style.width = pct+'%';
+            cpuBar.style.background = pct>85?'var(--red)':pct>65?'var(--orange)':'var(--blue)';
+        }
+        if (ramEl) ramEl.textContent = `${d.mem_percent||0}%`;
+        if (ramBar) {
+            const pct = d.mem_percent||0;
+            ramBar.style.width = pct+'%';
+            ramBar.style.background = pct>85?'var(--red)':pct>65?'var(--orange)':'var(--purple)';
+        }
+        if (uptEl) uptEl.textContent = d.uptime_display || '—';
+    } catch(e) {}
+
+    // 2 — Active downloads (qBittorrent)
+    try {
+        const dlEl    = document.getElementById('rsb-downloads');
+        const speedEl = document.getElementById('rsb-dl-speed');
+        const r2 = await fetch(API + '/api/services/downloader/torrents');
+        const d2 = await r2.json();
+        if (speedEl) speedEl.textContent = `↓${d2.dl_speed||'0 B/s'}`;
+        const active = (d2.torrents||[]).filter(t=>
+            ['downloading','forcedDL','metaDL','stalledDL'].includes(t.state)
+        ).slice(0,5);
+        if (dlEl) {
+            if (!active.length) {
+                dlEl.innerHTML = '<div style="color:var(--text3);font-size:11px;text-align:center;padding:6px">No active downloads</div>';
+            } else {
+                dlEl.innerHTML = active.map(t => {
+                    const pct = parseFloat(t.progress)||0;
+                    const barColor = pct>90?'var(--green)':pct>50?'var(--blue)':'var(--yellow)';
+                    return `<div class="rsb-dl-item">
+                      <div class="rsb-dl-name">${(t.name||'').replace(/</g,'&lt;')}</div>
+                      <div style="display:flex;align-items:center;gap:6px">
+                        <div class="rsb-dl-bar" style="flex:1"><div style="height:100%;width:${pct}%;background:${barColor}"></div></div>
+                        <span style="font-size:9px;color:var(--text3);font-family:var(--mono);white-space:nowrap">${pct.toFixed(0)}%</span>
+                      </div>
+                    </div>`;
+                }).join('');
+            }
+        }
+    } catch(e) {
+        const dlEl = document.getElementById('rsb-downloads');
+        if (dlEl) dlEl.innerHTML = '<div style="color:var(--text3);font-size:11px;text-align:center;padding:6px">Downloader not configured</div>';
+    }
+
+    // 3 — Plex Now Playing
+    try {
+        const npEl = document.getElementById('rsb-nowplaying');
+        const r3 = await fetch(API + '/api/services/plex/sessions');
+        const d3 = await r3.json();
+        if (npEl) {
+            if (!d3.configured) {
+                npEl.innerHTML = '<div style="color:var(--text3);font-size:11px;text-align:center;padding:6px">Plex not configured</div>';
+            } else if (!d3.sessions || !d3.sessions.length) {
+                npEl.innerHTML = '<div style="color:var(--text3);font-size:11px;text-align:center;padding:6px">Nothing playing</div>';
+            } else {
+                npEl.innerHTML = d3.sessions.slice(0,3).map(s => {
+                    const posterUrl = s.poster ? `https://image.tmdb.org/t/p/w92${s.poster}` : '';
+                    const thumb = posterUrl
+                        ? `<img src="${posterUrl}" class="rsb-np-poster" onerror="this.style.display='none'">`
+                        : `<div class="rsb-np-poster" style="display:flex;align-items:center;justify-content:center;font-size:16px">${s.type==='movie'?'🎬':'📺'}</div>`;
+                    return `<div class="rsb-np-item">
+                      ${thumb}
+                      <div class="rsb-np-info">
+                        <div class="rsb-np-title">${s.title||'?'}</div>
+                        <div class="rsb-np-sub">${s.user||'?'} · ${s.state||'playing'}</div>
+                        ${s.viewOffset&&s.duration ? `<div style="height:2px;background:rgba(255,255,255,0.08);border-radius:1px;margin-top:3px;overflow:hidden"><div style="height:100%;width:${Math.round(s.viewOffset/s.duration*100)}%;background:var(--blue)"></div></div>` : ''}
+                      </div>
+                    </div>`;
+                }).join('');
+            }
+        }
+    } catch(e) {
+        const npEl = document.getElementById('rsb-nowplaying');
+        if (npEl) npEl.innerHTML = '<div style="color:var(--text3);font-size:11px;text-align:center;padding:6px">Plex not configured</div>';
+    }
+}
 
 function toggleAlerts() {
     _alertsCollapsed = !_alertsCollapsed;
@@ -5577,6 +12069,15 @@ function toggleAlerts() {
     const chev = document.getElementById('alerts-chevron');
     if (body) body.classList.toggle('collapsed', _alertsCollapsed);
     if (chev) chev.textContent = _alertsCollapsed ? '▶' : '▼';
+    _syncAlertsBarPadding();
+}
+
+function _syncAlertsBarPadding() {
+    const bar = document.getElementById('alerts-bar');
+    const content = document.getElementById('content');
+    if (!bar || !content) return;
+    const h = bar.offsetHeight;
+    content.style.paddingTop = (h + 8) + 'px';
 }
 
 async function refreshAlerts() {
@@ -5616,13 +12117,22 @@ async function refreshAlerts() {
             }
         }
 
+        const bar = document.getElementById('alerts-bar');
         if (alerts.length === 0) {
             body.innerHTML = '<div class="alert-row"><span>🟢</span><span>All systems nominal</span></div>';
+            // Auto-hide the floating bar when everything is OK
+            if (bar) bar.classList.add('alerts-hidden');
+            const content = document.getElementById('content');
+            if (content) content.style.paddingTop = '';
         } else {
             body.innerHTML = alerts.map(a => {
                 const icon = a.level === 'red' ? '🔴' : a.level === 'yellow' ? '🟡' : '🟢';
                 return `<div class="alert-row"><span>${icon}</span><span>${a.msg}</span></div>`;
             }).join('');
+            // Show the floating bar for real alerts
+            if (bar) bar.classList.remove('alerts-hidden');
+            // Wait for paint then sync padding
+            requestAnimationFrame(() => _syncAlertsBarPadding());
         }
     } catch(e) {}
 }
@@ -5632,20 +12142,42 @@ setInterval(refreshAlerts, 30000);
 
 // ── Overview Extras ───────────────────────────────────────────────────
 async function loadOverviewExtras() {
-    // Recent logs excerpt
+    // Recent logs excerpt — color-coded by severity
     try {
-        const r = await fetch(API + '/api/logs?lines=8');
+        const r = await fetch(API + '/api/logs?lines=12');
         const d = await r.json();
         const el = document.getElementById('ov-log-excerpt');
-        if (el) el.textContent = (d.lines || []).slice(-8).join('\n') || '(no logs)';
+        if (el) {
+            const lines = (d.lines || []).slice(-12);
+            if (!lines.length) { el.textContent = '(no logs)'; }
+            else {
+                el.innerHTML = lines.map(line => {
+                    const u = line.toUpperCase();
+                    let col = 'var(--text2)';
+                    if (/\b(ERR(?:OR)?|CRITICAL|FATAL)\b/.test(u))  col = 'var(--red)';
+                    else if (/\b(WARN(?:ING)?)\b/.test(u))           col = 'var(--yellow,#e3b341)';
+                    else if (/\b(INFO|NOTICE|STARTED|DONE|OK)\b/.test(u)) col = 'var(--green)';
+                    else if (/\b(DEBUG|TRACE)\b/.test(u))            col = 'var(--text3)';
+                    const safe = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                    return `<span style="color:${col}">${safe}</span>`;
+                }).join('\n');
+            }
+        }
     } catch(e) {}
-    // Network I/O
+    // Network I/O — update values + proportional bars
     try {
         const r = await fetch(API + '/api/network');
         const d = await r.json();
         const io = d.io || {};
-        setEl('ov-net-sent', fmtBytes(io.bytes_sent || 0));
-        setEl('ov-net-recv', fmtBytes(io.bytes_recv || 0));
+        const sent = io.bytes_sent || 0;
+        const recv = io.bytes_recv || 0;
+        const total = sent + recv || 1;
+        setEl('ov-net-sent', fmtBytes(sent));
+        setEl('ov-net-recv', fmtBytes(recv));
+        const sentBar = document.getElementById('net-sent-bar');
+        const recvBar = document.getElementById('net-recv-bar');
+        if (sentBar) sentBar.style.width = Math.max(4, Math.round(sent/total*100)) + '%';
+        if (recvBar) recvBar.style.width = Math.max(4, Math.round(recv/total*100)) + '%';
     } catch(e) {}
     // Dashboard containers panel
     loadDashboardContainers();
@@ -5654,12 +12186,16 @@ async function loadOverviewExtras() {
     loadSonarrCard();
     loadPlexCard();
     loadSeerrCard();
+    loadQbitCard('active');
+    // Featured media backdrop panel
+    loadFeaturedPanel();
 }
 
 // ── Service Card Loaders ───────────────────────────────────────────────
 // Each checks if the service is configured; if not, shows a "configure" prompt.
+// Radarr/Sonarr support tabs: Upcoming | Queue | Library
 
-function _svcUnconfigured(bodyId, svcName, settingsTab) {
+function _svcUnconfigured(bodyId, svcName) {
     const el = document.getElementById(bodyId);
     if (el) el.innerHTML = `<div style="text-align:center;padding:12px 8px;color:var(--text3);font-size:12px">
       <div style="font-size:20px;margin-bottom:4px">⚙️</div>
@@ -5672,30 +12208,197 @@ function _svcError(bodyId, msg) {
     if (el) el.innerHTML = `<div style="color:var(--text3);font-size:11px;padding:8px;text-align:center">⚠ ${msg}</div>`;
 }
 
+function _svcEmpty(bodyId, msg) {
+    const el = document.getElementById(bodyId);
+    if (el) el.innerHTML = `<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">${msg}</div>`;
+}
+
+// Helper: format bytes to human-readable
+function _fmtSize(bytes) {
+    if (!bytes) return '—';
+    const gb = bytes / (1024*1024*1024);
+    if (gb >= 1) return gb.toFixed(1) + ' GB';
+    const mb = bytes / (1024*1024);
+    return mb.toFixed(0) + ' MB';
+}
+
+// ── Tab switch handler ──
+const _svcActiveTab = { radarr: 'upcoming', sonarr: 'upcoming' };
+
+// ── Downloader type switcher ────────────────────────────────────────────
+function dlTypeChanged() {
+    const t = document.getElementById('svc-dl-type')?.value || 'qbittorrent';
+    ['qbittorrent','transmission','deluge'].forEach(dt => {
+        const el = document.getElementById(`dl-fields-${dt}`);
+        if (el) el.style.display = dt === t ? 'flex' : 'none';
+    });
+}
+
+// ── qBittorrent downloads card ────────────────────────────────────────
+async function loadQbitCard(filter) {
+    const body = document.getElementById('qbit-card-body');
+    const speedEl = document.getElementById('qbit-speed');
+    if (!body) return;
+    body.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">Loading…</div>';
+    try {
+        const r = await fetch('/api/services/downloader/torrents');
+        const d = await r.json();
+        if (speedEl) speedEl.textContent = `↓ ${d.dl_speed || '0 B/s'}  ↑ ${d.ul_speed || '0 B/s'}`;
+        if (d.error) {
+            const hint = d.error.includes('login failed')
+                ? `${d.error}<br><span style="font-size:10px;color:var(--yellow)">Tip: wrong client type? Go to Settings → Service Integrations and check the Client dropdown.</span>`
+                : d.error;
+            body.innerHTML = `<div style="color:var(--text3);font-size:11px;padding:8px;text-align:center">${hint}</div>`;
+            return;
+        }
+        let torrents = d.torrents || [];
+        if (filter === 'active') torrents = torrents.filter(t => ['downloading','uploading','stalledDL','forcedDL','metaDL'].includes(t.state));
+        if (!torrents.length) {
+            body.innerHTML = `<div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">${filter==='active'?'No active downloads':'No torrents'}</div>`;
+            return;
+        }
+        const stateColor = s => ({'downloading':'var(--blue)','uploading':'var(--green)','seeding':'var(--green)','stalledDL':'var(--yellow)','error':'var(--red)','pausedDL':'var(--text3)','pausedUP':'var(--text3)'}[s] || 'var(--text3)');
+        const stateIcon  = s => ({'downloading':'↓','uploading':'↑','seeding':'↑','stalledDL':'⏸','error':'⚠','pausedDL':'⏸','pausedUP':'⏸','forcedDL':'↓','metaDL':'🔍'}[s] || '•');
+        body.innerHTML = torrents.map(t => `
+          <div style="padding:6px 8px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:3px">
+            <div style="font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(t.name||'').replace(/</g,'&lt;')}</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+                <div style="height:100%;width:${t.progress}%;background:${stateColor(t.state)};transition:width .3s"></div>
+              </div>
+              <span style="font-size:10px;color:var(--text3);font-family:var(--mono);white-space:nowrap">${t.progress}%</span>
+            </div>
+            <div style="display:flex;gap:10px;font-size:10px;color:var(--text3)">
+              <span style="color:${stateColor(t.state)}">${stateIcon(t.state)} ${t.state}</span>
+              <span>${t.size}</span>
+              ${t.state==='downloading'?`<span style="color:var(--blue)">↓${t.dlspeed}</span>`:''}
+              ${t.category?`<span style="background:var(--surface2);padding:0 4px;border-radius:3px">${t.category}</span>`:''}
+            </div>
+          </div>`).join('');
+    } catch(e) {
+        body.innerHTML = `<div style="color:var(--red);font-size:11px;padding:8px">Error: ${e.message}</div>`;
+    }
+}
+
+function svcTabSwitch(svc, tab, btnEl) {
+    _svcActiveTab[svc] = tab;
+    // Update active tab button
+    const card = document.getElementById(svc + '-card');
+    if (card) card.querySelectorAll('.svc-tab').forEach(b => b.classList.toggle('active', b === btnEl));
+    // Load the right data
+    if (svc === 'radarr') {
+        if (tab === 'upcoming') loadRadarrCard();
+        else if (tab === 'queue') loadRadarrQueue();
+        else loadRadarrLibrary();
+    } else if (svc === 'sonarr') {
+        if (tab === 'upcoming') loadSonarrCard();
+        else if (tab === 'queue') loadSonarrQueue();
+        else loadSonarrLibrary();
+    } else if (svc === 'qbit') {
+        loadQbitCard(tab);
+    }
+}
+
+// ── Toggle inline detail on click ──
+function _toggleDetail(detailId) {
+    const d = document.getElementById(detailId);
+    if (d) d.classList.toggle('open');
+}
+
+// ── Poster helper ──
+function _posterImg(url) {
+    return url
+        ? `<img src="${url}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">`
+        : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>';
+}
+
+// ══════════════════════════════════════════════════════════════════
+// RADARR — Upcoming / Queue / Library
+// ══════════════════════════════════════════════════════════════════
 async function loadRadarrCard() {
     try {
         const r = await fetch(API + '/api/services/radarr/calendar');
         const d = await r.json();
         if (!d.configured) return _svcUnconfigured('radarr-card-body', 'Radarr');
-        if (d.error)  return _svcError('radarr-card-body', d.error);
+        if (d.error) return _svcError('radarr-card-body', d.error);
         const el = document.getElementById('radarr-card-body');
         if (!el) return;
-        if (!d.movies || !d.movies.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming releases in the next 14 days</div>';
-            return;
-        }
-        el.innerHTML = d.movies.map(m => `
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
-            ${m.poster ? `<img src="${m.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
-            <div style="flex:1;min-width:0">
-              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title} <span style="color:var(--text3);font-weight:400">(${m.year||''})</span></div>
-              <div style="font-size:10px;color:var(--text3)">${m.date || 'TBA'}</div>
+        if (!d.movies || !d.movies.length) return _svcEmpty('radarr-card-body', 'No upcoming releases (14 days)');
+        el.innerHTML = d.movies.map((m, i) => {
+            const did = 'rd-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(m.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title} <span style="color:var(--text3);font-weight:400">(${m.year||''})</span></div>
+                <div style="font-size:10px;color:var(--text3)">${m.date || 'TBA'}</div>
+              </div>
+              ${m.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
             </div>
-            ${m.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
-          </div>`).join('');
+            <div class="svc-detail" id="${did}">
+              <b>${m.title}</b> (${m.year||'?'})<br>
+              Release: ${m.date || 'TBA'}<br>
+              Status: ${m.hasFile ? '✅ On disk' : '⏳ Awaiting release'}
+            </div>`;
+        }).join('');
     } catch(e) { _svcError('radarr-card-body', 'Could not reach Radarr'); }
 }
 
+async function loadRadarrQueue() {
+    const bodyId = 'radarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/radarr/queue');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Radarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        if (!d.queue || !d.queue.length) return _svcEmpty(bodyId, 'Nothing downloading');
+        el.innerHTML = `<div style="font-size:10px;color:var(--text3);margin-bottom:4px">${d.totalRecords} item${d.totalRecords!==1?'s':''} in queue</div>` +
+            d.queue.map((q, i) => {
+            const pct = q.progress || 0;
+            const barColor = pct > 90 ? 'var(--green)' : pct > 50 ? 'var(--blue)' : 'var(--yellow)';
+            const did = 'rq-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(q.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${q.title}</div>
+                <div class="svc-q-bar"><div class="svc-q-fill" style="width:${pct}%;background:${barColor}"></div></div>
+              </div>
+              <div style="text-align:right;flex-shrink:0">
+                <div style="font-size:11px;font-weight:600;color:var(--blue)">${pct.toFixed(0)}%</div>
+                <div style="font-size:9px;color:var(--text3)">${q.timeleft || '—'}</div>
+              </div>
+            </div>
+            <div class="svc-detail" id="${did}">
+              Quality: ${q.quality || '?'} · Size: ${_fmtSize(q.size)}<br>
+              Client: ${q.downloadClient || '?'} · Indexer: ${q.indexer || '?'}<br>
+              Status: ${q.status}
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError(bodyId, 'Could not reach Radarr queue'); }
+}
+
+async function loadRadarrLibrary() {
+    const bodyId = 'radarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/radarr/library');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Radarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        el.innerHTML = `<div class="svc-lib-grid">
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.total}</div><div class="svc-lib-label">Total Movies</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.monitored}</div><div class="svc-lib-label">Monitored</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--green)">${d.downloaded}</div><div class="svc-lib-label">Downloaded</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--red)">${d.missing}</div><div class="svc-lib-label">Missing</div></div>
+        </div>`;
+    } catch(e) { _svcError(bodyId, 'Could not load library stats'); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// SONARR — Upcoming / Queue / Library
+// ══════════════════════════════════════════════════════════════════
 async function loadSonarrCard() {
     try {
         const r = await fetch(API + '/api/services/sonarr/calendar');
@@ -5704,23 +12407,85 @@ async function loadSonarrCard() {
         if (d.error) return _svcError('sonarr-card-body', d.error);
         const el = document.getElementById('sonarr-card-body');
         if (!el) return;
-        if (!d.episodes || !d.episodes.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No upcoming episodes this week</div>';
-            return;
-        }
-        el.innerHTML = d.episodes.map(ep => `
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
-            ${ep.poster ? `<img src="${ep.poster}" style="width:28px;height:40px;border-radius:3px;object-fit:cover;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">` : '<div style="width:28px;height:40px;background:var(--surface2);border-radius:3px;flex-shrink:0"></div>'}
-            <div style="flex:1;min-width:0">
-              <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ep.series}</div>
-              <div style="font-size:10px;color:var(--text2)">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} · ${ep.title}</div>
-              <div style="font-size:10px;color:var(--text3)">${ep.airDate || 'TBA'}</div>
+        if (!d.episodes || !d.episodes.length) return _svcEmpty('sonarr-card-body', 'No upcoming episodes this week');
+        el.innerHTML = d.episodes.map((ep, i) => {
+            const did = 'sd-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(ep.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ep.series}</div>
+                <div style="font-size:10px;color:var(--text2)">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} · ${ep.title}</div>
+                <div style="font-size:10px;color:var(--text3)">${ep.airDate || 'TBA'}</div>
+              </div>
+              ${ep.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
             </div>
-            ${ep.hasFile ? '<span style="font-size:10px;color:var(--green);flex-shrink:0">✓ Downloaded</span>' : ''}
-          </div>`).join('');
+            <div class="svc-detail" id="${did}">
+              <b>${ep.series}</b> — ${ep.title}<br>
+              Season ${ep.season}, Episode ${ep.episode}<br>
+              Air date: ${ep.airDate || 'TBA'}<br>
+              Status: ${ep.hasFile ? '✅ On disk' : '⏳ Not yet downloaded'}
+            </div>`;
+        }).join('');
     } catch(e) { _svcError('sonarr-card-body', 'Could not reach Sonarr'); }
 }
 
+async function loadSonarrQueue() {
+    const bodyId = 'sonarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/sonarr/queue');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Sonarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        if (!d.queue || !d.queue.length) return _svcEmpty(bodyId, 'Nothing downloading');
+        el.innerHTML = `<div style="font-size:10px;color:var(--text3);margin-bottom:4px">${d.totalRecords} item${d.totalRecords!==1?'s':''} in queue</div>` +
+            d.queue.map((q, i) => {
+            const pct = q.progress || 0;
+            const barColor = pct > 90 ? 'var(--green)' : pct > 50 ? 'var(--blue)' : 'var(--yellow)';
+            const did = 'sq-d-' + i;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')">
+              ${_posterImg(q.poster)}
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${q.title}</div>
+                <div style="font-size:10px;color:var(--text2)">${q.episode} · ${q.episodeTitle}</div>
+                <div class="svc-q-bar"><div class="svc-q-fill" style="width:${pct}%;background:${barColor}"></div></div>
+              </div>
+              <div style="text-align:right;flex-shrink:0">
+                <div style="font-size:11px;font-weight:600;color:var(--blue)">${pct.toFixed(0)}%</div>
+                <div style="font-size:9px;color:var(--text3)">${q.timeleft || '—'}</div>
+              </div>
+            </div>
+            <div class="svc-detail" id="${did}">
+              Quality: ${q.quality || '?'} · Size: ${_fmtSize(q.size)}<br>
+              Client: ${q.downloadClient || '?'} · Indexer: ${q.indexer || '?'}<br>
+              Status: ${q.status}
+            </div>`;
+        }).join('');
+    } catch(e) { _svcError(bodyId, 'Could not reach Sonarr queue'); }
+}
+
+async function loadSonarrLibrary() {
+    const bodyId = 'sonarr-card-body';
+    try {
+        const r = await fetch(API + '/api/services/sonarr/library');
+        const d = await r.json();
+        if (!d.configured) return _svcUnconfigured(bodyId, 'Sonarr');
+        if (d.error) return _svcError(bodyId, d.error);
+        const el = document.getElementById(bodyId);
+        if (!el) return;
+        el.innerHTML = `<div class="svc-lib-grid">
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.totalSeries}</div><div class="svc-lib-label">Total Series</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val">${d.monitored}</div><div class="svc-lib-label">Monitored</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--green)">${d.episodesOnDisk}</div><div class="svc-lib-label">Episodes on Disk</div></div>
+          <div class="svc-lib-stat"><div class="svc-lib-val" style="color:var(--blue)">${d.episodes}</div><div class="svc-lib-label">Total Episodes</div></div>
+        </div>`;
+    } catch(e) { _svcError(bodyId, 'Could not load library stats'); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PLEX — Now Playing
+// ══════════════════════════════════════════════════════════════════
 async function loadPlexCard() {
     try {
         const r = await fetch(API + '/api/services/plex/sessions');
@@ -5731,15 +12496,12 @@ async function loadPlexCard() {
         if (!el) return;
         const count = document.getElementById('plex-stream-count');
         if (count) count.textContent = (d.sessions||[]).length + ' stream' + ((d.sessions||[]).length===1?'':'s');
-        if (!d.sessions || !d.sessions.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">Nothing playing right now</div>';
-            return;
-        }
+        if (!d.sessions || !d.sessions.length) return _svcEmpty('plex-card-body', 'Nothing playing right now');
         el.innerHTML = d.sessions.map(s => {
             const pct = s.progress || 0;
             const barColor = pct > 80 ? 'var(--green)' : 'var(--blue)';
-            return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
                 <span style="font-size:14px">▶</span>
                 <div style="flex:1;min-width:0">
                   <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.title}</div>
@@ -5748,14 +12510,15 @@ async function loadPlexCard() {
                 </div>
                 <span style="font-size:11px;font-weight:600;color:var(--blue);flex-shrink:0">${pct}%</span>
               </div>
-              <div style="background:var(--surface2);border-radius:2px;height:3px">
-                <div style="width:${pct}%;height:3px;background:${barColor};border-radius:2px;transition:width .5s ease"></div>
-              </div>
+              <div class="svc-q-bar"><div class="svc-q-fill" style="width:${pct}%;background:${barColor}"></div></div>
             </div>`;
         }).join('');
     } catch(e) { _svcError('plex-card-body', 'Could not reach Plex'); }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// SEERR — Requests
+// ══════════════════════════════════════════════════════════════════
 async function loadSeerrCard() {
     const STATUS_LABELS = {1:'Pending',2:'Approved',3:'Declined',4:'Available'};
     const STATUS_COLORS = {1:'var(--yellow)',2:'var(--green)',3:'var(--red)',4:'var(--blue)'};
@@ -5766,24 +12529,186 @@ async function loadSeerrCard() {
         if (d.error) return _svcError('seerr-card-body', d.error);
         const el = document.getElementById('seerr-card-body');
         if (!el) return;
-        if (!d.requests || !d.requests.length) {
-            el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No recent requests</div>';
-            return;
-        }
-        el.innerHTML = d.requests.map(req => {
+        if (!d.requests || !d.requests.length) return _svcEmpty('seerr-card-body', 'No recent requests');
+        el.innerHTML = d.requests.map((req, i) => {
             const lbl   = STATUS_LABELS[req.status] || 'Unknown';
             const color = STATUS_COLORS[req.status] || 'var(--text3)';
             const typeIcon = req.type === 'movie' ? '🎬' : req.type === 'tv' ? '📺' : '❓';
-            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
-              <span style="font-size:16px;flex-shrink:0">${typeIcon}</span>
+            const did = 'sr-d-' + i;
+            // Poster thumbnail — Overseerr serves via /imageproxy/ or TMDB directly
+            const posterUrl = req.poster ? `https://image.tmdb.org/t/p/w92${req.poster}` : '';
+            const thumbEl = posterUrl
+                ? `<img src="${posterUrl}" style="width:32px;height:48px;object-fit:cover;border-radius:3px;flex-shrink:0" onerror="this.style.display='none'">`
+                : `<span style="font-size:18px;flex-shrink:0;width:32px;text-align:center">${typeIcon}</span>`;
+            return `<div class="svc-item" onclick="_toggleDetail('${did}')" style="align-items:flex-start;gap:8px">
+              ${thumbEl}
               <div style="flex:1;min-width:0">
-                <div style="font-size:12px;font-weight:600;color:var(--text2)">TMDB #${req.title || req.id}</div>
-                <div style="font-size:10px;color:var(--text3)">by ${req.requestedBy || '?'} · ${req.createdAt}</div>
+                <div style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${req.title || ''}">${req.title || '?'}</div>
+                <div style="font-size:10px;color:var(--text3);margin-top:2px">${typeIcon} ${req.type || '?'} · ${req.createdAt}</div>
+                <div style="font-size:10px;color:var(--text3)">by ${req.requestedBy || '?'}</div>
               </div>
-              <span style="font-size:10px;font-weight:600;color:${color};flex-shrink:0">${lbl}</span>
+              <span style="font-size:10px;font-weight:600;color:${color};flex-shrink:0;padding:2px 6px;background:${color}22;border-radius:4px">${lbl}</span>
+            </div>
+            <div class="svc-detail" id="${did}">
+              ${req.type === 'movie' ? '🎬 Movie' : '📺 TV Show'} · Status: <strong>${lbl}</strong><br>
+              Requested by: ${req.requestedBy || '?'}<br>
+              Date: ${req.createdAt}
             </div>`;
         }).join('');
     } catch(e) { _svcError('seerr-card-body', 'Could not reach Seerr'); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FEATURED MEDIA PANEL — backdrop art from Radarr upcoming/queue
+// ══════════════════════════════════════════════════════════════════
+let _featItems  = [];
+let _featIdx    = 0;
+const _FEAT_CACHE_KEY = 'arrhub_feat_cache';
+
+async function loadFeaturedPanel() {
+    // ── Show cached data instantly while fresh data loads in background ──
+    try {
+        const cached = sessionStorage.getItem(_FEAT_CACHE_KEY);
+        if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed && parsed.length) {
+                _featItems = parsed;
+                _featIdx   = 0;
+                _renderFeatured();
+            }
+        }
+    } catch(e) {}
+
+    try {
+        // Try Radarr queue first (items being downloaded), fall back to calendar
+        const [qr, cr] = await Promise.allSettled([
+            fetch(API + '/api/services/radarr/queue'),
+            fetch(API + '/api/services/radarr/calendar'),
+        ]);
+        let items = [];
+        if (qr.status === 'fulfilled') {
+            const qd = await qr.value.json();
+            if (qd.queue && qd.queue.length) {
+                items = qd.queue.map(q => ({
+                    title:    q.title,
+                    year:     q.year || '',
+                    poster:   q.poster,
+                    backdrop: q.backdrop || q.fanart || '',
+                    overview: q.overview || '',
+                    rating:   q.rating,
+                    tmdbId:   q.tmdbId,
+                    badge:    'Downloading',
+                    progress: q.progress,
+                    type:     'movie',
+                }));
+            }
+        }
+        if (!items.length && cr.status === 'fulfilled') {
+            const cd = await cr.value.json();
+            if (cd.movies && cd.movies.length) {
+                items = cd.movies.map(m => ({
+                    title:    m.title,
+                    year:     m.year || '',
+                    poster:   m.poster,
+                    backdrop: m.backdrop || '',
+                    overview: m.overview || '',
+                    rating:   m.rating,
+                    tmdbId:   m.tmdbId,
+                    badge:    'Upcoming',
+                    type:     'movie',
+                }));
+            }
+        }
+        if (items.length) {
+            try { sessionStorage.setItem(_FEAT_CACHE_KEY, JSON.stringify(items)); } catch(e) {}
+        }
+        _featItems = items;
+        _featIdx   = 0;
+        _renderFeatured();
+    } catch(e) {
+        if (!_featItems.length) _featEmpty('Could not load featured media');
+    }
+}
+
+function featNav(dir) {
+    if (!_featItems.length) return;
+    _featIdx = (_featIdx + dir + _featItems.length) % _featItems.length;
+    _renderFeatured();
+}
+
+function _featEmpty(msg) {
+    const body = document.getElementById('feat-body');
+    const acts = document.getElementById('feat-actions');
+    const bd   = document.getElementById('feat-backdrop');
+    if (body) body.innerHTML = `<div class="feat-empty"><div style="font-size:28px">🎬</div><div style="font-size:11px">${msg}</div></div>`;
+    if (acts) acts.style.display = 'none';
+    if (bd)   { bd.style.backgroundImage = ''; bd.classList.remove('loaded'); }
+}
+
+function _renderFeatured() {
+    if (!_featItems.length) { _featEmpty('Radarr not configured'); return; }
+    const m    = _featItems[_featIdx];
+    const body = document.getElementById('feat-body');
+    const acts = document.getElementById('feat-actions');
+    const bd   = document.getElementById('feat-backdrop');
+    const tmdbBtn = document.getElementById('feat-tmdb-btn');
+
+    // Backdrop art
+    if (bd) {
+        const bdUrl = m.backdrop
+            ? (m.backdrop.startsWith('http') ? m.backdrop : `https://image.tmdb.org/t/p/w780${m.backdrop}`)
+            : (m.poster ? (m.poster.startsWith('http') ? m.poster : `https://image.tmdb.org/t/p/w500${m.poster}`) : '');
+        if (bdUrl) {
+            bd.classList.remove('loaded');
+            const img = new Image();
+            img.onload = () => { bd.style.backgroundImage = `url('${bdUrl}')`; bd.classList.add('loaded'); };
+            img.src = bdUrl;
+        } else {
+            bd.style.backgroundImage = '';
+            bd.classList.remove('loaded');
+        }
+    }
+
+    // Poster thumbnail
+    const posterUrl = m.poster
+        ? (m.poster.startsWith('http') ? m.poster : `https://image.tmdb.org/t/p/w92${m.poster}`)
+        : '';
+    const posterEl = posterUrl
+        ? `<img src="${posterUrl}" class="feat-poster" onerror="this.style.display='none'">`
+        : '';
+
+    // Star rating
+    let starsHtml = '';
+    if (m.rating) {
+        const r = parseFloat(m.rating);
+        const full = Math.round(r / 2);
+        starsHtml = `<div class="feat-rating">
+          <span class="feat-stars">${'★'.repeat(Math.min(5,full))}${'☆'.repeat(Math.max(0,5-full))}</span>
+          <span class="feat-score">${r.toFixed(1)}/10</span>
+        </div>`;
+    }
+
+    // Progress bar (if downloading)
+    const progressHtml = m.progress != null
+        ? `<div style="margin-top:6px">
+             <div style="font-size:9px;color:var(--blue);margin-bottom:2px">Downloading… ${parseFloat(m.progress).toFixed(0)}%</div>
+             <div style="height:3px;background:rgba(255,255,255,0.1);border-radius:2px;overflow:hidden">
+               <div style="height:100%;width:${parseFloat(m.progress).toFixed(0)}%;background:var(--blue)"></div>
+             </div>
+           </div>`
+        : '';
+
+    if (body) body.innerHTML = `
+      ${posterEl}
+      <div class="feat-badge">${m.badge||'Movie'}</div>
+      <div class="feat-title">${m.title||'?'} ${m.year ? `<span style="color:rgba(255,255,255,0.45);font-size:13px;font-weight:400">(${m.year})</span>` : ''}</div>
+      ${starsHtml}
+      ${m.overview ? `<div class="feat-overview">${m.overview}</div>` : ''}
+      ${progressHtml}
+    `;
+
+    if (acts) acts.style.display = '';
+    if (tmdbBtn && m.tmdbId) tmdbBtn.onclick = () => window.open(`https://www.themoviedb.org/movie/${m.tmdbId}`, '_blank');
 }
 
 // ── Service settings save/load ─────────────────────────────────────────
@@ -5792,7 +12717,12 @@ async function saveSvcSettings() {
         radarr_url: 'svc-radarr-url', radarr_api_key: 'svc-radarr-key',
         sonarr_url: 'svc-sonarr-url', sonarr_api_key: 'svc-sonarr-key',
         plex_url:   'svc-plex-url',   plex_token:     'svc-plex-token',
-        seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key'
+        seerr_url:  'svc-seerr-url',  seerr_api_key:  'svc-seerr-key',
+        football_api_key: 'svc-football-key',
+        qbittorrent_url: 'svc-qbit-url', qbittorrent_user: 'svc-qbit-user', qbittorrent_pass: 'svc-qbit-pass',
+        downloader_type: 'svc-dl-type',
+        transmission_url: 'svc-transmission-url', transmission_user: 'svc-transmission-user', transmission_pass: 'svc-transmission-pass',
+        deluge_url: 'svc-deluge-url', deluge_pass: 'svc-deluge-pass'
     };
     const payload = {};
     for (const [key, id] of Object.entries(fields)) {
@@ -5807,6 +12737,87 @@ async function saveSvcSettings() {
         const d = await r.json();
         showToast(d.error ? 'Error: ' + d.error : 'Service settings saved', d.error ? 'error' : 'success');
     } catch(e) { showToast('Save failed', 'error'); }
+}
+
+async function saveWeatherLocation() {
+    const city = (document.getElementById('cfg-weather-city')?.value || '').trim();
+    const country = (document.getElementById('cfg-weather-country')?.value || '').trim();
+    try {
+        const r = await fetch(API + '/api/settings', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ weather_city: city, weather_country: country })
+        });
+        const d = await r.json();
+        if (d.error) { showToast('Error: ' + d.error, 'error'); return; }
+        showToast(city ? `Weather set to ${city}${country ? ', ' + country : ''}` : 'Weather set to auto-detect (IP)', 'success');
+        // Refresh weather immediately
+        loadWeather();
+    } catch(e) { showToast('Save failed', 'error'); }
+}
+
+async function saveRedditCredentials() {
+    const st = document.getElementById('reddit-creds-status');
+    const clientId     = (document.getElementById('cfg-reddit-client-id')?.value     || '').trim();
+    const clientSecret = (document.getElementById('cfg-reddit-client-secret')?.value || '').trim();
+    const username     = (document.getElementById('cfg-reddit-username')?.value      || '').trim();
+    const password     = (document.getElementById('cfg-reddit-password')?.value      || '').trim();
+    try {
+        await fetch(API + '/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({reddit_client_id: clientId, reddit_client_secret: clientSecret,
+                                  reddit_username: username, reddit_password: password})});
+        if (st) { st.textContent = '✓ Saved — reload feeds to test'; setTimeout(() => { if(st) st.textContent=''; }, 5000); }
+    } catch(e) {
+        if (st) st.textContent = 'Failed to save';
+    }
+}
+
+// ── Config Backup & Restore ─────────────────────────────────────────────────
+async function exportConfig() {
+    const st = document.getElementById('config-backup-status');
+    try {
+        const r = await fetch(API + '/api/config/export');
+        if (!r.ok) throw new Error('Export failed: ' + r.status);
+        const blob = await r.blob();
+        const dt = new Date().toISOString().slice(0, 10);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `arrhub-config-${dt}.json`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        if (st) { st.textContent = '✓ Config exported'; setTimeout(() => { if (st) st.textContent = ''; }, 4000); }
+        showToast('Config exported successfully', 'success', 3000);
+    } catch(e) {
+        if (st) st.textContent = 'Export failed';
+        showToast('Export failed: ' + e.message, 'error', 4000);
+    }
+}
+
+function importConfig() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.json';
+    input.onchange = async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const st = document.getElementById('config-backup-status');
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            if (!data.arrhub_backup) throw new Error('Not a valid ArrHub backup file');
+            const r = await fetch(API + '/api/config/import', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            const result = await r.json();
+            if (result.error) throw new Error(result.error);
+            if (st) st.textContent = `✓ Restored ${result.restored} settings — reloading…`;
+            showToast(`Restored ${result.restored} settings — reloading page…`, 'success', 3000);
+            setTimeout(() => location.reload(), 2800);
+        } catch(err) {
+            if (st) { st.style.color = 'var(--red)'; st.textContent = 'Import failed: ' + err.message; }
+            showToast('Import failed: ' + err.message, 'error', 5000);
+        }
+    };
+    input.click();
 }
 
 async function loadDashboardContainers() {
@@ -5908,36 +12919,101 @@ function toggleLogsAutoRefresh(btn) {
     }
 }
 
-// ── Polling ───────────────────────────────────────────────────────────
-// Active containers tab: refresh full list every 8s
-setInterval(() => {
-    if (currentTab === 'containers') loadContainers();
-}, 8000);
+// ── Combined dashboard refresh (replaces separate logs + network calls) ──────
+async function loadDashboardData() {
+    // Only fetch when overview is active to save server load
+    if (currentTab !== 'overview') return;
+    try {
+        const r = await fetch(API + '/api/dashboard');
+        const d = await r.json();
+        // Logs
+        const el = document.getElementById('ov-log-excerpt');
+        if (el && d.logs && d.logs.length) {
+            el.innerHTML = d.logs.slice(-12).map(line => {
+                const u = line.toUpperCase();
+                let col = 'var(--text2)';
+                if (/\b(ERR(?:OR)?|CRITICAL|FATAL)\b/.test(u))       col = 'var(--red)';
+                else if (/\b(WARN(?:ING)?)\b/.test(u))                col = 'var(--yellow,#e3b341)';
+                else if (/\b(INFO|NOTICE|STARTED|DONE|OK)\b/.test(u)) col = 'var(--green)';
+                else if (/\b(DEBUG|TRACE)\b/.test(u))                 col = 'var(--text3)';
+                const safe = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                return `<span style="color:${col}">${safe}</span>`;
+            }).join('\n');
+        }
+        // Network IO
+        const io = d.net_io || {};
+        const sent = io.bytes_sent || 0, recv = io.bytes_recv || 0, total = sent + recv || 1;
+        setEl('ov-net-sent', fmtBytes(sent));
+        setEl('ov-net-recv', fmtBytes(recv));
+        const sentBar = document.getElementById('net-sent-bar');
+        const recvBar = document.getElementById('net-recv-bar');
+        if (sentBar) sentBar.style.width = Math.max(4, Math.round(sent/total*100)) + '%';
+        if (recvBar) recvBar.style.width = Math.max(4, Math.round(recv/total*100)) + '%';
+    } catch(e) {}
+}
 
-// Slower polls for other tabs
+// ── Polling ───────────────────────────────────────────────────────────
+// Pause all non-critical polling when the browser tab is hidden
+let _pollPaused = false;
+document.addEventListener('visibilitychange', () => {
+    _pollPaused = document.hidden;
+});
+
+// Active containers tab: refresh full list every 10s
 setInterval(() => {
-    if (currentTab === 'storage') loadStorage();
-    else if (currentTab === 'network') loadNetwork();
-    else if (currentTab === 'overview') loadDashboardContainers();
+    if (!_pollPaused && currentTab === 'containers') loadContainers();
 }, 10000);
 
-// Background stats refresh for running containers (every 30s when NOT on containers tab)
+// Slower polls for other tabs (every 15s)
 setInterval(() => {
-    if (currentTab !== 'containers') {
+    if (_pollPaused) return;
+    if (currentTab === 'storage') loadStorage();
+    else if (currentTab === 'stornet') { loadStorage(); loadNetwork(); }
+    else if (currentTab === 'overview') loadDashboardContainers();
+}, 15000);
+
+// Background stats refresh for running containers (every 45s when NOT on containers tab)
+setInterval(() => {
+    if (!_pollPaused && currentTab !== 'containers') {
         allContainers.filter(c => c.status === 'running').forEach(c => loadCtrStats(c.name, false));
     }
-}, 30000);
+}, 45000);
 
-// ── Boot ──────────────────────────────────────────────────────────────
-initGauges();
-loadOverview();
-loadContainers();   // also populates allContainers for alerts
-loadWeather();
-loadDockerInfo();
-loadOverviewExtras();   // also calls loadDashboardContainers()
-startSSE();
-// Initial alerts render (will be updated once containers load)
-setTimeout(refreshAlerts, 2000);
+// Combined dashboard data (logs + network) — every 30s, only when on overview tab
+setInterval(() => { if (!_pollPaused) { loadDashboardData(); loadDashStorage(); } }, 30000);
+
+// Service integration cards — every 60s (these call external services; no need to hammer)
+setInterval(() => {
+    if (!_pollPaused && currentTab === 'overview') {
+        loadRadarrCard(); loadSonarrCard(); loadPlexCard(); loadSeerrCard(); loadQbitCard('active');
+        loadFeaturedPanel();
+    }
+}, 60000);
+
+// ── Boot — staggered to avoid stampeding a single uvicorn worker ─────
+updateGreeting();
+try { initGauges(); } catch(e) { console.warn('Chart.js not ready, gauges disabled:', e); }
+startSSE();                                    // t=0  — SSE handles live CPU/RAM/load
+loadOverview();                                // t=0  — initial static info (hostname etc.)
+setTimeout(loadContainers,   300);             // t=300ms
+setTimeout(loadWeather,      700);             // t=700ms
+setTimeout(loadDockerInfo,  1100);             // t=1.1s
+setTimeout(() => {                             // t=1.8s — first extras pass
+    loadDashboardData();
+    loadDashboardContainers();
+    loadDashStorage();                         // storage widget (reuses /api/storage)
+}, 1800);
+setTimeout(() => {                             // t=3s — service cards last (external APIs)
+    loadRadarrCard(); loadSonarrCard(); loadPlexCard(); loadSeerrCard(); loadQbitCard('active');
+}, 3000);
+setTimeout(refreshAlerts, 2500);
+// Fallback: ensure dashboard is visible after 3s
+setTimeout(() => {
+    const grid = document.getElementById('ov-grid');
+    if (grid && !grid.classList.contains('gs-ready')) {
+        grid.querySelectorAll('.grid-stack-item').forEach(i => i.style.visibility = 'visible');
+    }
+}, 3000);
 
 // ── Theme & Appearance ────────────────────────────────────────────────────
 function applyTheme(t) {
@@ -6028,8 +13104,16 @@ function _applyBg(url, blur, overlay) {
   }
 })();
 
-// ── GridStack Drag-and-Drop Dashboard ─────────────────────────────────────
-// Requires gridstack@10 loaded below. Activated only when "Edit Layout" clicked.
+// ── Dashboard uses CSS Grid — no drag-and-drop ────────────────────────────
+// _gs and _gsEditing stubs: dashboard is now CSS Grid, GridStack removed in v3.17.3+
+// These prevent ReferenceErrors from legacy widget helper functions below.
+let _gs = null;
+let _gsEditing = false;
+(function() {
+  const el = document.getElementById('ov-dashboard') || document.getElementById('ov-grid');
+  if (el) el.classList.add('gs-ready');
+})();
+
 // ── HLS.js player helper ─────────────────────────────────────────────────────
 const _hlsInstances = {};  // track HLS instances keyed by videoId to avoid duplicates
 
@@ -6067,70 +13151,31 @@ function hlsPlay(videoId, url) {
     }
 }
 
-let _gs  = null;
-let _gsEditing = false;
-
-function _gsInit() {
-  if (_gs || typeof GridStack === 'undefined') return false;
-  const el = document.getElementById('ov-grid');
-  if (!el) return false;
-  const isMobile = window.innerWidth < 900;
-  _gs = GridStack.init({
-    cellHeight: 60,           // smaller cells → finer positional control
-    column: isMobile ? 1 : 12,
-    margin: 8,
-    staticGrid: true,
-    animate: true,
-    float: false,
-    disableDrag: isMobile,
-    disableResize: isMobile,
-    resizable: { handles: 'e,se,s,sw,w' },  // resize from all sides
-    draggable: { handle: '.panel-title' },   // drag by title bar only
-  }, el);
-  // When a widget is resized, tell Chart.js canvases inside to resize too
-  _gs.on('resizestop', (event, element) => {
-    element.querySelectorAll('canvas').forEach(canvas => {
-      const chart = (typeof Chart !== 'undefined' && Chart.getChart) ? Chart.getChart(canvas) : null;
-      if (chart) { chart.resize(); }
-    });
-    element.querySelectorAll('.panel,.stat-grid').forEach(el => { el.style.opacity = '0.99'; requestAnimationFrame(() => { el.style.opacity = ''; }); });
-  });
-  // Restore saved layout
-  const saved = localStorage.getItem('arrhub_grid');
-  if (saved) {
-    try {
-      const items = JSON.parse(saved);
-      // Only apply saved positions if item IDs match current widgets
-      _gs.load(items, false);
-    } catch(e) { localStorage.removeItem('arrhub_grid'); }
-  }
-  // Show Reset button if a saved layout exists
-  const resetBtn = document.getElementById('ov-reset-btn');
-  if (resetBtn && localStorage.getItem('arrhub_grid')) resetBtn.style.display = '';
-  // Mark grid as ready — removes the visibility:hidden that prevents stacking flash
-  el.classList.add('gs-ready');
-  return true;
-}
-
 // ── Widget palette definitions ────────────────────────────────────────────────
+// span: grid column span in the 12-col grid
+// scrollable: whether the cell has overflow-y:auto (true = has max-height)
 const WIDGET_DEFS = {
-  sysinfo:  { label: 'System Info',      icon: 'ℹ️',  dw:6,  dh:4, dx:0,  dy:0  },
-  weather:  { label: 'Weather',          icon: '🌤️', dw:6,  dh:4, dx:6,  dy:0  },
-  services: { label: 'Service Cards',    icon: '🃏',  dw:12, dh:5, dx:0,  dy:4  },
-  infra:    { label: 'Docker & Network', icon: '🐳',  dw:12, dh:3, dx:0,  dy:9  },
-  logs:     { label: 'Recent Logs',      icon: '📋',  dw:4,  dh:4, dx:0,  dy:12 },
-  ctrs:     { label: 'Containers',       icon: '📦',  dw:8,  dh:4, dx:4,  dy:12 },
-  launcher: { label: 'Service Launcher', icon: '🚀',  dw:12, dh:3, dx:0,  dy:16 },
+  gauges:   { label: 'System Gauges',    icon: '📊', desc: 'CPU, RAM & load gauges',              span: 8,  scrollable: false },
+  sysinfo:  { label: 'System Info',      icon: 'ℹ️', desc: 'OS, kernel, hostname, uptime',        span: 4,  scrollable: false },
+  weather:  { label: 'Weather',          icon: '🌤️', desc: 'Current weather & forecast',          span: 4,  scrollable: false },
+  logstore: { label: 'Storage & Logs',   icon: '💾', desc: 'Disk usage + live log excerpt',       span: 4,  scrollable: false },
+  services: { label: 'Service Cards',    icon: '🃏', desc: 'ARR / Plex / qBit service cards',    span: 8,  scrollable: true  },
+  featured: { label: 'Featured Media',   icon: '🎬', desc: 'Movie backdrop art + info from Radarr', span: 4, scrollable: false },
+  infra:    { label: 'Docker & Network', icon: '🐳', desc: 'Docker engine stats + network I/O',  span: 4,  scrollable: true  },
+  apps:     { label: 'Apps & Containers',icon: '🚀', desc: 'Swipeable launcher + container list', span: 4, scrollable: false },
+  todo:     { label: 'To-Do List',       icon: '✅', desc: 'Editable personal task list',         span: 4, scrollable: true  },
+  calendar: { label: 'Calendar',         icon: '📅', desc: 'Monthly calendar with custom events', span: 4, scrollable: false },
 };
 
 let _hiddenWidgets = new Set();
 
-// Save full widget config (hidden list + grid positions) to server
+// Save full widget config (hidden list) to server
+// CSS Grid layout — grid positions are fixed, only hidden state is persisted
 async function _saveWidgetConfig() {
   try {
     const config = {
       hidden: [..._hiddenWidgets],
-      grid: _gs ? _gs.save(false) : null
+      grid: null
     };
     await fetch('/api/widget_config', {
       method: 'POST',
@@ -6148,64 +13193,67 @@ async function _loadWidgetConfig() {
     if (Array.isArray(data.hidden) && data.hidden.length) {
       _hiddenWidgets = new Set(data.hidden);
       _hiddenWidgets.forEach(id => {
-        const el = document.querySelector(\`.grid-stack-item[gs-id="\${id}"]\`);
-        if (el) el.style.display = 'none';
+        const cell = document.getElementById(`dash-${id}`);
+        if (cell) cell.style.display = 'none';
       });
-    }
-    // Grid positions from server take priority over localStorage
-    if (data.grid && Array.isArray(data.grid)) {
-      localStorage.setItem('arrhub_grid', JSON.stringify(data.grid));
+      _syncResetBtn();
     }
   } catch(e) {}
 }
 
-// Remove a widget during edit mode
-function removeWidget(gsId) {
-  if (!_gsEditing || !_gs) return;
-  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
-  if (!el) return;
-  _hiddenWidgets.add(gsId);
-  _gs.removeWidget(el, false);       // remove from grid but keep DOM node
-  el.style.display = 'none';
-  document.getElementById('ov-grid').appendChild(el);  // keep in DOM so it can be restored
-  const addBtn = document.getElementById('ov-add-btn');
-  if (addBtn) addBtn.style.display = '';
-  showToast(\`"\${WIDGET_DEFS[gsId]?.label || gsId}" hidden — use Add Widget to restore\`, 'info', 3000);
+function _syncResetBtn() {
+  const btn = document.getElementById('ov-reset-btn');
+  if (btn) btn.style.display = _hiddenWidgets.size > 0 ? '' : 'none';
+}
+
+// Remove (hide) a widget
+function removeWidget(id) {
+  const cell = document.getElementById(`dash-${id}`);
+  if (!cell) return;
+  _hiddenWidgets.add(id);
+  cell.style.display = 'none';
+  _syncResetBtn();
+  _saveWidgetConfig();
+  showToast(`"${WIDGET_DEFS[id]?.label || id}" hidden — click Widgets to restore`, 'info', 2500);
 }
 
 // Restore a hidden widget
-function restoreWidget(gsId) {
-  const def = WIDGET_DEFS[gsId];
-  if (!def || !_gs) return;
-  _hiddenWidgets.delete(gsId);
-  const el = document.querySelector(\`.grid-stack-item[gs-id="\${gsId}"]\`);
-  if (el) {
-    el.style.display = '';
-    _gs.makeWidget(el);
-  }
-  if (_hiddenWidgets.size === 0) {
-    const addBtn = document.getElementById('ov-add-btn');
-    if (addBtn) addBtn.style.display = 'none';
-  }
-  document.getElementById('widget-palette-modal').style.display = 'none';
-  showToast(\`"\${def.label}" restored\`, 'success', 2000);
+function restoreWidget(id) {
+  const def = WIDGET_DEFS[id];
+  if (!def) return;
+  _hiddenWidgets.delete(id);
+  const cell = document.getElementById(`dash-${id}`);
+  if (cell) cell.style.display = '';
+  _syncResetBtn();
+  _saveWidgetConfig();
+  showToast(`"${def.label}" restored`, 'success', 2000);
+  showWidgetPalette(); // refresh in-place
 }
 
-// Show widget palette modal
+// Show widget palette modal — Homarr-style
 function showWidgetPalette() {
   const body = document.getElementById('widget-palette-body');
+  const countEl = document.getElementById('widget-palette-count');
   if (!body) return;
   body.innerHTML = '';
+  const hidden = [..._hiddenWidgets].length;
+  const total = Object.keys(WIDGET_DEFS).length;
+  if (countEl) countEl.textContent = hidden > 0 ? `${hidden} widget${hidden>1?'s':''} hidden` : 'All widgets visible';
   Object.entries(WIDGET_DEFS).forEach(([id, def]) => {
     const isHidden = _hiddenWidgets.has(id);
     const div = document.createElement('div');
     div.className = 'widget-palette-card' + (isHidden ? '' : ' active');
-    div.title = isHidden ? 'Click to restore' : 'Click to hide';
-    div.innerHTML = \`<div class="wpc-icon">\${def.icon}</div><div class="wpc-name">\${def.label}</div><div class="wpc-status">\${isHidden ? '➕ Hidden' : '✅ Visible'}</div>\`;
+    div.title = isHidden ? 'Click to show on dashboard' : 'Click to hide from dashboard';
+    div.innerHTML = `
+      <div class="wpc-icon">${def.icon}</div>
+      <div class="wpc-name">${def.label}</div>
+      <div class="wpc-status">${isHidden
+        ? '<span style="color:var(--text3)">Hidden</span>'
+        : '<span style="color:var(--green)">✓ Visible</span>'}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:3px;text-align:center;line-height:1.3">${def.desc}</div>`;
     div.onclick = () => {
       if (isHidden) restoreWidget(id);
-      else removeWidget(id);
-      showWidgetPalette();  // refresh palette
+      else { removeWidget(id); showWidgetPalette(); }
     };
     body.appendChild(div);
   });
@@ -6230,93 +13278,312 @@ function _launcherIcon(name) {
   return '📦';
 }
 
+function updateGreeting() {
+    const h = new Date().getHours();
+    let greeting = 'Good morning';
+    if (h >= 12 && h < 18) greeting = 'Good afternoon';
+    else if (h >= 18) greeting = 'Good evening';
+
+    const greetEl = document.getElementById('ov-greeting');
+    if (greetEl) greetEl.textContent = greeting;
+
+    const dateEl = document.getElementById('ov-date');
+    if (dateEl) {
+        const now = new Date();
+        dateEl.textContent = now.toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'});
+    }
+}
+
 async function loadServiceLauncher() {
-  const el = document.getElementById('launcher-tiles');
-  if (!el) return;
+  const elOld = document.getElementById('launcher-tiles');
+  const elNew = document.getElementById('ov-launcher-grid');
+  const targetEls = [elOld, elNew].filter(e => e);
+  if (!targetEls.length) return;
   try {
     const r = await fetch('/api/containers');
     const data = await r.json();
     const running = (data.containers || []).filter(c => c.status === 'running');
     if (!running.length) {
-      el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">No running containers found.</div>';
+      const msg = '<div style="color:var(--text3);font-size:12px;padding:8px">No running containers found.</div>';
+      targetEls.forEach(el => { el.innerHTML = msg; });
       return;
     }
-    el.innerHTML = running.map(c => {
-      const name = (c.name || '').replace(/^\\//, '');
+    const html = running.map(c => {
+      const name = (c.name || '').replace(/^\//, '');
       const ports = c.ports || [];
-      // Pick first host port that looks like an HTTP port
-      const portEntry = ports.find(p => /^\\d+:\\d+/.test(p));
+      const skipPorts = new Set(['53','25','110','143','993','995','22','21','5432','3306','6379','27017']);
+      const webPorts = ports.filter(p => {
+        const hp = p.split(':')[0];
+        return hp && /^\d+$/.test(hp) && !skipPorts.has(hp) && parseInt(hp) >= 1024;
+      });
+      const portEntry = webPorts[0] || ports.find(p => /^\d+:\d+/.test(p));
       const hostPort = portEntry ? portEntry.split(':')[0] : null;
-      const url = hostPort ? \`http://\${window.location.hostname}:\${hostPort}\` : null;
+      const scheme = hostPort && (hostPort === '443' || hostPort.endsWith('443')) ? 'https' : 'http';
+      const url = hostPort ? `${scheme}://${window.location.hostname}:${hostPort}` : null;
       const icon = _launcherIcon(name);
-      const tileHtml = \`<div class="launcher-tile-icon">\${icon}</div>
-        <div class="launcher-tile-name">\${name}</div>
-        \${hostPort ? \`<div class="launcher-tile-port">:\${hostPort}</div>\` : ''}\`;
+      const tileHtml = `<div class="launcher-tile-icon">${icon}</div>
+        <div class="launcher-tile-name">${name}</div>
+        ${hostPort ? `<div class="launcher-tile-port">:${hostPort}</div>` : ''}`;
       return url
-        ? \`<a href="\${url}" target="_blank" rel="noopener" class="launcher-tile">\${tileHtml}</a>\`
-        : \`<div class="launcher-tile" style="opacity:.5;cursor:default">\${tileHtml}</div>\`;
+        ? `<a href="${url}" target="_blank" rel="noopener" class="launcher-tile">${tileHtml}</a>`
+        : `<div class="launcher-tile" style="opacity:.5;cursor:default">${tileHtml}</div>`;
     }).join('');
+    targetEls.forEach(el => { el.innerHTML = html; });
   } catch(e) {
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px">Failed to load containers.</div>';
+    const msg = '<div style="color:var(--text3);font-size:12px">Failed to load containers.</div>';
+    targetEls.forEach(el => { el.innerHTML = msg; });
   }
 }
 
-function toggleGridEdit() {
-  _gsInit();
-  if (!_gs) { showToast('GridStack not loaded yet', 'error'); return; }
-  _gsEditing = !_gsEditing;
-  const btn      = document.getElementById('ov-edit-btn');
-  const resetBtn = document.getElementById('ov-reset-btn');
-  const addBtn   = document.getElementById('ov-add-btn');
-  const grid     = document.getElementById('ov-grid');
-  if (_gsEditing) {
-    _gs.setStatic(false);
-    _gs.on('change', () => {
-      localStorage.setItem('arrhub_grid', JSON.stringify(_gs.save(false)));
-      if (resetBtn) resetBtn.style.display = '';
-    });
-    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg> Save Layout';
-    btn.style.background = 'var(--blue2)';
-    btn.style.color      = 'var(--blue)';
-    grid.classList.add('gs-editing');
-    if (addBtn) addBtn.style.display = '';
-    showToast('Drag by title bar · resize from edges · ✕ to hide widgets · click Save when done', 'info', 5000);
+// ── Calendar ──────────────────────────────────────────────────────────────
+let _calEvents = {};  // {"YYYY-MM-DD": [{id, title, color}, ...]}
+let _calYear = new Date().getFullYear();
+let _calMonth = new Date().getMonth();  // 0-based
+let _calSelectedDate = null;
+(function _calLoad() {
+  try { _calEvents = JSON.parse(localStorage.getItem('arrhub_calendar') || '{}'); } catch(e) { _calEvents = {}; }
+})();
+function _calSave() { localStorage.setItem('arrhub_calendar', JSON.stringify(_calEvents)); }
+
+function calRender() {
+  const el = document.getElementById('cal-grid');
+  const lbl = document.getElementById('cal-month-label');
+  if (!el) return;
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  if (lbl) lbl.textContent = `${monthNames[_calMonth]} ${_calYear}`;
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  const firstDay = new Date(_calYear, _calMonth, 1).getDay();  // 0=Sun
+  const daysInMonth = new Date(_calYear, _calMonth + 1, 0).getDate();
+  let html = '';
+  // Empty cells before first day
+  for (let i = 0; i < firstDay; i++) html += '<div style="min-height:52px"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${_calYear}-${String(_calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isToday = dateStr === todayStr;
+    const isSelected = dateStr === _calSelectedDate;
+    const evts = _calEvents[dateStr] || [];
+    const dots = evts.slice(0,3).map(e => `<div style="width:6px;height:6px;border-radius:50%;background:${e.color || '#2563eb'};flex-shrink:0"></div>`).join('');
+    const extraCount = evts.length > 3 ? `<span style="font-size:8px;color:var(--text3)">+${evts.length-3}</span>` : '';
+    html += `<div onclick="calDayClick('${dateStr}')" style="min-height:52px;padding:4px 5px;border-radius:6px;background:${isSelected?'var(--blue2)':isToday?'var(--surface)':'var(--bg3)'};border:1px solid ${isSelected?'var(--blue)':isToday?'var(--accent,#2563eb)':'var(--border)'};cursor:pointer;transition:background .15s;position:relative" title="Click to add event">
+      <div style="font-size:11px;font-weight:${isToday?'700':'500'};color:${isToday?'var(--accent,#2563eb)':'var(--text)'};">${d}</div>
+      ${evts.length ? `<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:3px;">${dots}${extraCount}</div>` : ''}
+      ${evts.slice(0,2).map(e => `<div title="${e.title}" style="font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 3px;border-radius:3px;background:${e.color||'#2563eb'}22;color:${e.color||'#2563eb'};margin-top:1px">${e.title.replace(/</g,'&lt;')}</div>`).join('')}
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function calDayClick(dateStr) {
+  _calSelectedDate = dateStr;
+  const form = document.getElementById('cal-event-form');
+  const lbl = document.getElementById('cal-form-date-label');
+  if (lbl) lbl.textContent = new Date(dateStr + 'T12:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const inp = document.getElementById('cal-event-title');
+  if (inp) inp.value = '';
+  if (form) form.style.display = 'flex';
+  calRender();
+  // If there are existing events on this day, show them above the form
+  const evts = _calEvents[dateStr] || [];
+  if (evts.length) {
+    const existingEl = document.getElementById('cal-existing-events');
+    // Inject existing events list if not already present
+    if (!existingEl && form) {
+      const div = document.createElement('div');
+      div.id = 'cal-existing-events';
+      div.style.cssText = 'margin-top:8px;display:flex;flex-direction:column;gap:3px';
+      form.appendChild(div);
+    }
+    const eel = document.getElementById('cal-existing-events');
+    if (eel) eel.innerHTML = evts.map(e =>
+      `<div style="display:flex;align-items:center;gap:6px;padding:3px 6px;background:var(--bg3);border-radius:5px">
+        <div style="width:8px;height:8px;border-radius:50%;background:${e.color||'#2563eb'};flex-shrink:0"></div>
+        <span style="flex:1;font-size:11px">${e.title.replace(/</g,'&lt;')}</span>
+        <button onclick="calDeleteEvent('${dateStr}','${e.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px;padding:0" title="Delete">✕</button>
+      </div>`
+    ).join('');
   } else {
-    _gs.setStatic(true);
-    const gridData = _gs.save(false);
-    localStorage.setItem('arrhub_grid', JSON.stringify(gridData));
-    btn.innerHTML = '<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> Edit Layout';
+    const eel = document.getElementById('cal-existing-events');
+    if (eel) eel.innerHTML = '';
+  }
+}
+
+function calSubmitEvent() {
+  if (!_calSelectedDate) return;
+  const title = (document.getElementById('cal-event-title')?.value || '').trim();
+  const color = document.getElementById('cal-event-color')?.value || '#2563eb';
+  if (!title) return;
+  if (!_calEvents[_calSelectedDate]) _calEvents[_calSelectedDate] = [];
+  _calEvents[_calSelectedDate].push({ id: Date.now().toString(36), title, color });
+  _calSave(); calRender();
+  document.getElementById('cal-event-title').value = '';
+  // Refresh existing events display
+  calDayClick(_calSelectedDate);
+}
+
+function calDeleteEvent(dateStr, eventId) {
+  if (_calEvents[dateStr]) {
+    _calEvents[dateStr] = _calEvents[dateStr].filter(e => e.id !== eventId);
+    if (!_calEvents[dateStr].length) delete _calEvents[dateStr];
+    _calSave(); calRender();
+    calDayClick(dateStr);
+  }
+}
+
+function calCloseForm() {
+  _calSelectedDate = null;
+  const form = document.getElementById('cal-event-form');
+  if (form) form.style.display = 'none';
+  calRender();
+}
+
+function calPrevMonth() {
+  _calMonth--;
+  if (_calMonth < 0) { _calMonth = 11; _calYear--; }
+  calRender();
+}
+function calNextMonth() {
+  _calMonth++;
+  if (_calMonth > 11) { _calMonth = 0; _calYear++; }
+  calRender();
+}
+function calGoToday() {
+  const now = new Date();
+  _calYear = now.getFullYear();
+  _calMonth = now.getMonth();
+  calRender();
+}
+
+// ── To-Do List ─────────────────────────────────────────────────────────────
+let _todoItems = [];
+(function _todoLoad() {
+  try { _todoItems = JSON.parse(localStorage.getItem('arrhub_todos') || '[]'); } catch(e) { _todoItems = []; }
+})();
+function _todoSave() { localStorage.setItem('arrhub_todos', JSON.stringify(_todoItems)); }
+function _todoRender() {
+  const el = document.getElementById('todo-list');
+  const badge = document.getElementById('todo-pending-count');
+  if (!el) return;
+  const pending = _todoItems.filter(t => !t.done).length;
+  if (badge) badge.textContent = pending > 0 ? pending : '';
+  if (!_todoItems.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:12px">No tasks yet — add one above!</div>'; return; }
+  el.innerHTML = _todoItems.map(t =>
+    `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;${t.done?'opacity:.55':''}">
+      <input type="checkbox" ${t.done?'checked':''} onchange="todoToggle('${t.id}')"
+        style="cursor:pointer;width:14px;height:14px;accent-color:var(--accent,#2563eb)">
+      <span style="flex:1;font-size:12px;${t.done?'text-decoration:line-through;color:var(--text3)':''}">${t.text.replace(/</g,'&lt;')}</span>
+      <button onclick="todoDelete('${t.id}')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:0 2px;line-height:1" title="Delete">✕</button>
+    </div>`
+  ).join('');
+}
+function todoAdd() {
+  const inp = document.getElementById('todo-new-input');
+  if (!inp) return;
+  const text = inp.value.trim();
+  if (!text) return;
+  _todoItems.unshift({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,5), text, done: false, created: Date.now() });
+  _todoSave(); _todoRender();
+  inp.value = '';
+}
+function todoToggle(id) {
+  const item = _todoItems.find(t => t.id === id);
+  if (item) { item.done = !item.done; _todoSave(); _todoRender(); }
+}
+function todoDelete(id) {
+  _todoItems = _todoItems.filter(t => t.id !== id);
+  _todoSave(); _todoRender();
+}
+
+// ── Apps swipe card (mirrors MSC behaviour) ────────────────────────────────
+let _appsSlide = 0;
+const APPS_TOTAL = 2;
+
+function appsGoTo(idx) {
+    _appsSlide = Math.max(0, Math.min(APPS_TOTAL - 1, idx));
+    const track = document.getElementById('apps-track');
+    if (track) track.style.transform = `translateX(-${_appsSlide * 100}%)`;
+    document.querySelectorAll('#apps-dots .msc-dot').forEach((d, i) => {
+        d.classList.toggle('active', i === _appsSlide);
+    });
+}
+
+function appsNav(dir) { appsGoTo(_appsSlide + dir); }
+
+// Touch swipe for apps card
+(function(){
+    let sx = 0;
+    document.addEventListener('DOMContentLoaded', () => {
+        const track = document.getElementById('apps-track');
+        if (!track) return;
+        track.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, {passive:true});
+        track.addEventListener('touchend', e => {
+            const dx = e.changedTouches[0].clientX - sx;
+            if (Math.abs(dx) > 40) appsNav(dx < 0 ? 1 : -1);
+        }, {passive:true});
+    });
+})();
+
+// Keep old appsTabSwitch as alias (called from nowhere now but safe to have)
+function appsTabSwitch(tab) { appsGoTo(tab === 'ctrs' ? 1 : 0); }
+
+// ── Storage + Logs tab switcher ───────────────────────────────────────────
+function lsTabSwitch(tab) {
+    const panelS  = document.getElementById('ls-panel-storage');
+    const panelL  = document.getElementById('ls-panel-logs');
+    const btnS    = document.getElementById('ls-tab-btn-storage');
+    const btnL    = document.getElementById('ls-tab-btn-logs');
+    const showStorage = tab === 'storage';
+    if (panelS) panelS.style.display = showStorage ? '' : 'none';
+    if (panelL) panelL.style.display = showStorage ? 'none' : '';
+    const activeStyle  = 'border-bottom:2px solid var(--blue);color:var(--text);font-weight:600';
+    const inactiveStyle = 'border-bottom:2px solid transparent;color:var(--text2);font-weight:400';
+    if (btnS) btnS.style.cssText += showStorage ? activeStyle : inactiveStyle;
+    if (btnL) btnL.style.cssText += showStorage ? inactiveStyle : activeStyle;
+}
+
+function toggleGridEdit() {
+  const dash = document.getElementById('ov-dashboard');
+  const btn  = document.getElementById('ov-edit-btn');
+  if (!dash || !btn) return;
+  const entering = !dash.classList.contains('edit-mode');
+  dash.classList.toggle('edit-mode', entering);
+  if (entering) {
+    btn.style.background = 'var(--blue)';
+    btn.style.color      = '#fff';
+    btn.innerHTML = `<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Done`;
+    showToast('Edit mode — click ✕ on any widget to hide it', 'info', 3000);
+  } else {
     btn.style.background = '';
     btn.style.color      = '';
-    grid.classList.remove('gs-editing');
-    if (addBtn) addBtn.style.display = 'none';
-    _saveWidgetConfig();  // persist to server
-    showToast('Layout saved', 'success', 2000);
+    btn.innerHTML = `<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> Edit`;
   }
 }
 
 function resetGridLayout() {
-  if (!confirm('Reset overview layout to defaults? (all widget positions + hidden state reset)')) return;
-  localStorage.removeItem('arrhub_grid');
   _hiddenWidgets.clear();
   _saveWidgetConfig();
-  const resetBtn = document.getElementById('ov-reset-btn');
-  if (resetBtn) resetBtn.style.display = 'none';
-  location.reload();
+  // Restore all cells
+  Object.keys(WIDGET_DEFS).forEach(id => {
+    const cell = document.getElementById(`dash-${id}`);
+    if (cell) cell.style.display = '';
+  });
+  _syncResetBtn();
+  showToast('All widgets restored', 'success', 2000);
 }
 
 // Init GridStack in static mode on load to apply any saved positions
 window.addEventListener('load', async () => {
-  await _loadWidgetConfig();   // apply hidden widgets from server before init
-  _gsInit();                   // GridStack is available by window.load time
   loadServiceLauncher();       // populate launcher widget
+  calRender();                 // render calendar
+  _todoRender();               // render todo list
+  // Preload catalog in background so the Deploy tab feels instant
+  setTimeout(() => loadCatalog(), 1500);
 });
 </script>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 </body>
 </html>
 
 """
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=9999, debug=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=9999, reload=False, workers=1)

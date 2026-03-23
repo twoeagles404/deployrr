@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.10.0 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.17.12 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.13.0"
+VERSION="3.17.12"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).
@@ -178,14 +178,19 @@ load_catalog() {
     define_app qbittorrent  "qBittorrent"  "lscr.io/linuxserver/qbittorrent:latest"  "Downloaders"  "8090:8080 6881:6881 6881:6881/udp"
     APP_CUSTOM_SVC[qbittorrent]="yes"
     define_app transmission "Transmission" "lscr.io/linuxserver/transmission:latest" "Downloaders"  "9091:9091 51413:51413 51413:51413/udp"
+    APP_CUSTOM_SVC[transmission]="yes"
     define_app deluge       "Deluge"       "lscr.io/linuxserver/deluge:latest"       "Downloaders"  "8112:8112 6881:6881 6881:6881/udp"
     define_app sabnzbd      "SABnzbd"      "lscr.io/linuxserver/sabnzbd:latest"      "Downloaders"  "8090:8080"
     define_app nzbget       "NZBget"       "lscr.io/linuxserver/nzbget:latest"       "Downloaders"  "6789:6789"
-    define_app jdownloader2 "JDownloader2" "jlesage/jdownloader-2:latest"            "Downloaders"  "5800:5800"
-    define_app pyload       "pyLoad"       "ghcr.io/pyload/pyload:latest"            "Downloaders"  "8000:8000"
-    define_app aria2        "Aria2"        "p3terx/aria2-pro:latest"                 "Downloaders"  "6800:6800 6888:6888 6888:6888/udp"
-    define_app pinchflat    "Pinchflat"    "ghcr.io/kieraneglin/pinchflat:latest"    "Downloaders"  "8945:8945"
-    define_app qbitrr       "qbitrr"       "feramance/qbitrr:latest"                 "Downloaders"  "6969:6969"
+    define_app jdownloader2 "JDownloader2"      "jlesage/jdownloader-2:latest"            "Downloaders"  "5800:5800"
+    define_app gallery_dl   "Gallery-DL Server" "qx6ghqkz/gallery-dl-server:latest"      "Downloaders"  "9080:9080"
+    APP_CUSTOM_SVC[gallery_dl]="yes"
+    define_app metube       "MeTube (yt-dlp)"   "ghcr.io/alexta69/metube:latest"          "Downloaders"  "8081:8081"
+    APP_CUSTOM_SVC[metube]="yes"
+    define_app pyload       "pyLoad"            "ghcr.io/pyload/pyload:latest"            "Downloaders"  "8000:8000"
+    define_app aria2        "Aria2"             "p3terx/aria2-pro:latest"                 "Downloaders"  "6800:6800 6888:6888 6888:6888/udp"
+    define_app pinchflat    "Pinchflat"         "ghcr.io/kieraneglin/pinchflat:latest"    "Downloaders"  "8945:8945"
+    define_app qbitrr       "qbitrr"            "feramance/qbitrr:latest"                 "Downloaders"  "6969:6969"
     APP_CUSTOM_SVC[qbitrr]="yes"
 
     # -- ARR Suite --
@@ -337,7 +342,7 @@ load_catalog() {
 
 ALL_APPS=(
     # Downloaders
-    qbittorrent transmission deluge sabnzbd nzbget jdownloader2 pyload aria2 pinchflat qbitrr
+    qbittorrent transmission deluge sabnzbd nzbget jdownloader2 gallery_dl metube pyload aria2 pinchflat qbitrr
     # ARR Suite
     prowlarr radarr sonarr lidarr bazarr whisparr mylar3 doplarr boxarr recyclarr unpackerr notifiarr
     # Media Servers
@@ -391,6 +396,8 @@ HOME_AUTO_PRESET=(homeassistant mosquitto node_red zigbee2mqtt esphome)
 DEV_PRESET=(gitea code_server portainer drone)
 SECURITY_PRESET=(vaultwarden authentik uptime_kuma)
 DOWNLOADS_PRESET=(qbittorrent sabnzbd prowlarr radarr sonarr unpackerr)
+UNIDOWNLOADER_STACK=(gallery_dl metube jdownloader2)
+UMBREL_PRESET=(nextcloud homeassistant gitea vaultwarden uptime_kuma portainer ntfy syncthing pihole)
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -489,21 +496,144 @@ port_in_use() {
 }
 
 # Find next available port starting from $1, incrementing by 1
-find_free_port() {
+# ── PortMaster — intelligent port assignment ─────────────────────────────────
+# Knowledge base: ports that belong to well-known services and must NEVER be
+# reassigned even if currently unused (they own the port by convention).
+declare -A _PM_HARDCODED=(
+    # OS / system services — these own their ports at the kernel level
+    [nginx]=80       [apache2]=80      [httpd]=80       [caddy]=80
+    [nginx-ssl]=443  [apache-ssl]=443  [haproxy]=443
+    [mysql]=3306     [mariadb]=3306    [mysqld]=3306
+    [postgres]=5432  [postgresql]=5432 [pg]=5432
+    [redis]=6379     [redis-server]=6379
+    [mongodb]=27017  [mongod]=27017
+    [elasticsearch]=9200
+    [rabbitmq]=5672  [rabbitmq-server]=5672
+    [smtp]=25        [postfix]=25      [sendmail]=25
+    [dns]=53         [named]=53        [bind]=53       [dnsmasq]=53
+    [ssh]=22         [sshd]=22
+    [ftp]=21         [vsftpd]=21
+    [imap]=143       [imaps]=993
+    [pop3]=110       [pop3s]=995
+    # Proxmox / infrastructure — never reassign these
+    [proxmox-webui]=8006
+)
+
+# ── Known container internal ports (CONTAINER side — cannot change without env var) ──
+# "hardcoded" = the app always listens on this port internally; only the HOST port is flexible.
+# "flexible"  = the app respects an env var to change its internal listening port.
+declare -A _PM_CTR_PORT=(
+    [sonarr]="8989"       [radarr]="7878"    [lidarr]="8686"
+    [prowlarr]="9696"     [bazarr]="6767"    [whisparr]="6969"
+    [jellyfin]="8096"     [plex]="32400"     [navidrome]="4533"
+    [tautulli]="8181"     [seerr]="5055"     [overseerr]="5055"
+    [boxarr]="8989"       [notifiarr]="5454" [recyclarr]=""
+    [uptime-kuma]="3001"  [dozzle]="8080"    [scrutiny]="8080"
+    [portainer]="9000"    [nginx-proxy]="80" [traefik]="8080"
+    [unpackerr]=""        [launcharr]="3333"
+    [qbittorrent]="8080"  [sabnzbd]="8080"   [nzbget]="6789"
+    [transmission]="9091" [deluge]="8112"    [aria2]="6800"
+    [jdownloader2]="5800" [gallery_dl]="9080" [metube]="8081"
+    [mylar3]="8090"       [readarr]="8787"
+    [flaresolverr]="8191" [komga]="8080"     [kavita]="5000"
+    [audiobookshelf]="80" [immich]="2283"    [nextcloud]="80"
+    [pinchflat]="8945"    [homeassistant]="8123"
+    [arrhub]="9999"
+)
+
+# Apps that CAN change their internal port via an env var
+declare -A _PM_APP_ENV_PORT=(
+    [qbittorrent]="WEBUI_PORT"   # linuxserver qbit respects WEBUI_PORT
+)
+
+# ── In-session port reservation table ────────────────────────────────────────
+# Prevents two apps in the SAME deployment from being assigned the same host port.
+declare -A _PM_SESSION_RESERVED=()   # port -> "app_id (reason)"
+
+_pm_reserve_port() {
+    local port="$1" app="${2:-unknown}"
+    _PM_SESSION_RESERVED["$port"]="${app}"
+}
+
+_pm_session_owner() {
     local port="$1"
-    local max_tries="${2:-50}"
-    local i=0
-    while (( i < max_tries )); do
-        if ! port_in_use "${port}"; then
-            echo "${port}"
+    echo "${_PM_SESSION_RESERVED[$port]:-}"
+}
+
+_pm_port_available() {
+    # Returns 0 (true) if port is available, 1 (false) if taken
+    local port="$1"
+    # 1. Already reserved this session?
+    [[ -n "${_PM_SESSION_RESERVED[$port]:-}" ]] && return 1
+    # 2. Currently in use on the host?
+    if ss -tlnp 2>/dev/null | grep -qE ":${port}[[:space:]]"; then return 1; fi
+    if ss -tlnp 2>/dev/null | grep -q ":${port}$"; then return 1; fi
+    return 0
+}
+
+# Check if a port is owned by a hardcoded/system service
+_pm_is_hardcoded_port() {
+    local port="$1"
+    for svc in "${!_PM_HARDCODED[@]}"; do
+        if [[ "${_PM_HARDCODED[$svc]}" == "$port" ]]; then
+            return 0  # yes, hardcoded
+        fi
+    done
+    return 1  # not hardcoded
+}
+
+# Check who owns a port (returns process name or empty)
+_pm_port_owner() {
+    local port="$1"
+    # Try ss first, fall back to netstat, then /proc
+    if command -v ss &>/dev/null; then
+        ss -tlnp 2>/dev/null | awk -v p=":$port " '$4 ~ p {match($0,/users:\(\("[^"]+"/); if(RSTART) {s=substr($0,RSTART+9); gsub(/".*/,"",s); print s; exit}}'
+    elif command -v netstat &>/dev/null; then
+        netstat -tlnp 2>/dev/null | awk -v p=":$port " '$4 ~ p {split($NF,a,"/"); print a[2]; exit}'
+    fi
+}
+
+# Core function: find a free port intelligently
+# Usage: find_free_port <desired_port> [range_start] [range_end] [app_id]
+find_free_port() {
+    local desired="${1:-8080}"
+    local range_start="${2:-8000}"
+    local range_end="${3:-9900}"
+    local app_id="${4:-unknown}"
+
+    # 1. If desired port is free (host + session) → use it immediately
+    if _pm_port_available "$desired" && ! _pm_is_hardcoded_port "$desired"; then
+        _pm_reserve_port "$desired" "$app_id"
+        echo "$desired"
+        return 0
+    fi
+
+    # 2. Port is taken — log WHY
+    if _pm_is_hardcoded_port "$desired"; then
+        log WARN "Port ${desired} belongs to a system/infra service (hardcoded) — finding alternative in ${range_start}-${range_end}"
+    elif [[ -n "${_PM_SESSION_RESERVED[$desired]:-}" ]]; then
+        log WARN "Port ${desired} already reserved this session by '${_PM_SESSION_RESERVED[$desired]}' — finding alternative for ${app_id}"
+    else
+        local owner; owner=$(_pm_port_owner "$desired")
+        log WARN "Port ${desired} in use${owner:+ by '${owner}'} — finding alternative for ${app_id}"
+    fi
+
+    # 3. Scan range for first available port
+    for p in $(seq "$range_start" "$range_end"); do
+        if _pm_is_hardcoded_port "$p"; then
+            continue
+        fi
+        if _pm_port_available "$p"; then
+            _pm_reserve_port "$p" "$app_id"
+            log INFO "PortMaster: ${app_id} ${desired} → ${p}"
+            echo "$p"
             return 0
         fi
-        (( port++ ))
-        (( i++ ))
     done
-    # Fallback: pick a random high port
-    local rnd=$(( RANDOM % 10000 + 20000 ))
-    echo "${rnd}"
+
+    log ERROR "PortMaster: No free ports in range ${range_start}-${range_end} for ${app_id}"
+    echo "$desired"  # fallback — will likely fail at container start
+    return 1
 }
 
 # Resolve port conflicts in a port mapping string like "8080:80 9090:90"
@@ -531,14 +661,16 @@ resolve_ports() {
             continue
         fi
 
-        if port_in_use "${host_port}"; then
+        if ! _pm_port_available "${host_port}" || _pm_is_hardcoded_port "${host_port}"; then
             local new_port
-            new_port=$(find_free_port "${host_port}")
-            log WARN "Port ${host_port} in use — reassigning ${id} to ${new_port}:${ctr_port}${proto}"
+            new_port=$(find_free_port "${host_port}" 8000 9900 "${id}")
+            log WARN "Port ${host_port} unavailable — reassigning ${id} to ${new_port}:${ctr_port}${proto}"
             d_msgbox "Port Conflict" \
                 "Port ${host_port} is already in use on this host.\n\n${APP_NAME[$id]:-$id} will use port ${new_port} instead.\n\nAccess it at: http://\$(hostname -I | awk '{print \$1}'):${new_port}"
             resolved+="${new_port}:${ctr_port}${proto} "
         else
+            # Port is free — reserve it so subsequent apps in the same deployment don't grab it
+            _pm_reserve_port "${host_port}" "${id}"
             resolved+="${host_port}:${ctr_port}${proto} "
         fi
     done
@@ -728,6 +860,9 @@ add_service_arrhub_webui() {
         fi
     fi
 
+    # Ensure persistent data dir exists
+    mkdir -p "${DEST}/data" 2>/dev/null || true
+
     {
         echo ""
         echo "  arrhub_webui:"
@@ -740,6 +875,9 @@ add_service_arrhub_webui() {
         echo "      - \"${hp_9999}:9999\""
         echo "    volumes:"
         echo "      - /var/run/docker.sock:/var/run/docker.sock:ro"
+        echo "      - ${DEST}/data:/data"
+        echo "      - ${DEST}/apps:/opt/arrhub/apps:ro"
+        echo "      - ${DEST}/arrhub-webui/app.py:/app/app.py:ro"
     } >> "${f}"
 }
 
@@ -1169,6 +1307,88 @@ add_service_qbittorrent() {
     printf '\n\033[1;33m  ▶ qBittorrent default credentials: admin / adminadmin\n  ▶ Change immediately after first login!\033[0m\n'
 }
 
+add_service_transmission() {
+    local id="${1:-transmission}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_9091; hp_9091=$(find_free_port 9091)
+    local hp_51413; hp_51413=$(find_free_port 51413)
+
+    if [[ "${hp_9091}" != "9091" ]]; then
+        log WARN "Port 9091 in use — ${id} reassigned to ${hp_9091}"
+    fi
+    if [[ "${hp_51413}" != "51413" ]]; then
+        log WARN "Port 51413 in use — ${id} reassigned to ${hp_51413}"
+    fi
+
+    {
+        echo ""
+        echo "  transmission:"
+        echo "    image: lscr.io/linuxserver/transmission:latest"
+        echo "    container_name: transmission"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - PUID=${PUID_VAL}"
+        echo "      - PGID=${PGID_VAL}"
+        echo "      - TZ=${TZ_VAL}"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/transmission:/config"
+        echo "      - ${MEDIA_DIR}/downloads:/downloads"
+        echo "    ports:"
+        echo "      - \"${hp_9091}:9091\""
+        echo "      - \"${hp_51413}:51413\""
+        echo "      - \"${hp_51413}:51413/udp\""
+    } >> "${f}"
+    log INFO "Transmission configured with downloads at ${MEDIA_DIR}/downloads (WebUI: port ${hp_9091})"
+}
+
+add_service_gallery_dl() {
+    local id="${1:-gallery_dl}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_9080; hp_9080=$(find_free_port 9080 8000 9900 "${id}")
+
+    mkdir -p "${MEDIA_DIR}/downloads/gallery-dl" 2>/dev/null || true
+
+    {
+        echo ""
+        echo "  gallery_dl:"
+        echo "    image: qx6ghqkz/gallery-dl-server:latest"
+        echo "    container_name: gallery_dl"
+        echo "    restart: unless-stopped"
+        echo "    volumes:"
+        echo "      - ${CONFIG_DIR}/gallery_dl:/config"
+        echo "      - ${MEDIA_DIR}/downloads/gallery-dl:/gallery-dl"
+        echo "    ports:"
+        echo "      - \"${hp_9080}:9080\""
+    } >> "${f}"
+    log INFO "Gallery-DL Server configured — downloads → ${MEDIA_DIR}/downloads/gallery-dl  (WebUI: :${hp_9080})"
+}
+
+add_service_metube() {
+    local id="${1:-metube}"
+    local f; f="$(app_compose "${id}")"
+
+    local hp_8081; hp_8081=$(find_free_port 8081 8000 9900 "${id}")
+
+    {
+        echo ""
+        echo "  metube:"
+        echo "    image: ghcr.io/alexta69/metube:latest"
+        echo "    container_name: metube"
+        echo "    restart: unless-stopped"
+        echo "    environment:"
+        echo "      - DOWNLOAD_DIR=/downloads"
+        echo "      - YTDL_OPTIONS={\"writesubtitles\":true,\"subtitleslangs\":[\"en\"],\"updatetime\":false}"
+        echo "    volumes:"
+        echo "      - ${MEDIA_DIR}/downloads/metube:/downloads"
+        echo "    ports:"
+        echo "      - \"${hp_8081}:8081\""
+    } >> "${f}"
+    mkdir -p "${MEDIA_DIR}/downloads/metube" 2>/dev/null || true
+    log INFO "MeTube (yt-dlp) configured — downloads → ${MEDIA_DIR}/downloads/metube  (WebUI: :${hp_8081})"
+}
+
 add_service_prometheus() {
     local id="${1:-prometheus}"
     local f; f="$(app_compose "${id}")"
@@ -1399,25 +1619,58 @@ filter_apps() {
 self_update() {
     local script_path
     script_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+    local webui_dir="${SCRIPT_DIR}/arrhub-webui"
 
-    d_infobox "ArrHub Update" "Downloading latest version from GitHub...\n\nThis may take a moment."
+    d_infobox "ArrHub Update" "Downloading latest version from:\n  Branch: ${GITHUB_BRANCH}\n  Source: ${GITHUB_RAW}\n\nThis may take a moment."
 
-    local tmp_file="${TMP_DIR}/arrhub_latest.sh"
+    local tmp_sh="${TMP_DIR}/arrhub_latest.sh"
+    local tmp_py="${TMP_DIR}/arrhub_latest_app.py"
+    local ok_sh=false ok_py=false
 
-    if curl -fsSL "${GITHUB_RAW}/arrhub.sh" -o "${tmp_file}" 2>/dev/null; then
-        if [[ -s "${tmp_file}" ]]; then
-            chmod +x "${tmp_file}"
-            cp "${tmp_file}" "${script_path}"
-            log INFO "Self-update completed successfully"
-            d_msgbox "Update Complete" "ArrHub has been updated to the latest version.\n\nPlease restart the script."
-            exit 0
-        else
-            log_err "UPDATE" "Downloaded file is empty"
-            d_msgbox "Update Failed" "Downloaded file is empty. Check your internet connection."
-        fi
+    # ── 1. Download arrhub.sh ────────────────────────────────────────────
+    if curl -fsSL "${GITHUB_RAW}/arrhub.sh" -o "${tmp_sh}" 2>/dev/null && [[ -s "${tmp_sh}" ]]; then
+        chmod +x "${tmp_sh}"
+        cp "${tmp_sh}" "${script_path}"
+        log INFO "arrhub.sh updated from ${GITHUB_BRANCH}"
+        ok_sh=true
     else
-        log_err "UPDATE" "Failed to download from GitHub"
-        d_msgbox "Update Failed" "Could not download from:\n${GITHUB_RAW}/arrhub.sh\n\nCheck your internet connection."
+        log_err "UPDATE" "Failed to download arrhub.sh from ${GITHUB_RAW}"
+    fi
+
+    # ── 2. Download app.py (WebUI backend) ─────────────────────────────
+    mkdir -p "${webui_dir}"
+    if curl -fsSL "${GITHUB_RAW}/app.py" -o "${tmp_py}" 2>/dev/null && [[ -s "${tmp_py}" ]]; then
+        cp "${tmp_py}" "${webui_dir}/app.py"
+        log INFO "app.py updated from ${GITHUB_BRANCH}"
+        ok_py=true
+    else
+        log_err "UPDATE" "Failed to download app.py from ${GITHUB_RAW}"
+    fi
+
+    # ── 3. Restart WebUI container to pick up new app.py ────────────────
+    local container_restarted=false
+    if [[ "${ok_py}" == "true" ]]; then
+        if docker inspect arrhub_webui &>/dev/null 2>&1; then
+            d_infobox "ArrHub Update" "Restarting WebUI container..."
+            if docker restart arrhub_webui >> "${LOG_FILE}" 2>&1; then
+                log INFO "arrhub_webui restarted after update"
+                container_restarted=true
+            else
+                log_err "UPDATE" "docker restart arrhub_webui failed"
+            fi
+        fi
+    fi
+
+    # ── 4. Report result ─────────────────────────────────────────────────
+    if [[ "${ok_sh}" == "true" ]]; then
+        local msg="ArrHub updated from branch: ${GITHUB_BRANCH}\n"
+        [[ "${ok_py}" == "true" ]] && msg+="  ✓ WebUI (app.py) updated\n" || msg+="  ✗ WebUI download failed\n"
+        [[ "${container_restarted}" == "true" ]] && msg+="  ✓ WebUI container restarted\n" || msg+="  ⚠ Could not restart container — run: media → WebUI Control → Restart\n"
+        msg+="\nPlease restart the TUI script to apply TUI changes."
+        d_msgbox "Update Complete" "${msg}"
+        exit 0
+    else
+        d_msgbox "Update Failed" "Could not download from:\n  ${GITHUB_RAW}/arrhub.sh\n\nCheck internet and try again.\nBranch: ${GITHUB_BRANCH}"
     fi
 }
 
@@ -1656,6 +1909,274 @@ deploy_apps() {
 
     trap - INT
     _write_report ok_start fail_start ok_pull fail_pull "${total}" ""
+
+    # ── Umbrel-style: auto-wire arr suite API connections ──────────────────
+    # After successful deployment, attempt to auto-configure inter-app API
+    # connections (Prowlarr → Radarr/Sonarr/Lidarr, download clients, etc.)
+    if [[ ${#ok_start[@]} -ge 2 ]]; then
+        local arr_apps_deployed=false
+        for id in "${ok_start[@]}"; do
+            case "${id}" in prowlarr|radarr|sonarr|lidarr|bazarr) arr_apps_deployed=true; break;; esac
+        done
+        if ${arr_apps_deployed}; then
+            d_infobox "ArrHub — Auto-Configuration" \
+"Arr suite detected — attempting automatic API wiring...\n\nThis replicates Umbrel-style seamless setup:\n  • Reading API keys from app configs\n  • Wiring Prowlarr → arr apps\n  • Connecting download clients\n\nPlease wait (30 seconds for containers to initialise)…"
+            sleep 30
+            wire_arr_connections "${ok_start[@]}" || true
+        fi
+    fi
+}
+
+# =============================================================================
+# UMBREL-STYLE ARR SUITE AUTO-WIRING
+# =============================================================================
+# After deployment, automatically connect arr apps to each other:
+#   1. Read API keys from each app's config.xml
+#   2. Wire Prowlarr → Radarr / Sonarr / Lidarr
+#   3. Configure download clients (qBittorrent / SABnzbd) in arr apps
+#
+# Architecture inspired by getumbrel/umbrel-apps media-app-configurator
+# =============================================================================
+
+_get_api_key() {
+    # Read API key from an arr app's config.xml file
+    # Usage: _get_api_key <app_id>
+    local app_id="$1"
+    local config_paths=(
+        "${CONFIG_DIR}/${app_id}/config/config.xml"
+        "${CONFIG_DIR}/${app_id}/data/config/config.xml"
+        "/opt/arrhub/${app_id}/config/config.xml"
+        "/config/${app_id}/config.xml"
+    )
+    for cfg in "${config_paths[@]}"; do
+        if [[ -f "${cfg}" ]]; then
+            local key
+            key=$(grep -oP '(?<=<ApiKey>)[^<]+' "${cfg}" 2>/dev/null || true)
+            [[ -n "${key}" ]] && echo "${key}" && return 0
+        fi
+    done
+    return 1
+}
+
+_get_app_port() {
+    # Return the host port for a running arr container
+    local app_id="$1"
+    local default_ports=(
+        [radarr]=7878 [sonarr]=8989 [lidarr]=8686
+        [prowlarr]=9696 [bazarr]=6767 [readarr]=8787
+        [whisparr]=6969 [qbittorrent]=8090 [sabnzbd]=8085
+    )
+    # Try docker inspect first
+    local port
+    port=$(docker inspect --format '{{range $p, $b := .NetworkSettings.Ports}}{{if $b}}{{(index $b 0).HostPort}}{{end}}{{end}}' "${app_id}" 2>/dev/null | head -1 | tr -d '\n' || true)
+    if [[ -n "${port}" && "${port}" =~ ^[0-9]+$ ]]; then
+        echo "${port}"
+        return 0
+    fi
+    echo "${default_ports[${app_id}]:-0}"
+}
+
+_arr_api_call() {
+    # Make a JSON API call to an arr app
+    # Usage: _arr_api_call <base_url> <api_key> <endpoint> [method] [json_body]
+    local base_url="$1" api_key="$2" endpoint="$3"
+    local method="${4:-GET}" body="${5:-}"
+    local url="${base_url}/api/v3/${endpoint}"
+    local args=(-s -o /dev/null -w "%{http_code}" --connect-timeout 5 -m 10
+                 -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json")
+    if [[ "${method}" == "POST" && -n "${body}" ]]; then
+        args+=(-X POST -d "${body}")
+    fi
+    curl "${args[@]}" "${url}" 2>/dev/null || echo "000"
+}
+
+_wire_prowlarr_to_arr() {
+    # Add a Radarr/Sonarr/Lidarr as an application inside Prowlarr
+    # Prowlarr uses /api/v1/applications endpoint
+    local prowlarr_url="$1" prowlarr_key="$2"
+    local app_name="$3" app_url="$4" app_key="$5" app_type="$6"
+    # app_type: Radarr, Sonarr, Lidarr
+    local payload
+    payload=$(printf '{"name":"%s","syncLevel":"fullSync","fields":[{"name":"prowlarrUrl","value":"%s"},{"name":"baseUrl","value":"%s"},{"name":"apiKey","value":"%s"},{"name":"syncCategories","value":[2000,2010,2020,2030,2040,2045,2050,2060]}],"implementationName":"%s","implementation":"%s","configContract":"%sSettings","infoLink":"https://wiki.servarr.com/prowlarr"}' \
+        "${app_name}" "${prowlarr_url}" "${app_url}" "${app_key}" \
+        "${app_type}" "${app_type}" "${app_type}")
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 -m 10 \
+        -X POST -H "X-Api-Key: ${prowlarr_key}" -H "Content-Type: application/json" \
+        -d "${payload}" "${prowlarr_url}/api/v1/applications" 2>/dev/null || echo "000")
+    [[ "${code}" =~ ^2 ]] && return 0 || return 1
+}
+
+_wire_download_client() {
+    # Add qBittorrent / SABnzbd as a download client in an arr app
+    local arr_url="$1" arr_key="$2" client_type="$3"
+    # client_type: qBittorrent | Sabnzbd
+    local host port username password url_base
+    case "${client_type}" in
+        qBittorrent)
+            host="localhost"
+            port=$(_get_app_port "qbittorrent")
+            [[ "${port}" -eq 0 ]] && port=8090
+            username="admin" password="adminadmin"
+            local payload
+            payload=$(printf '{"enable":true,"protocol":"torrent","priority":1,"name":"qBittorrent","fields":[{"name":"host","value":"%s"},{"name":"port","value":%s},{"name":"useSsl","value":false},{"name":"urlBase","value":""},{"name":"username","value":"%s"},{"name":"password","value":"%s"},{"name":"tvCategory","value":"tv-sonarr"},{"name":"recentTvPriority","value":0},{"name":"olderTvPriority","value":0},{"name":"initialState","value":0}],"implementationName":"qBittorrent","implementation":"QBittorrent","configContract":"QBittorrentSettings"}' \
+                "${host}" "${port}" "${username}" "${password}")
+            ;;
+        Sabnzbd)
+            host="localhost"
+            port=$(_get_app_port "sabnzbd")
+            [[ "${port}" -eq 0 ]] && port=8085
+            local sab_api_key
+            sab_api_key=$(grep -oP '(?<=api_key = )[a-f0-9]+' "${CONFIG_DIR}/sabnzbd/config/sabnzbd.ini" 2>/dev/null | head -1 || echo "")
+            [[ -z "${sab_api_key}" ]] && return 1
+            local payload
+            payload=$(printf '{"enable":true,"protocol":"usenet","priority":1,"name":"SABnzbd","fields":[{"name":"host","value":"%s"},{"name":"port","value":%s},{"name":"apiKey","value":"%s"},{"name":"useSsl","value":false},{"name":"urlBase","value":""}],"implementationName":"SABnzbd","implementation":"Sabnzbd","configContract":"SabnzbdSettings"}' \
+                "${host}" "${port}" "${sab_api_key}")
+            ;;
+        *) return 1 ;;
+    esac
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 -m 10 \
+        -X POST -H "X-Api-Key: ${arr_key}" -H "Content-Type: application/json" \
+        -d "${payload}" "${arr_url}/api/v3/downloadclient" 2>/dev/null || echo "000")
+    [[ "${code}" =~ ^2 ]] && return 0 || return 1
+}
+
+wire_arr_connections() {
+    # Main orchestrator — called after successful deployment
+    local deployed_apps=("$@")
+    local wire_log="${TMP_DIR}/wire.log"
+    local results=""
+
+    log INFO "=== Umbrel-style arr wiring started ==="
+
+    # Determine which arr apps are running
+    local has_prowlarr=false has_radarr=false has_sonarr=false
+    local has_lidarr=false has_qbit=false has_sabnzbd=false
+    for id in "${deployed_apps[@]}"; do
+        case "${id}" in
+            prowlarr) has_prowlarr=true ;;
+            radarr)   has_radarr=true ;;
+            sonarr)   has_sonarr=true ;;
+            lidarr)   has_lidarr=true ;;
+            qbittorrent) has_qbit=true ;;
+            sabnzbd)  has_sabnzbd=true ;;
+        esac
+    done
+
+    # Read API keys
+    local prowlarr_key="" radarr_key="" sonarr_key="" lidarr_key=""
+    ${has_prowlarr} && prowlarr_key=$(_get_api_key prowlarr 2>/dev/null || true)
+    ${has_radarr}   && radarr_key=$(_get_api_key radarr 2>/dev/null || true)
+    ${has_sonarr}   && sonarr_key=$(_get_api_key sonarr 2>/dev/null || true)
+    ${has_lidarr}   && lidarr_key=$(_get_api_key lidarr 2>/dev/null || true)
+
+    # Build base URLs using host ports
+    local radarr_port sonarr_port prowlarr_port lidarr_port
+    radarr_port=$(_get_app_port radarr);   sonarr_port=$(_get_app_port sonarr)
+    prowlarr_port=$(_get_app_port prowlarr); lidarr_port=$(_get_app_port lidarr)
+    local radarr_url="http://localhost:${radarr_port:-7878}"
+    local sonarr_url="http://localhost:${sonarr_port:-8989}"
+    local prowlarr_url="http://localhost:${prowlarr_port:-9696}"
+    local lidarr_url="http://localhost:${lidarr_port:-8686}"
+
+    # ── 1. Wire Prowlarr → Radarr ────────────────────────────────────────────
+    if ${has_prowlarr} && ${has_radarr} && [[ -n "${prowlarr_key}" && -n "${radarr_key}" ]]; then
+        log INFO "Wiring Prowlarr → Radarr..."
+        if _wire_prowlarr_to_arr "${prowlarr_url}" "${prowlarr_key}" "Radarr" "${radarr_url}" "${radarr_key}" "Radarr"; then
+            log INFO "  [OK] Prowlarr → Radarr connected"
+            results+="  [OK] Prowlarr → Radarr\n"
+        else
+            log_err "WIRE" "  Prowlarr → Radarr failed (may already exist or app still starting)"
+            results+="  [--] Prowlarr → Radarr (skipped/already configured)\n"
+        fi
+    fi
+
+    # ── 2. Wire Prowlarr → Sonarr ────────────────────────────────────────────
+    if ${has_prowlarr} && ${has_sonarr} && [[ -n "${prowlarr_key}" && -n "${sonarr_key}" ]]; then
+        log INFO "Wiring Prowlarr → Sonarr..."
+        if _wire_prowlarr_to_arr "${prowlarr_url}" "${prowlarr_key}" "Sonarr" "${sonarr_url}" "${sonarr_key}" "Sonarr"; then
+            log INFO "  [OK] Prowlarr → Sonarr connected"
+            results+="  [OK] Prowlarr → Sonarr\n"
+        else
+            log_err "WIRE" "  Prowlarr → Sonarr failed (may already exist)"
+            results+="  [--] Prowlarr → Sonarr (skipped/already configured)\n"
+        fi
+    fi
+
+    # ── 3. Wire Prowlarr → Lidarr ────────────────────────────────────────────
+    if ${has_prowlarr} && ${has_lidarr} && [[ -n "${prowlarr_key}" && -n "${lidarr_key}" ]]; then
+        log INFO "Wiring Prowlarr → Lidarr..."
+        if _wire_prowlarr_to_arr "${prowlarr_url}" "${prowlarr_key}" "Lidarr" "${lidarr_url}" "${lidarr_key}" "Lidarr"; then
+            log INFO "  [OK] Prowlarr → Lidarr connected"
+            results+="  [OK] Prowlarr → Lidarr\n"
+        else
+            results+="  [--] Prowlarr → Lidarr (skipped/already configured)\n"
+        fi
+    fi
+
+    # ── 4. Wire qBittorrent → Radarr ─────────────────────────────────────────
+    if ${has_qbit} && ${has_radarr} && [[ -n "${radarr_key}" ]]; then
+        log INFO "Wiring qBittorrent → Radarr..."
+        if _wire_download_client "${radarr_url}" "${radarr_key}" "qBittorrent"; then
+            results+="  [OK] qBittorrent → Radarr\n"
+        else
+            results+="  [--] qBittorrent → Radarr (skipped/already configured)\n"
+        fi
+    fi
+
+    # ── 5. Wire qBittorrent → Sonarr ─────────────────────────────────────────
+    if ${has_qbit} && ${has_sonarr} && [[ -n "${sonarr_key}" ]]; then
+        log INFO "Wiring qBittorrent → Sonarr..."
+        if _wire_download_client "${sonarr_url}" "${sonarr_key}" "qBittorrent"; then
+            results+="  [OK] qBittorrent → Sonarr\n"
+        else
+            results+="  [--] qBittorrent → Sonarr (skipped/already configured)\n"
+        fi
+    fi
+
+    # ── 6. Wire SABnzbd → Radarr / Sonarr ───────────────────────────────────
+    if ${has_sabnzbd} && ${has_radarr} && [[ -n "${radarr_key}" ]]; then
+        _wire_download_client "${radarr_url}" "${radarr_key}" "Sabnzbd" \
+            && results+="  [OK] SABnzbd → Radarr\n" \
+            || results+="  [--] SABnzbd → Radarr (skipped)\n"
+    fi
+    if ${has_sabnzbd} && ${has_sonarr} && [[ -n "${sonarr_key}" ]]; then
+        _wire_download_client "${sonarr_url}" "${sonarr_key}" "Sabnzbd" \
+            && results+="  [OK] SABnzbd → Sonarr\n" \
+            || results+="  [--] SABnzbd → Sonarr (skipped)\n"
+    fi
+
+    log INFO "=== Arr wiring complete ==="
+
+    # Show summary dialog
+    local msg="Auto-configuration complete!\n\n"
+    if [[ -n "${results}" ]]; then
+        msg+="API connections attempted:\n${results}"
+    else
+        msg+="No arr suite pairs found to wire.\n(Deploy prowlarr + radarr/sonarr together for auto-wiring)"
+    fi
+    msg+="\nNote: 'skipped' means connection may already exist\nor app config not yet written (retry from Settings menu)."
+
+    d_msgbox "Arr Suite Auto-Wired" "${msg}"
+}
+
+# ── Manual re-wire from menu ──────────────────────────────────────────────────
+menu_rewire_arr() {
+    d_infobox "ArrHub — Re-wiring" "Reading running arr containers and API keys...\n\nPlease wait."
+    local running_arr=()
+    for app in prowlarr radarr sonarr lidarr qbittorrent sabnzbd bazarr; do
+        if docker inspect "${app}" &>/dev/null 2>&1; then
+            local state
+            state=$(docker inspect --format '{{.State.Status}}' "${app}" 2>/dev/null || echo "")
+            [[ "${state}" == "running" ]] && running_arr+=("${app}")
+        fi
+    done
+    if [[ ${#running_arr[@]} -lt 2 ]]; then
+        d_msgbox "Nothing to Wire" "Need at least 2 running arr apps to auto-wire.\n\nRunning: ${running_arr[*]:-none}"
+        return
+    fi
+    wire_arr_connections "${running_arr[@]}"
 }
 
 _write_report() {
@@ -1880,7 +2401,9 @@ deploy_quick_preset() {
             "12" "Dev Workstation — Gitea + Code-Server + Portainer" \
             "13" "Security        — Vaultwarden + Authentik + Uptime Kuma" \
             "14" "Downloads Only  — qBit + SABnzbd + Prowlarr + ARR" \
-            "15" "Back") || return
+            "15" "UniDownloader ★ — Gallery-DL + MeTube + JDownloader2" \
+            "16" "Umbrel OS ★     — Personal cloud (Nextcloud, HA, Gitea, Vault…)" \
+            "17" "Back") || return
 
         local selected=()
         case "${preset}" in
@@ -1901,7 +2424,9 @@ deploy_quick_preset() {
             12) selected=("${DEV_PRESET[@]}") ;;
             13) selected=("${SECURITY_PRESET[@]}") ;;
             14) selected=("${DOWNLOADS_PRESET[@]}") ;;
-            15) return ;;
+            15) selected=("${UNIDOWNLOADER_STACK[@]}") ;;
+            16) selected=("${UMBREL_PRESET[@]}") ;;
+            17) return ;;
         esac
 
         log INFO "Quick preset ${preset}: ${selected[*]}"
@@ -2414,6 +2939,7 @@ webui_menu() {
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v "${webui_dir}/app.py:/app/app.py:ro" \
                             --pid=host \
                             arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI started (fresh install)"
@@ -2453,6 +2979,7 @@ webui_menu() {
                         docker run -d --name "${container}" --restart unless-stopped \
                             -p 9999:9999 \
                             -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v "${webui_dir}/app.py:/app/app.py:ro" \
                             --pid=host \
                             arrhub-webui:local >> "${LOG_FILE}" 2>&1
                         log INFO "WebUI rebuilt and restarted"
@@ -3354,6 +3881,7 @@ main_menu() {
             "6"  "Tailscale       — Mesh VPN management" \
             "7"  "Logs            — Error & activity logs" \
             "8"  "Update/Help     — Update tool, help & about" \
+            "A"  "Auto-Wire Arr   — Connect Prowlarr/Radarr/Sonarr/qBit (Umbrel-style)" \
             "10" "Uninstall       — Remove ArrHub completely" \
             "9"  "Exit") || {
             if d_yesno "Exit" "Exit ArrHub?"; then
@@ -3372,6 +3900,7 @@ main_menu() {
             6)  tailscale_menu ;;
             7)  show_logs_menu ;;
             8)  update_help_menu ;;
+            A|a) menu_rewire_arr ;;
                         10) uninstall_arrhub ;;
             9)
                 if d_yesno "Exit" "Exit ArrHub?"; then

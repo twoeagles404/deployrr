@@ -6,6 +6,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.12] — 2026-03-23
+
+### Fixed
+- **MSC slides 1–4 blank on navigation** — `#msc-track` had `overflow:hidden` which clipped
+  every slide within the track's own box. Sonarr, Downloads, Plex, and Seerr had data the
+  whole time but were invisible whenever the carousel transformed. Removed the erroneous
+  overflow rule; the parent viewport div already handles clipping.
+- **Downloads showing "qBittorrent login failed"** — Downloader type was set to qBittorrent
+  pointing at Transmission port 9091. Switched to Transmission; Downloads now shows all torrents.
+- **Version bump in all files** — `install.sh`, `arrhub.sh`, `README.md` all updated to 3.17.12.
+
+---
+
+## [3.17.11] — 2026-03-23
+
+### Fixed
+- **Media Suite Card navigation** — Replaced tiny dot indicators with named tab bar
+  (`🎥 Radarr · 📺 Sonarr · ⬇ Downloads · ▶ Plex · 🎬 Seerr`). All five panels now clickable.
+- **MoVITV removed** — Removed from IPTV dropdown, badge, source handler, and all conditions.
+- **Featured panel slow load** — Added `sessionStorage` cache; last-known data renders instantly.
+
+---
+
 ## [3.13.0] — 2026-03-10
 
 ### Fixed

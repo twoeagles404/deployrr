@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.17.15 · Full deployment, update management, and real-time monitoring
+Version: 3.17.16 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.17.15')
+app = FastAPI(title='ArrHub Monitor', version='3.17.16')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.17.15",
+            "version": "3.17.16",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1104,7 +1104,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.17.15",
+            "version": "3.17.16",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1475,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.17.15"})
+    return jsonify({"update_available": False, "version": "3.17.16"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -4290,7 +4290,7 @@ body {
 .news-live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#f87171;margin-right:4px;vertical-align:middle;animation:news-pulse 1.8s ease-in-out infinite;}
 /* ── Live TV slide ── */
 #apps-livetv-slide{display:flex;flex-direction:column;min-width:100%;height:100%;overflow:hidden;}
-#tab-intellibot.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0;}
+#tab-intellibot.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0!important;overflow:hidden;}
 .livetv-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:10px;font-weight:600;letter-spacing:.04em;padding:4px 7px;cursor:pointer;white-space:nowrap;transition:color .15s,border-color .15s;}
 .livetv-tab:hover{color:var(--text);}
 .livetv-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
@@ -5731,7 +5731,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.17.15</div>
+      <div class="sb-version">v3.17.16</div>
     </div>
   </div>
 
@@ -6965,7 +6965,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.15</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.16</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7459,7 +7459,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <!-- ═══════════════════════════════════════════════════════════
          INTELLIBOT TAB
     ═══════════════════════════════════════════════════════════ -->
-    <div id="tab-intellibot" class="tab-panel" style="padding:0;height:100%;display:none;flex-direction:column">
+    <div id="tab-intellibot" class="tab-panel">
       <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">
         <span style="font-size:16px">🤖</span>
         <span style="font-weight:600;font-size:13px;flex:1">Intellibot</span>
@@ -13835,8 +13835,8 @@ async function appsNewsLoad(force = false) {
 // ── Intellibot tab ────────────────────────────────────────────────────────
 let _intellibotInited = false;
 function intellibotInit() {
-    const panel = document.getElementById('tab-intellibot');
-    if (panel) panel.style.display = 'flex';
+    // Display is handled entirely by CSS (.tab-panel.active → display:flex)
+    // Do NOT set inline display style here — it would persist after tab switch
     if (_intellibotInited) return;
     _intellibotInited = true;
     // Frame already has src set in HTML; nothing more to do on first load
@@ -13848,14 +13848,14 @@ function intellibotReload() {
 
 // ── Live TV (YouTube embed) ────────────────────────────────────────────────
 const _LIVETV_CHANNELS = {
-    bloomberg:  'dp8PhLsUcFE',
-    skynews:    '9Auq9mYxFEE',
-    euronews:   'l8pmfNyEoaI',
-    dw:         'AYm5FLFKaRg',
-    cnbc:       'CEp-WHo2kKA',
-    france24:   'F2bKCbPEqKA',
-    alarabiya:  'atvQzPxFbvQ',
-    aljazeera:  'mWDqNijj1g8',
+    bloomberg:  'iEpJwprxDdk',  // Bloomberg Television — Bloomberg Business News Live
+    skynews:    'YDvsBbKfLPA',  // Sky News — Watch Sky News
+    euronews:   'pykpO5kQJ98',  // euronews — Euronews English Live
+    dw:         'LuKwFajn37U',  // DW News — DW News livestream
+    cnbc:       '9NyxcX3rhQs',  // CNBC — CNBC Live
+    france24:   'Ap-UM1O9RBU',  // FRANCE 24 English — LIVE
+    alarabiya:  'n7eQejkXbnM',  // AlArabiya — Livestream
+    aljazeera:  'gCNeDWCI0vo',  // Al Jazeera English — Live
 };
 let _livetvCurrent = 'bloomberg';
 let _livetvMuted   = true;

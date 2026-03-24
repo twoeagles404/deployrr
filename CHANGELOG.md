@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.16] — 2026-03-24
+
+### Fixed
+- **Intellibot panel bleeding onto overview dashboard** — `intellibotInit()` was setting an inline
+  `display:flex` style that persisted after `showTab()` removed the `active` class (inline styles
+  override CSS class rules). Removed the inline style assignment; display is now controlled
+  entirely by CSS `.tab-panel{display:none}` / `#tab-intellibot.active{display:flex}`.
+  Also removed redundant inline `display:none;flex-direction:column` from the panel HTML element.
+- **Live TV video IDs outdated** — YouTube 24/7 stream IDs rotate; updated all eight channels to
+  currently-live IDs verified via YouTube live search: Bloomberg `iEpJwprxDdk`, Sky News
+  `YDvsBbKfLPA`, Euronews `pykpO5kQJ98`, DW `LuKwFajn37U`, CNBC `9NyxcX3rhQs`, France24
+  `Ap-UM1O9RBU`, Al Arabiya `n7eQejkXbnM`, Al Jazeera `gCNeDWCI0vo`.
+- **Version bump** `3.17.15` → `3.17.16`.
+
+---
+
 ## [3.17.15] — 2026-03-24
 
 ### Fixed

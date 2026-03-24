@@ -6,6 +6,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.19] — 2026-03-24
+
+### Fixed
+- **Storage & Logs card nav dots/header unstyled** — All `.msc-header`, `.msc-title`, `.msc-dots`,
+  `.msc-dot`, `.msc-dot.active`, `.msc-nav-btn`, and `.msc-nav-btn:hover` CSS rules were scoped
+  exclusively to `#apps-swipe-card`. Extended every selector to also cover `#logstore-swipe-card`
+  so the Storage & Logs card header, nav arrows, and indicator dots render correctly.
+- **Version bump** `3.17.18` → `3.17.19`.
+
+---
+
 ## [3.17.18] — 2026-03-24
 
 ### Fixed

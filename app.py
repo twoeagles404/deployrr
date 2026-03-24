@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.17.18 · Full deployment, update management, and real-time monitoring
+Version: 3.17.19 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.17.18')
+app = FastAPI(title='ArrHub Monitor', version='3.17.19')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.17.18",
+            "version": "3.17.19",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1104,7 +1104,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.17.18",
+            "version": "3.17.19",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1475,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.17.18"})
+    return jsonify({"update_available": False, "version": "3.17.19"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -4306,30 +4306,37 @@ body {
 .livetv-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:9px;font-weight:600;letter-spacing:.02em;padding:3px 5px;cursor:pointer;white-space:nowrap;transition:color .15s,border-color .15s;}
 .livetv-tab:hover{color:var(--text);}
 .livetv-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
-/* Services widget header — mirrors Media Suite msc-* styles */
-#apps-swipe-card .msc-header{
+/* Services & Storage widget headers — shared msc-* styles */
+#apps-swipe-card .msc-header,
+#logstore-swipe-card .msc-header{
   display:flex;align-items:center;padding:10px 14px;
   border-bottom:1px solid rgba(255,255,255,0.06);
   gap:8px;flex-shrink:0;
 }
-#apps-swipe-card .msc-title{
+#apps-swipe-card .msc-title,
+#logstore-swipe-card .msc-title{
   font-size:13px;font-weight:600;color:var(--text);flex:1;letter-spacing:-.01em;
 }
-#apps-swipe-card .msc-dots{
+#apps-swipe-card .msc-dots,
+#logstore-swipe-card .msc-dots{
   display:flex;gap:5px;align-items:center;
 }
-#apps-swipe-card .msc-dot{
+#apps-swipe-card .msc-dot,
+#logstore-swipe-card .msc-dot{
   width:7px;height:7px;border-radius:50%;
   background:rgba(255,255,255,0.15);cursor:pointer;
   transition:background .2s,transform .2s;
 }
-#apps-swipe-card .msc-dot.active{background:var(--blue);transform:scale(1.25);}
-#apps-swipe-card .msc-nav-btn{
+#apps-swipe-card .msc-dot.active,
+#logstore-swipe-card .msc-dot.active{background:var(--blue);transform:scale(1.25);}
+#apps-swipe-card .msc-nav-btn,
+#logstore-swipe-card .msc-nav-btn{
   background:none;border:none;color:var(--text3);cursor:pointer;
   padding:3px 6px;border-radius:6px;font-size:16px;line-height:1;
   transition:color .15s,background .15s;
 }
-#apps-swipe-card .msc-nav-btn:hover{background:rgba(255,255,255,0.08);color:var(--text);}
+#apps-swipe-card .msc-nav-btn:hover,
+#logstore-swipe-card .msc-nav-btn:hover{background:rgba(255,255,255,0.08);color:var(--text);}
 /* Log+Storage tabbed card */
 #ls-panel-storage,#ls-panel-logs{
   overflow-y:auto;max-height:290px;padding:4px 2px;
@@ -5743,7 +5750,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.17.18</div>
+      <div class="sb-version">v3.17.19</div>
     </div>
   </div>
 
@@ -6983,7 +6990,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.18</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.19</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>

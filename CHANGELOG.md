@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.14] — 2026-03-24
+
+### Added
+- **Live TV slide** — New Slide 4 in the Services / 🖥️ Apps widget with eight 24/7 YouTube
+  live news streams: Bloomberg, Sky News, Euronews, DW, CNBC, France24, Al Arabiya, Al Jazeera.
+  Tab bar to switch channels, mute/unmute toggle, lazy-loads only when swiped to.
+- **Intellibot tab** — Full intellibot.app embedded in a new "Intellibot" sidebar entry and
+  mobile bottom-nav button. Falls back to an open-in-new-tab button if the site blocks iframes.
+- **Version bump** `3.17.13` → `3.17.14`.
+
+---
+
 ## [3.17.13] — 2026-03-24
 
 ### Added

@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.17.13 · Full deployment, update management, and real-time monitoring
+Version: 3.17.14 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.17.13')
+app = FastAPI(title='ArrHub Monitor', version='3.17.14')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.17.13",
+            "version": "3.17.14",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1104,7 +1104,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.17.13",
+            "version": "3.17.14",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1475,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.17.13"})
+    return jsonify({"update_available": False, "version": "3.17.14"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -4289,6 +4289,12 @@ body {
 #apps-news-list a:last-child{border-bottom:none;}
 @keyframes news-pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .news-live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#f87171;margin-right:4px;vertical-align:middle;animation:news-pulse 1.8s ease-in-out infinite;}
+/* ── Live TV slide ── */
+#apps-livetv-slide{display:flex;flex-direction:column;min-width:100%;height:100%;overflow:hidden;}
+#tab-intellibot.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0;}
+.livetv-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:10px;font-weight:600;letter-spacing:.04em;padding:4px 7px;cursor:pointer;white-space:nowrap;transition:color .15s,border-color .15s;}
+.livetv-tab:hover{color:var(--text);}
+.livetv-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
 /* Services widget header — mirrors Media Suite msc-* styles */
 #apps-swipe-card .msc-header{
   display:flex;align-items:center;padding:10px 14px;
@@ -5726,7 +5732,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.17.13</div>
+      <div class="sb-version">v3.17.14</div>
     </div>
   </div>
 
@@ -5808,6 +5814,10 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-item" onclick="showTab('epl',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4.5L6 21l1.5-7.5L2 9h7z"/></svg>
       Football
+    </div>
+    <div class="sb-item" onclick="showTab('intellibot',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7V5a3 3 0 016 0v2M9 12h.01M15 12h.01M9 16h6"/></svg>
+      Intellibot
     </div>
   </div>
 
@@ -6330,7 +6340,8 @@ body.sse-disconnected #app{padding-top:38px;}
               <div class="msc-dots" id="apps-dots">
                 <div class="msc-dot active" onclick="appsGoTo(0)" title="Launcher"></div>
                 <div class="msc-dot" onclick="appsGoTo(1)" title="Containers"></div>
-                <div class="msc-dot" onclick="appsGoTo(2)" title="News Feed"></div>
+                <div class="msc-dot" onclick="appsGoTo(2)" title="Headlines"></div>
+                <div class="msc-dot" onclick="appsGoTo(3)" title="Live TV"></div>
               </div>
               <button class="msc-nav-btn" onclick="appsNav(-1)" title="Previous">‹</button>
               <button class="msc-nav-btn" onclick="appsNav(1)" title="Next">›</button>
@@ -6380,6 +6391,39 @@ body.sse-disconnected #app{padding-top:38px;}
                 <!-- Scrollable news list -->
                 <div id="apps-news-list" class="msc-slide-body" style="overflow-y:auto;flex:1;padding:0">
                   <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Swipe to load…</div>
+                </div>
+              </div>
+
+              <!-- Slide 3: Live TV News -->
+              <div class="msc-slide" id="apps-livetv-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live TV</span>
+                  <button id="livetv-mute-btn" class="btn" style="padding:2px 9px;font-size:13px;margin-left:auto" onclick="livetvToggleMute()" title="Toggle mute">🔇</button>
+                </div>
+                <!-- Channel tabs row -->
+                <div id="livetv-tabs" style="display:flex;gap:3px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none">
+                  <button class="livetv-tab active" onclick="livetvSwitch('bloomberg',this)">BLOOMBERG</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('skynews',this)">SKY NEWS</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('euronews',this)">EURONEWS</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('dw',this)">DW</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('cnbc',this)">CNBC</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('france24',this)">FRANCE24</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('alarabiya',this)">AL ARABIYA</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('aljazeera',this)">AL JAZEERA</button>
+                </div>
+                <!-- YouTube player -->
+                <div style="flex:1;position:relative;background:#000;min-height:0">
+                  <iframe id="livetv-frame"
+                    src=""
+                    style="position:absolute;inset:0;width:100%;height:100%;border:none;display:block"
+                    allow="autoplay; fullscreen; picture-in-picture"
+                    allowfullscreen
+                    loading="lazy">
+                  </iframe>
+                  <div id="livetv-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text3);font-size:12px">
+                    <span style="font-size:28px">📺</span>
+                    <span>Swipe to this slide to load stream</span>
+                  </div>
                 </div>
               </div>
 
@@ -6920,7 +6964,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.13</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.14</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7411,6 +7455,31 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
     </div><!-- /tab-epl -->
 
+    <!-- ═══════════════════════════════════════════════════════════
+         INTELLIBOT TAB
+    ═══════════════════════════════════════════════════════════ -->
+    <div id="tab-intellibot" class="tab-panel" style="padding:0;height:100%;display:none;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">
+        <span style="font-size:16px">🤖</span>
+        <span style="font-weight:600;font-size:13px;flex:1">Intellibot</span>
+        <button class="btn" style="padding:3px 10px;font-size:11px" onclick="intellibotReload()" title="Reload">↻ Reload</button>
+        <a href="https://intellibot.app" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none">↗ Open</a>
+      </div>
+      <div style="flex:1;position:relative;min-height:0">
+        <iframe id="intellibot-frame" src="https://intellibot.app"
+          style="position:absolute;inset:0;width:100%;height:100%;border:none"
+          allow="autoplay; fullscreen; picture-in-picture; geolocation"
+          allowfullscreen loading="lazy"
+          onerror="document.getElementById('intellibot-err').style.display='flex'"></iframe>
+        <div id="intellibot-err" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:var(--bg1);color:var(--text2);font-size:13px;text-align:center;padding:20px">
+          <span style="font-size:36px">🚫</span>
+          <strong style="color:var(--text)">Intellibot can't be embedded</strong>
+          <span style="font-size:12px;color:var(--text3);max-width:320px">The site uses X-Frame-Options to block embedding in iframes. Open it in a new tab instead.</span>
+          <a href="https://intellibot.app" target="_blank" rel="noopener" class="btn blue" style="margin-top:4px;text-decoration:none;padding:7px 18px">Open intellibot.app ↗</a>
+        </div>
+      </div>
+    </div><!-- /tab-intellibot -->
+
     <!-- Team Detail Modal -->
     <div id="football-team-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:920;align-items:flex-start;justify-content:flex-end;padding:12px">
       <div class="panel" style="width:460px;max-width:95vw;max-height:calc(100vh - 24px);overflow-y:auto;position:relative;padding:0">
@@ -7575,6 +7644,10 @@ body.sse-disconnected #app{padding-top:38px;}
   <button class="bn-item" onclick="showTab('iptv',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
     <span>IPTV</span>
+  </button>
+  <button class="bn-item" onclick="showTab('intellibot',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7V5a3 3 0 016 0v2M9 12h.01M15 12h.01M9 16h6"/></svg>
+    <span>Intellibot</span>
   </button>
   <button class="bn-item" onclick="toggleSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -7759,6 +7832,7 @@ function showTab(name, el) {
     else if (name === 'feeds') loadFeedsTab();
     else if (name === 'epl') footballInit();
     else if (name === 'iptv') iptvInit();
+    else if (name === 'intellibot') intellibotInit();
 }
 
 function openExternalLink(url) {
@@ -13644,7 +13718,7 @@ function todoDelete(id) {
 
 // ── Apps swipe card (mirrors MSC behaviour) ────────────────────────────────
 let _appsSlide = 0;
-const APPS_TOTAL = 3;
+const APPS_TOTAL = 4;
 
 function appsGoTo(idx) {
     _appsSlide = Math.max(0, Math.min(APPS_TOTAL - 1, idx));
@@ -13655,6 +13729,8 @@ function appsGoTo(idx) {
     });
     // Auto-load news when swiping to slide 2
     if (_appsSlide === 2) appsNewsLoad(false);
+    // Auto-load live TV when swiping to slide 3
+    if (_appsSlide === 3) livetvLoad();
 }
 
 function appsNav(dir) { appsGoTo(_appsSlide + dir); }
@@ -13753,6 +13829,68 @@ async function appsNewsLoad(force = false) {
     } catch(e) {
         list.innerHTML = `<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Failed to load — <a href="#" onclick="appsNewsLoad(true);return false" style="color:var(--blue)">retry</a></div>`;
     }
+}
+
+// ── Intellibot tab ────────────────────────────────────────────────────────
+let _intellibotInited = false;
+function intellibotInit() {
+    const panel = document.getElementById('tab-intellibot');
+    if (panel) panel.style.display = 'flex';
+    if (_intellibotInited) return;
+    _intellibotInited = true;
+    // Frame already has src set in HTML; nothing more to do on first load
+}
+function intellibotReload() {
+    const f = document.getElementById('intellibot-frame');
+    if (f) { f.src = f.src; }
+}
+
+// ── Live TV (YouTube embed) ────────────────────────────────────────────────
+const _LIVETV_CHANNELS = {
+    bloomberg:  'dp8PhLsUcFE',
+    skynews:    '9Auq9mYxFEE',
+    euronews:   'l8pmfNyEoaI',
+    dw:         'AYm5FLFKaRg',
+    cnbc:       'CEp-WHo2kKA',
+    france24:   'F2bKCbPEqKA',
+    alarabiya:  'atvQzPxFbvQ',
+    aljazeera:  'mWDqNijj1g8',
+};
+let _livetvCurrent = 'bloomberg';
+let _livetvMuted   = true;
+let _livetvLoaded  = false;
+
+function livetvLoad() {
+    if (_livetvLoaded) return;
+    _livetvLoaded = true;
+    const ph = document.getElementById('livetv-placeholder');
+    if (ph) ph.style.display = 'none';
+    livetvSwitch(_livetvCurrent, document.querySelector('.livetv-tab.active'));
+}
+
+function livetvSwitch(key, btn) {
+    _livetvCurrent = key;
+    _livetvLoaded  = true;
+    // Update tab active state
+    document.querySelectorAll('.livetv-tab').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    // Build embed URL
+    const vid = _LIVETV_CHANNELS[key];
+    if (!vid) return;
+    const mute = _livetvMuted ? '&mute=1' : '&mute=0';
+    const src  = `https://www.youtube.com/embed/${vid}?autoplay=1${mute}&controls=1&rel=0&modestbranding=1`;
+    const frame = document.getElementById('livetv-frame');
+    const ph    = document.getElementById('livetv-placeholder');
+    if (ph) ph.style.display = 'none';
+    if (frame) frame.src = src;
+}
+
+function livetvToggleMute() {
+    _livetvMuted = !_livetvMuted;
+    const btn = document.getElementById('livetv-mute-btn');
+    if (btn) btn.textContent = _livetvMuted ? '🔇' : '🔊';
+    // Re-embed with updated mute param
+    livetvSwitch(_livetvCurrent, document.querySelector('.livetv-tab.active'));
 }
 
 // ── Storage + Logs tab switcher ───────────────────────────────────────────

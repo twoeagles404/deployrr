@@ -9,6 +9,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [3.17.15] — 2026-03-24
 
 ### Fixed
+- **Services card slides not working** — Only the Launcher slide (slide 0) had visible content;
+  slides 1–3 appeared broken/empty. Two root causes fixed:
+  1. Missing overflow wrapper: added `<div style="flex:1;overflow:hidden;position:relative;min-height:0">`
+     around `#apps-track`, matching the structure of the working Media Suite carousel. Without this,
+     `translateX(-N×100%)` percentages didn't compute to one-slide increments.
+  2. Content never loaded: `loadDashboardContainers()` was never called on page load so Slide 1
+     (Containers) always displayed "Loading…". Now called on `window.load` and also when navigating
+     to slide 1 via `appsGoTo(1)`.
+- **Version bump** `3.17.14` → `3.17.15`.
+
+---
+
+### Fixed
 - **Services card — only Launcher slide visible** — `#apps-track` had `overflow:hidden` which
   clipped slides 1-3 inside the track before the CSS transform could reveal them. The card's own
   `overflow:hidden` is the intended viewport; the track must not clip its own contents. Changed to

@@ -4279,8 +4279,7 @@ body {
 }
 #apps-track{
   display:flex;
-  overflow:visible;
-  flex:1;
+  height:100%;
   transition:transform .35s cubic-bezier(.25,.46,.45,.94);
 }
 /* ── News Feed slide ── */
@@ -6347,6 +6346,7 @@ body.sse-disconnected #app{padding-top:38px;}
               <button class="msc-nav-btn" onclick="appsNav(1)" title="Next">›</button>
             </div>
             <!-- Slide track -->
+            <div style="flex:1;overflow:hidden;position:relative;min-height:0">
             <div id="apps-track">
               <!-- Slide 0: Launcher -->
               <div class="msc-slide">
@@ -6428,6 +6428,7 @@ body.sse-disconnected #app{padding-top:38px;}
               </div>
 
             </div>
+            </div><!-- /overflow wrapper -->
           </div>
         </div>
 
@@ -13727,9 +13728,9 @@ function appsGoTo(idx) {
     document.querySelectorAll('#apps-dots .msc-dot').forEach((d, i) => {
         d.classList.toggle('active', i === _appsSlide);
     });
-    // Auto-load news when swiping to slide 2
+    // Lazy-load slide content on first visit
+    if (_appsSlide === 1) loadDashboardContainers();
     if (_appsSlide === 2) appsNewsLoad(false);
-    // Auto-load live TV when swiping to slide 3
     if (_appsSlide === 3) livetvLoad();
 }
 
@@ -13940,7 +13941,8 @@ function resetGridLayout() {
 
 // Init GridStack in static mode on load to apply any saved positions
 window.addEventListener('load', async () => {
-  loadServiceLauncher();       // populate launcher widget
+  loadServiceLauncher();       // populate launcher widget (slide 0)
+  loadDashboardContainers();   // populate containers widget (slide 1)
   calRender();                 // render calendar
   _todoRender();               // render todo list
   // Preload catalog in background so the Deploy tab feels instant

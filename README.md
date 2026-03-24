@@ -5,7 +5,7 @@
 > Apple Glassmorphism UI · Swipeable Media Suite Card · HLS.js Player · Umbrel-style Arr Auto-Wiring
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.17.19-blue)](https://github.com/twoeagles404/arrhub/releases)
+[![Version](https://img.shields.io/badge/version-3.17.20-blue)](https://github.com/twoeagles404/arrhub/releases)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-twoeagles404%2Farrhub-blue)](https://github.com/twoeagles404/arrhub/pkgs/container/arrhub)
 
 ---

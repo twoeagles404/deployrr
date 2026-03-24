@@ -6,6 +6,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.20] — 2026-03-24
+
+### Fixed
+- **Seerr request posters missing** — `media.posterPath` on Overseerr's `/request` endpoint is
+  often empty. The detail endpoint (`/movie/{id}` / `/tv/{id}`) already fetched for title
+  resolution always carries the poster path. Now falls back to `mdata.posterPath` when the
+  media object's field is blank, so album/poster art appears for all requests.
+- **Version bump** `3.17.19` → `3.17.20`.
+
+---
+
 ## [3.17.19] — 2026-03-24
 
 ### Fixed

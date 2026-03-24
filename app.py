@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.17.19 · Full deployment, update management, and real-time monitoring
+Version: 3.17.20 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.17.19')
+app = FastAPI(title='ArrHub Monitor', version='3.17.20')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.17.19",
+            "version": "3.17.20",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1104,7 +1104,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.17.19",
+            "version": "3.17.20",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1475,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.17.19"})
+    return jsonify({"update_available": False, "version": "3.17.20"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -3891,15 +3891,20 @@ def api_seerr_requests():
             media_type = media.get("mediaType", "")
             tmdb_id = media.get("tmdbId", "")
 
-            # Resolve actual title from Overseerr media endpoint
-            title = ""
+            # Resolve actual title and poster from Overseerr media endpoint
+            title  = ""
+            poster = media.get("posterPath", "")
             try:
                 if media_type == "movie" and tmdb_id:
-                    mdata = _svc_get(url, f"/api/v1/movie/{tmdb_id}", key)
-                    title = mdata.get("title", "") or mdata.get("originalTitle", "")
+                    mdata  = _svc_get(url, f"/api/v1/movie/{tmdb_id}", key)
+                    title  = mdata.get("title", "") or mdata.get("originalTitle", "")
+                    if not poster:
+                        poster = mdata.get("posterPath", "")
                 elif media_type == "tv" and tmdb_id:
-                    mdata = _svc_get(url, f"/api/v1/tv/{tmdb_id}", key)
-                    title = mdata.get("name", "") or mdata.get("originalName", "")
+                    mdata  = _svc_get(url, f"/api/v1/tv/{tmdb_id}", key)
+                    title  = mdata.get("name", "") or mdata.get("originalName", "")
+                    if not poster:
+                        poster = mdata.get("posterPath", "")
             except Exception:
                 pass
 
@@ -3909,7 +3914,7 @@ def api_seerr_requests():
                 "status": r.get("status"),  # 1=pending 2=approved 3=declined 4=available
                 "requestedBy": r.get("requestedBy", {}).get("displayName", ""),
                 "title": title or f"TMDB #{tmdb_id}",
-                "poster": media.get("posterPath", ""),
+                "poster": poster,
                 "createdAt": r.get("createdAt", "")[:10],
                 "tmdbId": tmdb_id,
             })
@@ -5750,7 +5755,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.17.19</div>
+      <div class="sb-version">v3.17.20</div>
     </div>
   </div>
 
@@ -6990,7 +6995,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.19</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.20</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>

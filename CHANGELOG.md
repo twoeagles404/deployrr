@@ -6,6 +6,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.21] — 2026-03-24
+
+### Added
+- **World Monitor tab** — New sidebar tab and bottom-nav button (`🌍 World Monitor`) that embeds
+  worldmonitor.app (global conflicts, military, weather, economic events map) via a built-in
+  reverse proxy (`/proxy/worldmonitor/{path:path}`). The proxy strips `X-Frame-Options` and
+  `Content-Security-Policy` headers and rewrites HTML asset URLs so the full interactive map
+  renders inside ArrHub without needing to open an external tab.
+
+### Changed
+- **Version bump** `3.17.20` → `3.17.21`.
+
+---
+
 ## [3.17.20] — 2026-03-24
 
 ### Fixed

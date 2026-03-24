@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.17.20 · Full deployment, update management, and real-time monitoring
+Version: 3.17.21 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.17.20')
+app = FastAPI(title='ArrHub Monitor', version='3.17.21')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.17.20",
+            "version": "3.17.21",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1104,7 +1104,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.17.20",
+            "version": "3.17.21",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1475,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.17.20"})
+    return jsonify({"update_available": False, "version": "3.17.21"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -3922,6 +3922,72 @@ def api_seerr_requests():
     except Exception as e:
         return jsonify({"configured": True, "error": str(e), "requests": []})
 
+# ══════════════════════════════════════════════════════════════════
+# WORLD MONITOR REVERSE PROXY
+# Strips X-Frame-Options / CSP so worldmonitor.app renders inside ArrHub
+# ══════════════════════════════════════════════════════════════════
+_WM_BASE   = "https://www.worldmonitor.app"
+_WM_SKIP_H = {
+    "x-frame-options", "content-security-policy",
+    "content-encoding", "transfer-encoding",
+    "strict-transport-security",
+}
+
+@app.get("/proxy/worldmonitor")
+@app.get("/proxy/worldmonitor/{path:path}")
+def proxy_worldmonitor(request: Request, path: str = ""):
+    target = f"{_WM_BASE}/{path}"
+    params = dict(request.query_params)
+    fwd_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in ("host", "origin", "referer", "x-forwarded-for")
+    }
+    fwd_headers["host"] = "www.worldmonitor.app"
+    fwd_headers["referer"] = _WM_BASE + "/"
+    fwd_headers["origin"]  = _WM_BASE
+    try:
+        r = requests.get(target, params=params, headers=fwd_headers,
+                         timeout=15, stream=True)
+    except Exception as exc:
+        return Response(content=f"Proxy error: {exc}", status_code=502,
+                        media_type="text/plain")
+
+    resp_headers = {k: v for k, v in r.headers.items()
+                    if k.lower() not in _WM_SKIP_H}
+    content_type = r.headers.get("content-type", "")
+
+    if "text/html" in content_type:
+        html = r.content.decode("utf-8", errors="replace")
+        # Rewrite absolute + root-relative URLs to route through proxy
+        html = html.replace('src="https://www.worldmonitor.app/',
+                            'src="/proxy/worldmonitor/')
+        html = html.replace("src='https://www.worldmonitor.app/",
+                            "src='/proxy/worldmonitor/")
+        html = html.replace('href="https://www.worldmonitor.app/',
+                            'href="/proxy/worldmonitor/')
+        html = html.replace("href='https://www.worldmonitor.app/",
+                            "href='/proxy/worldmonitor/")
+        html = re.sub(r'(src|href)="(/(?!/))',
+                      r'\1="/proxy/worldmonitor/', html)
+        html = re.sub(r"(src|href)='(/(?!/))",
+                      r"\1='/proxy/worldmonitor/", html)
+        # Rewrite JS fetch / XHR base URL
+        html = html.replace("https://www.worldmonitor.app",
+                            f"{request.base_url.scheme}://{request.base_url.netloc}/proxy/worldmonitor")
+        return Response(content=html.encode("utf-8"),
+                        status_code=r.status_code,
+                        headers=resp_headers,
+                        media_type=content_type)
+
+    # All other assets (JS, CSS, images, map tiles) — stream through
+    def _iter():
+        for chunk in r.iter_content(chunk_size=32768):
+            yield chunk
+    return StreamingResponse(_iter(), status_code=r.status_code,
+                              headers=resp_headers,
+                              media_type=content_type or "application/octet-stream")
+
+
 @app.get("/api/home")
 def api_home():
     """Home tab data: categorized apps with status and ports."""
@@ -4308,6 +4374,7 @@ body {
 /* ── Live TV slide ── */
 #apps-livetv-slide{display:flex;flex-direction:column;min-width:100%;height:100%;overflow:hidden;}
 #tab-intellibot.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0!important;overflow:hidden;}
+#tab-worldmonitor.active{display:flex!important;flex-direction:column;height:calc(100vh - 56px);padding:0!important;overflow:hidden;}
 .livetv-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--text2);font-size:9px;font-weight:600;letter-spacing:.02em;padding:3px 5px;cursor:pointer;white-space:nowrap;transition:color .15s,border-color .15s;}
 .livetv-tab:hover{color:var(--text);}
 .livetv-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
@@ -5755,7 +5822,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.17.20</div>
+      <div class="sb-version">v3.17.21</div>
     </div>
   </div>
 
@@ -5841,6 +5908,10 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-item" onclick="showTab('intellibot',this)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7V5a3 3 0 016 0v2M9 12h.01M15 12h.01M9 16h6"/></svg>
       Intellibot
+    </div>
+    <div class="sb-item" onclick="showTab('worldmonitor',this)">
+      <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><line x1="2" y1="12" x2="22" y2="12" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+      World Monitor
     </div>
   </div>
 
@@ -6995,7 +7066,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.20</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.21</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7511,6 +7582,32 @@ body.sse-disconnected #app{padding-top:38px;}
       </div>
     </div><!-- /tab-intellibot -->
 
+    <!-- ═══════════════════════════════════════════════════════════
+         WORLD MONITOR TAB
+    ═══════════════════════════════════════════════════════════ -->
+    <div id="tab-worldmonitor" class="tab-panel">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">
+        <span style="font-size:16px">🌍</span>
+        <span style="font-weight:600;font-size:13px;flex:1">World Monitor</span>
+        <button class="btn" style="padding:3px 10px;font-size:11px" onclick="worldmonitorReload()" title="Reload">↻ Reload</button>
+        <a href="https://www.worldmonitor.app/?lat=20.2273&amp;lon=0.0000&amp;zoom=1.48&amp;view=global&amp;timeRange=7d&amp;layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks" target="_blank" rel="noopener" class="btn" style="padding:3px 10px;font-size:11px;text-decoration:none">↗ Open</a>
+      </div>
+      <div style="flex:1;position:relative;min-height:0">
+        <iframe id="worldmonitor-frame"
+          src="/proxy/worldmonitor/?lat=20.2273&lon=0.0000&zoom=1.48&view=global&timeRange=7d&layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks"
+          style="position:absolute;inset:0;width:100%;height:100%;border:none"
+          allow="autoplay; fullscreen; picture-in-picture; geolocation"
+          allowfullscreen loading="lazy"
+          onerror="document.getElementById('worldmonitor-err').style.display='flex'"></iframe>
+        <div id="worldmonitor-err" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:var(--bg1);color:var(--text2);font-size:13px;text-align:center;padding:20px">
+          <span style="font-size:36px">🚫</span>
+          <strong style="color:var(--text)">World Monitor can&#39;t be embedded</strong>
+          <span style="font-size:12px;color:var(--text3);max-width:320px">The site may block embedding via X-Frame-Options. Open it in a new tab instead.</span>
+          <a href="https://www.worldmonitor.app/?lat=20.2273&lon=0.0000&zoom=1.48&view=global&timeRange=7d&layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks" target="_blank" rel="noopener" class="btn blue" style="margin-top:4px;text-decoration:none;padding:7px 18px">Open worldmonitor.app ↗</a>
+        </div>
+      </div>
+    </div><!-- /tab-worldmonitor -->
+
     <!-- Team Detail Modal -->
     <div id="football-team-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:920;align-items:flex-start;justify-content:flex-end;padding:12px">
       <div class="panel" style="width:460px;max-width:95vw;max-height:calc(100vh - 24px);overflow-y:auto;position:relative;padding:0">
@@ -7679,6 +7776,10 @@ body.sse-disconnected #app{padding-top:38px;}
   <button class="bn-item" onclick="showTab('intellibot',this);closeSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7V5a3 3 0 016 0v2M9 12h.01M15 12h.01M9 16h6"/></svg>
     <span>Intellibot</span>
+  </button>
+  <button class="bn-item" onclick="showTab('worldmonitor',this);closeSidebar()">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><line x1="2" y1="12" x2="22" y2="12" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+    <span>World Monitor</span>
   </button>
   <button class="bn-item" onclick="toggleSidebar()">
     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -7864,6 +7965,7 @@ function showTab(name, el) {
     else if (name === 'epl') footballInit();
     else if (name === 'iptv') iptvInit();
     else if (name === 'intellibot') intellibotInit();
+    else if (name === 'worldmonitor') worldmonitorInit();
 }
 
 function openExternalLink(url) {
@@ -13902,6 +14004,20 @@ function intellibotInit() {
 function intellibotReload() {
     const f = document.getElementById('intellibot-frame');
     if (f) { f.src = f.src; }
+}
+
+// ── World Monitor (global events map) ─────────────────────────────────────
+let _worldmonitorInited = false;
+function worldmonitorInit() {
+    if (_worldmonitorInited) return;
+    _worldmonitorInited = true;
+    // Frame src is set in HTML; nothing extra needed on first open
+}
+function worldmonitorReload() {
+    const f = document.getElementById('worldmonitor-frame');
+    if (f) {
+        f.src = '/proxy/worldmonitor/?lat=20.2273&lon=0.0000&zoom=1.48&view=global&timeRange=7d&layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks';
+    }
 }
 
 // ── Live TV (YouTube embed) ────────────────────────────────────────────────

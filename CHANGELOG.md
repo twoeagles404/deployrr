@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.18] — 2026-03-24
+
+### Fixed
+- **Storage & Logs card unbounded height** — Card had only `max-height:360px` which the iframe
+  overrode, causing it to grow full-screen. Changed to `height:380px` matching the other fixed-
+  height swipe cards. Removed stale `max-height` and dead logstore media-query rules.
+- **Live TV channel tabs too wide** — Reduced `.livetv-tab` font-size 10px→9px and padding
+  from `4px 7px`→`3px 5px` so all 8 channel names fit the card width without overflow.
+- **Version bump** `3.17.17` → `3.17.18`.
+
+---
+
 ## [3.17.17] — 2026-03-24
 
 ### Changed

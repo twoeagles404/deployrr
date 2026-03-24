@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.17.16 · Full deployment, update management, and real-time monitoring
+Version: 3.17.17 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.17.16')
+app = FastAPI(title='ArrHub Monitor', version='3.17.17')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.17.16",
+            "version": "3.17.17",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1104,7 +1104,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.17.16",
+            "version": "3.17.17",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1475,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.17.16"})
+    return jsonify({"update_available": False, "version": "3.17.17"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -4282,6 +4282,24 @@ body {
   height:100%;
   transition:transform .35s cubic-bezier(.25,.46,.45,.94);
 }
+/* ── Logstore swipe card (mirrors apps-swipe-card) ── */
+#logstore-swipe-card{
+  background:var(--glass-bg);
+  background-image:linear-gradient(160deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0) 60%);
+  backdrop-filter:var(--glass-blur-sm);
+  -webkit-backdrop-filter:var(--glass-blur-sm);
+  border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);
+  overflow:hidden;
+  box-shadow:var(--glass-shadow);
+  display:flex;flex-direction:column;
+  height:100%;
+}
+#logstore-track{
+  display:flex;
+  height:100%;
+  transition:transform .35s cubic-bezier(.25,.46,.45,.94);
+}
 /* ── News Feed slide ── */
 #apps-news-slide{display:flex;flex-direction:column;min-width:100%;height:100%;overflow:hidden;}
 #apps-news-list{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
@@ -5731,7 +5749,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.17.16</div>
+      <div class="sb-version">v3.17.17</div>
     </div>
   </div>
 
@@ -6120,33 +6138,96 @@ body.sse-disconnected #app{padding-top:38px;}
             </div>
         </div>
 
-        <!-- ② Storage + Logs (stacked single column) -->
+        <!-- ② Storage + Logs / Live News / Live TV swipe card -->
         <div class="dash-cell" id="dash-logstore" data-span="4" data-widget="logstore">
           <button class="widget-remove-btn" onclick="removeWidget('logstore')" title="Hide widget">✕</button>
-          <div class="panel" style="margin:0;height:100%;display:flex;flex-direction:column;padding:12px 14px">
-            <!-- Header -->
-            <div class="panel-title" style="margin-bottom:10px;flex-shrink:0">
-              <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
-              Storage &amp; Logs
-              <button class="btn blue" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="showTab('logs',null)">Full Logs →</button>
+          <div id="logstore-swipe-card">
+            <!-- Header: title + dots + nav -->
+            <div class="msc-header">
+              <span class="msc-title">💾 Storage &amp; Logs</span>
+              <div class="msc-dots" id="logstore-dots">
+                <div class="msc-dot active" onclick="logstoreGoTo(0)" title="Storage & Logs"></div>
+                <div class="msc-dot" onclick="logstoreGoTo(1)" title="Live News"></div>
+                <div class="msc-dot" onclick="logstoreGoTo(2)" title="Live TV"></div>
+              </div>
+              <button class="msc-nav-btn" onclick="logstoreNav(-1)" title="Previous">‹</button>
+              <button class="msc-nav-btn" onclick="logstoreNav(1)" title="Next">›</button>
             </div>
-            <!-- Stacked: Storage top, Logs bottom -->
-            <div class="logstore-inner" style="display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent">
-              <!-- Storage -->
-              <div>
-                <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💾 Disk Usage</div>
-                <div id="dash-storage-list" style="display:flex;flex-direction:column;gap:6px">
-                  <div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">Loading...</div>
+            <!-- Slide track -->
+            <div style="flex:1;overflow:hidden;position:relative;min-height:0">
+            <div id="logstore-track">
+
+              <!-- Slide 0: Storage + Logs -->
+              <div class="msc-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label">💾 Storage &amp; Logs</span>
+                  <button class="btn blue" style="padding:2px 8px;font-size:10px;margin-left:auto" onclick="showTab('logs',null)">Full Logs →</button>
+                </div>
+                <div class="msc-slide-body logstore-inner" style="display:flex;flex-direction:column;gap:10px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent">
+                  <div>
+                    <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💾 Disk Usage</div>
+                    <div id="dash-storage-list" style="display:flex;flex-direction:column;gap:6px">
+                      <div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">Loading...</div>
+                    </div>
+                  </div>
+                  <div style="height:1px;background:var(--border);flex-shrink:0;border-radius:1px"></div>
+                  <div style="flex:1;min-height:0">
+                    <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📋 Recent Logs</div>
+                    <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:8px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;max-height:120px">(loading...)</pre>
+                  </div>
                 </div>
               </div>
-              <!-- Divider -->
-              <div style="height:1px;background:var(--border);flex-shrink:0;border-radius:1px"></div>
-              <!-- Logs -->
-              <div style="flex:1;min-height:0">
-                <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📋 Recent Logs</div>
-                <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:8px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;max-height:120px">(loading...)</pre>
+
+              <!-- Slide 1: Live News Feed -->
+              <div class="msc-slide" id="apps-news-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live News</span>
+                  <div style="display:flex;align-items:center;gap:5px;margin-left:auto">
+                    <span id="apps-news-age" style="font-size:10px;color:var(--text3)"></span>
+                    <button class="btn" style="padding:2px 8px;font-size:11px" onclick="appsNewsLoad(true)" title="Refresh">↻</button>
+                  </div>
+                </div>
+                <div style="display:flex;gap:4px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0">
+                  <button class="filter-pill active" onclick="appsNewsCat('all',this)">🌐 All</button>
+                  <button class="filter-pill" onclick="appsNewsCat('tech',this)">💻 Tech</button>
+                  <button class="filter-pill" onclick="appsNewsCat('lab',this)">🖥️ Lab</button>
+                  <button class="filter-pill" onclick="appsNewsCat('world',this)">🌍 World</button>
+                </div>
+                <div id="apps-news-list" class="msc-slide-body" style="overflow-y:auto;flex:1;padding:0">
+                  <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Swipe to load…</div>
+                </div>
               </div>
+
+              <!-- Slide 2: Live TV News -->
+              <div class="msc-slide" id="apps-livetv-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live TV</span>
+                  <button id="livetv-mute-btn" class="btn" style="padding:2px 9px;font-size:13px;margin-left:auto" onclick="livetvToggleMute()" title="Toggle mute">🔇</button>
+                </div>
+                <div id="livetv-tabs" style="display:flex;gap:3px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none">
+                  <button class="livetv-tab active" onclick="livetvSwitch('bloomberg',this)">BLOOMBERG</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('skynews',this)">SKY NEWS</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('euronews',this)">EURONEWS</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('dw',this)">DW</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('cnbc',this)">CNBC</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('france24',this)">FRANCE24</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('alarabiya',this)">AL ARABIYA</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('aljazeera',this)">AL JAZEERA</button>
+                </div>
+                <div style="flex:1;position:relative;background:#000;min-height:0">
+                  <iframe id="livetv-frame" src=""
+                    style="position:absolute;inset:0;width:100%;height:100%;border:none;display:block"
+                    allow="autoplay; fullscreen; picture-in-picture" allowfullscreen loading="lazy">
+                  </iframe>
+                  <div id="livetv-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text3);font-size:12px">
+                    <span style="font-size:28px">📺</span>
+                    <span>Swipe to this slide to load stream</span>
+                  </div>
+                </div>
+              </div>
+
             </div>
+            </div><!-- /overflow wrapper -->
           </div>
         </div>
 
@@ -6339,8 +6420,6 @@ body.sse-disconnected #app{padding-top:38px;}
               <div class="msc-dots" id="apps-dots">
                 <div class="msc-dot active" onclick="appsGoTo(0)" title="Launcher"></div>
                 <div class="msc-dot" onclick="appsGoTo(1)" title="Containers"></div>
-                <div class="msc-dot" onclick="appsGoTo(2)" title="Headlines"></div>
-                <div class="msc-dot" onclick="appsGoTo(3)" title="Live TV"></div>
               </div>
               <button class="msc-nav-btn" onclick="appsNav(-1)" title="Previous">‹</button>
               <button class="msc-nav-btn" onclick="appsNav(1)" title="Next">›</button>
@@ -6368,61 +6447,6 @@ body.sse-disconnected #app{padding-top:38px;}
                 <div class="msc-slide-body">
                   <div id="ov-ctr-list" style="display:flex;flex-direction:column;gap:5px">
                     <div style="color:var(--text3);font-size:12px;text-align:center;padding:8px">Loading...</div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Slide 2: Live News Feed -->
-              <div class="msc-slide" id="apps-news-slide">
-                <div class="msc-slide-hdr">
-                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live News</span>
-                  <div style="display:flex;align-items:center;gap:5px;margin-left:auto">
-                    <span id="apps-news-age" style="font-size:10px;color:var(--text3)"></span>
-                    <button class="btn" style="padding:2px 8px;font-size:11px" onclick="appsNewsLoad(true)" title="Refresh">↻</button>
-                  </div>
-                </div>
-                <!-- Category filter pills -->
-                <div style="display:flex;gap:4px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0">
-                  <button class="filter-pill active" onclick="appsNewsCat('all',this)">🌐 All</button>
-                  <button class="filter-pill" onclick="appsNewsCat('tech',this)">💻 Tech</button>
-                  <button class="filter-pill" onclick="appsNewsCat('lab',this)">🖥️ Lab</button>
-                  <button class="filter-pill" onclick="appsNewsCat('world',this)">🌍 World</button>
-                </div>
-                <!-- Scrollable news list -->
-                <div id="apps-news-list" class="msc-slide-body" style="overflow-y:auto;flex:1;padding:0">
-                  <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Swipe to load…</div>
-                </div>
-              </div>
-
-              <!-- Slide 3: Live TV News -->
-              <div class="msc-slide" id="apps-livetv-slide">
-                <div class="msc-slide-hdr">
-                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live TV</span>
-                  <button id="livetv-mute-btn" class="btn" style="padding:2px 9px;font-size:13px;margin-left:auto" onclick="livetvToggleMute()" title="Toggle mute">🔇</button>
-                </div>
-                <!-- Channel tabs row -->
-                <div id="livetv-tabs" style="display:flex;gap:3px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none">
-                  <button class="livetv-tab active" onclick="livetvSwitch('bloomberg',this)">BLOOMBERG</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('skynews',this)">SKY NEWS</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('euronews',this)">EURONEWS</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('dw',this)">DW</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('cnbc',this)">CNBC</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('france24',this)">FRANCE24</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('alarabiya',this)">AL ARABIYA</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('aljazeera',this)">AL JAZEERA</button>
-                </div>
-                <!-- YouTube player -->
-                <div style="flex:1;position:relative;background:#000;min-height:0">
-                  <iframe id="livetv-frame"
-                    src=""
-                    style="position:absolute;inset:0;width:100%;height:100%;border:none;display:block"
-                    allow="autoplay; fullscreen; picture-in-picture"
-                    allowfullscreen
-                    loading="lazy">
-                  </iframe>
-                  <div id="livetv-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text3);font-size:12px">
-                    <span style="font-size:28px">📺</span>
-                    <span>Swipe to this slide to load stream</span>
                   </div>
                 </div>
               </div>
@@ -6965,7 +6989,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.16</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.17</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -13719,7 +13743,7 @@ function todoDelete(id) {
 
 // ── Apps swipe card (mirrors MSC behaviour) ────────────────────────────────
 let _appsSlide = 0;
-const APPS_TOTAL = 4;
+const APPS_TOTAL = 2;
 
 function appsGoTo(idx) {
     _appsSlide = Math.max(0, Math.min(APPS_TOTAL - 1, idx));
@@ -13728,11 +13752,39 @@ function appsGoTo(idx) {
     document.querySelectorAll('#apps-dots .msc-dot').forEach((d, i) => {
         d.classList.toggle('active', i === _appsSlide);
     });
-    // Lazy-load slide content on first visit
     if (_appsSlide === 1) loadDashboardContainers();
-    if (_appsSlide === 2) appsNewsLoad(false);
-    if (_appsSlide === 3) livetvLoad();
 }
+
+// ── Logstore swipe card ────────────────────────────────────────────────────
+let _logstoreSlide = 0;
+const LOGSTORE_TOTAL = 3;
+
+function logstoreGoTo(idx) {
+    _logstoreSlide = Math.max(0, Math.min(LOGSTORE_TOTAL - 1, idx));
+    const track = document.getElementById('logstore-track');
+    if (track) track.style.transform = `translateX(-${_logstoreSlide * 100}%)`;
+    document.querySelectorAll('#logstore-dots .msc-dot').forEach((d, i) => {
+        d.classList.toggle('active', i === _logstoreSlide);
+    });
+    if (_logstoreSlide === 1) appsNewsLoad(false);
+    if (_logstoreSlide === 2) livetvLoad();
+}
+
+function logstoreNav(dir) { logstoreGoTo(_logstoreSlide + dir); }
+
+// Touch swipe for logstore card
+(function(){
+    let sx = 0;
+    document.addEventListener('DOMContentLoaded', () => {
+        const track = document.getElementById('logstore-track');
+        if (!track) return;
+        track.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, {passive:true});
+        track.addEventListener('touchend', e => {
+            const dx = e.changedTouches[0].clientX - sx;
+            if (Math.abs(dx) > 40) logstoreNav(dx < 0 ? 1 : -1);
+        }, {passive:true});
+    });
+}());
 
 function appsNav(dir) { appsGoTo(_appsSlide + dir); }
 
@@ -13825,7 +13877,7 @@ async function appsNewsLoad(force = false) {
         }).join('');
 
         if (_newsAutoTimer) clearTimeout(_newsAutoTimer);
-        _newsAutoTimer = setTimeout(() => { if (_appsSlide === 2) appsNewsLoad(true); }, 300000);
+        _newsAutoTimer = setTimeout(() => { if (_logstoreSlide === 1) appsNewsLoad(true); }, 300000);
 
     } catch(e) {
         list.innerHTML = `<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Failed to load — <a href="#" onclick="appsNewsLoad(true);return false" style="color:var(--blue)">retry</a></div>`;

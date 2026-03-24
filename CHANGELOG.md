@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.17] — 2026-03-24
+
+### Changed
+- **Live News + Live TV moved to Storage & Logs card** — Rebuilt the Storage & Logs widget as a
+  3-slide swipe card: Slide 0 = Storage & Logs (unchanged), Slide 1 = Live News, Slide 2 = Live TV.
+  Services card trimmed to 2 slides (Launcher + Containers). New `logstoreGoTo()` / `logstoreNav()`
+  JS controller mirrors the Services card pattern with touch-swipe and lazy content loading.
+  News auto-refresh timer updated from `_appsSlide === 2` to `_logstoreSlide === 1`.
+- **Version bump** `3.17.16` → `3.17.17`.
+
+---
+
 ## [3.17.16] — 2026-03-24
 
 ### Fixed

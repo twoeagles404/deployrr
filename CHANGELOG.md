@@ -6,6 +6,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.15] — 2026-03-24
+
+### Fixed
+- **Services card — only Launcher slide visible** — `#apps-track` had `overflow:hidden` which
+  clipped slides 1-3 inside the track before the CSS transform could reveal them. The card's own
+  `overflow:hidden` is the intended viewport; the track must not clip its own contents. Changed to
+  `overflow:visible` — identical to the fix applied to `#msc-track` in v3.17.12.
+- **Version bump** `3.17.14` → `3.17.15`.
+
+---
+
 ## [3.17.14] — 2026-03-24
 
 ### Added

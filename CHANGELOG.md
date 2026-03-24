@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.17.13] — 2026-03-24
+
+### Added
+- **Live News Feed** — New "Live News" slide (Slide 3) in the Services / 🖥️ Apps widget.
+  Swipe right or click the third nav dot to open it. Features: pulsing live red dot,
+  category filter pills (🌐 All / 💻 Tech / 🖥️ Lab / 🌍 World), color-coded source
+  badges, time-ago stamps, click-to-open-in-tab. Auto-refreshes every 5 minutes.
+  Backend: new `/api/news/quick` endpoint fetches 4 RSS/Reddit feeds concurrently
+  per category (ThreadPoolExecutor), merges + de-dupes, caches 5 min server-side.
+  Sources: BBC World, AP News, Al Jazeera, Guardian, Hacker News, The Verge,
+  Ars Technica, TechCrunch, r/selfhosted, r/homelab, r/Proxmox, r/docker.
+  No API keys required.
+- **Version bump** `3.17.12` → `3.17.13`.
+
+---
+
 ## [3.17.12] — 2026-03-23
 
 ### Fixed

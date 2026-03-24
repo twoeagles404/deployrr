@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.17.12 · Full deployment, update management, and real-time monitoring
+Version: 3.17.13 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.17.12')
+app = FastAPI(title='ArrHub Monitor', version='3.17.13')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.17.12",
+            "version": "3.17.13",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1104,7 +1104,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.17.12",
+            "version": "3.17.13",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1475,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.17.12"})
+    return jsonify({"update_available": False, "version": "3.17.13"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -2180,6 +2180,124 @@ def api_rss_fetch(request: Request):
         return resp
     except Exception as e:
         return jsonify({"error": str(e), "items": []}, 200)
+
+# ── News Quick Feed ─────────────────────────────────────────────────────────
+_news_quick_cache: dict = {}   # {cat: {ts, items}}
+
+_NEWS_SOURCES = {
+    "all":   [
+        ("HN",      "Hacker News",   "https://hnrss.org/frontpage",                        "tech"),
+        ("BBC",     "BBC World",     "https://feeds.bbci.co.uk/news/world/rss.xml",        "world"),
+        ("REDDIT",  "r/selfhosted",  "https://www.reddit.com/r/selfhosted/.rss",           "lab"),
+        ("REDDIT",  "r/homelab",     "https://www.reddit.com/r/homelab/.rss",              "lab"),
+    ],
+    "tech":  [
+        ("HN",      "Hacker News",   "https://hnrss.org/frontpage",                        "tech"),
+        ("VERGE",   "The Verge",     "https://www.theverge.com/rss/index.xml",             "tech"),
+        ("ARS",     "Ars Technica",  "https://feeds.arstechnica.com/arstechnica/index",    "tech"),
+        ("TC",      "TechCrunch",    "https://techcrunch.com/feed/",                       "tech"),
+    ],
+    "lab":   [
+        ("REDDIT",  "r/selfhosted",  "https://www.reddit.com/r/selfhosted/.rss",           "lab"),
+        ("REDDIT",  "r/homelab",     "https://www.reddit.com/r/homelab/.rss",              "lab"),
+        ("REDDIT",  "r/ProxmoxVE",  "https://www.reddit.com/r/Proxmox/.rss",              "lab"),
+        ("REDDIT",  "r/docker",      "https://www.reddit.com/r/docker/.rss",               "lab"),
+    ],
+    "world": [
+        ("BBC",     "BBC World",     "https://feeds.bbci.co.uk/news/world/rss.xml",        "world"),
+        ("AP",      "AP News",       "https://feeds.apnews.com/rss/apf-topnews",           "world"),
+        ("AJ",      "Al Jazeera",    "https://www.aljazeera.com/xml/rss/all.xml",          "world"),
+        ("GUARD",   "Guardian",      "https://www.theguardian.com/world/rss",              "world"),
+    ],
+}
+
+def _fetch_rss_items(badge, source_name, url, cat):
+    """Fetch a single RSS/Reddit feed, return list of item dicts."""
+    import urllib.request, xml.etree.ElementTree as _ET
+    from email.utils import parsedate_to_datetime
+    items = []
+    try:
+        is_reddit = "reddit.com" in url
+        if is_reddit:
+            import re as _re
+            m = _re.search(r'reddit\.com/r/([A-Za-z0-9_]+)', url)
+            if m:
+                sub = m.group(1)
+                req = urllib.request.Request(
+                    f"https://www.reddit.com/r/{sub}.json?limit=15&raw_json=1",
+                    headers={"User-Agent": "ArrHub/1.0"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                for post in data.get("data", {}).get("children", [])[:15]:
+                    pd = post.get("data", {})
+                    title = pd.get("title", "").strip()
+                    link  = "https://www.reddit.com" + pd.get("permalink", "#")
+                    ts    = pd.get("created_utc", 0)
+                    items.append({"title": title, "link": link, "source": source_name,
+                                  "badge": badge, "cat": cat, "ts": int(ts)})
+        else:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 ArrHub/1.0",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            })
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+            root = _ET.fromstring(raw)
+            ns_atom = "http://www.w3.org/2005/Atom"
+            if root.tag == f"{{{ns_atom}}}feed" or root.find(f"{{{ns_atom}}}entry") is not None:
+                for entry in root.findall(f".//{{{ns_atom}}}entry")[:15]:
+                    title = (entry.findtext(f"{{{ns_atom}}}title") or "").strip()
+                    link_el = entry.find(f"{{{ns_atom}}}link")
+                    link = (link_el.get("href", "") if link_el is not None else "") or ""
+                    pub = entry.findtext(f"{{{ns_atom}}}published") or entry.findtext(f"{{{ns_atom}}}updated") or ""
+                    try:
+                        ts = int(time.mktime(time.strptime(pub[:19], "%Y-%m-%dT%H:%M:%S"))) if pub else int(time.time())
+                    except Exception:
+                        ts = int(time.time())
+                    items.append({"title": title, "link": link, "source": source_name,
+                                  "badge": badge, "cat": cat, "ts": ts})
+            else:
+                for item in root.findall(".//item")[:15]:
+                    title = (item.findtext("title") or "").strip()
+                    link  = (item.findtext("link") or "").strip()
+                    pub   = item.findtext("pubDate") or ""
+                    try:
+                        ts = int(parsedate_to_datetime(pub).timestamp()) if pub else int(time.time())
+                    except Exception:
+                        ts = int(time.time())
+                    items.append({"title": title, "link": link, "source": source_name,
+                                  "badge": badge, "cat": cat, "ts": ts})
+    except Exception:
+        pass
+    return items
+
+@app.get("/api/news/quick")
+def api_news_quick(request: Request):
+    """Aggregate top headlines from multiple RSS/Reddit feeds for the dashboard news widget.
+    ?cat=all|tech|lab|world  (default: all)   ?bust=1 to bypass 5-min cache."""
+    cat  = request.query_params.get("cat", "all")
+    bust = request.query_params.get("bust", "0")
+    if cat not in _NEWS_SOURCES:
+        cat = "all"
+    now   = time.time()
+    entry = _news_quick_cache.get(cat)
+    if bust == "0" and entry and (now - entry.get("ts", 0)) < 300:
+        return jsonify(entry["data"])
+    sources = _NEWS_SOURCES[cat]
+    with ThreadPoolExecutor(max_workers=len(sources)) as pool:
+        results = list(pool.map(lambda s: _fetch_rss_items(*s), sources))
+    merged, seen = [], set()
+    for batch in results:
+        for item in batch:
+            key = item["title"][:60].lower()
+            if key not in seen:
+                seen.add(key)
+                merged.append(item)
+    merged.sort(key=lambda x: x["ts"], reverse=True)
+    payload = {"items": merged[:30], "cached_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    _news_quick_cache[cat] = {"ts": now, "data": payload}
+    return jsonify(payload)
 
 def _iptv_get_custom():
     raw = _db_get("iptv_custom_channels", None)
@@ -4165,6 +4283,12 @@ body {
   flex:1;
   transition:transform .35s cubic-bezier(.25,.46,.45,.94);
 }
+/* ── News Feed slide ── */
+#apps-news-slide{display:flex;flex-direction:column;min-width:100%;height:100%;overflow:hidden;}
+#apps-news-list{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
+#apps-news-list a:last-child{border-bottom:none;}
+@keyframes news-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.news-live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#f87171;margin-right:4px;vertical-align:middle;animation:news-pulse 1.8s ease-in-out infinite;}
 /* Services widget header — mirrors Media Suite msc-* styles */
 #apps-swipe-card .msc-header{
   display:flex;align-items:center;padding:10px 14px;
@@ -5602,7 +5726,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.17.12</div>
+      <div class="sb-version">v3.17.13</div>
     </div>
   </div>
 
@@ -6206,6 +6330,7 @@ body.sse-disconnected #app{padding-top:38px;}
               <div class="msc-dots" id="apps-dots">
                 <div class="msc-dot active" onclick="appsGoTo(0)" title="Launcher"></div>
                 <div class="msc-dot" onclick="appsGoTo(1)" title="Containers"></div>
+                <div class="msc-dot" onclick="appsGoTo(2)" title="News Feed"></div>
               </div>
               <button class="msc-nav-btn" onclick="appsNav(-1)" title="Previous">‹</button>
               <button class="msc-nav-btn" onclick="appsNav(1)" title="Next">›</button>
@@ -6235,6 +6360,29 @@ body.sse-disconnected #app{padding-top:38px;}
                   </div>
                 </div>
               </div>
+
+              <!-- Slide 2: Live News Feed -->
+              <div class="msc-slide" id="apps-news-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live News</span>
+                  <div style="display:flex;align-items:center;gap:5px;margin-left:auto">
+                    <span id="apps-news-age" style="font-size:10px;color:var(--text3)"></span>
+                    <button class="btn" style="padding:2px 8px;font-size:11px" onclick="appsNewsLoad(true)" title="Refresh">↻</button>
+                  </div>
+                </div>
+                <!-- Category filter pills -->
+                <div style="display:flex;gap:4px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0">
+                  <button class="filter-pill active" onclick="appsNewsCat('all',this)">🌐 All</button>
+                  <button class="filter-pill" onclick="appsNewsCat('tech',this)">💻 Tech</button>
+                  <button class="filter-pill" onclick="appsNewsCat('lab',this)">🖥️ Lab</button>
+                  <button class="filter-pill" onclick="appsNewsCat('world',this)">🌍 World</button>
+                </div>
+                <!-- Scrollable news list -->
+                <div id="apps-news-list" class="msc-slide-body" style="overflow-y:auto;flex:1;padding:0">
+                  <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Swipe to load…</div>
+                </div>
+              </div>
+
             </div>
           </div>
         </div>
@@ -6772,7 +6920,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.12</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.17.13</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -13496,7 +13644,7 @@ function todoDelete(id) {
 
 // ── Apps swipe card (mirrors MSC behaviour) ────────────────────────────────
 let _appsSlide = 0;
-const APPS_TOTAL = 2;
+const APPS_TOTAL = 3;
 
 function appsGoTo(idx) {
     _appsSlide = Math.max(0, Math.min(APPS_TOTAL - 1, idx));
@@ -13505,6 +13653,8 @@ function appsGoTo(idx) {
     document.querySelectorAll('#apps-dots .msc-dot').forEach((d, i) => {
         d.classList.toggle('active', i === _appsSlide);
     });
+    // Auto-load news when swiping to slide 2
+    if (_appsSlide === 2) appsNewsLoad(false);
 }
 
 function appsNav(dir) { appsGoTo(_appsSlide + dir); }
@@ -13525,6 +13675,85 @@ function appsNav(dir) { appsGoTo(_appsSlide + dir); }
 
 // Keep old appsTabSwitch as alias (called from nowhere now but safe to have)
 function appsTabSwitch(tab) { appsGoTo(tab === 'ctrs' ? 1 : 0); }
+
+// ── Live News Feed (Services card, Slide 2) ───────────────────────────────
+let _newsCurrentCat = 'all';
+let _newsLoaded     = false;
+let _newsLastFetch  = 0;
+let _newsAutoTimer  = null;
+
+const _NEWS_BADGE_COLORS = {
+    tech:  { bg: 'var(--blue2)',   fg: 'var(--blue)'  },
+    lab:   { bg: 'var(--green2)',  fg: 'var(--green)' },
+    world: { bg: '#3f2a4e',        fg: '#c084fc'       },
+    all:   { bg: 'var(--surface)', fg: 'var(--text2)' },
+};
+const _NEWS_SOURCE_ABBR = {
+    'Hacker News': 'HN', 'The Verge': 'VERGE', 'Ars Technica': 'ARS', 'TechCrunch': 'TC',
+    'BBC World': 'BBC', 'AP News': 'AP', 'Al Jazeera': 'AJ', 'Guardian': 'GUARD',
+    'r/selfhosted': '/r/sh', 'r/homelab': '/r/hl', 'r/ProxmoxVE': '/r/pmx', 'r/docker': '/r/dkr',
+};
+
+function _newsTimeAgo(ts) {
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 60)    return diff + 's ago';
+    if (diff < 3600)  return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+}
+
+function appsNewsCat(cat, btn) {
+    _newsCurrentCat = cat;
+    document.querySelectorAll('#apps-news-slide .filter-pill').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    appsNewsLoad(true);
+}
+
+async function appsNewsLoad(force = false) {
+    const list = document.getElementById('apps-news-list');
+    if (!list) return;
+    const now = Date.now();
+    if (!force && _newsLoaded && (now - _newsLastFetch) < 300000) return;
+
+    list.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:24px;display:flex;align-items:center;justify-content:center;gap:8px"><span style="display:inline-block;width:14px;height:14px;border:2px solid var(--blue);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite"></span> Loading headlines…</div>';
+    document.getElementById('apps-news-age').textContent = '';
+
+    try {
+        const r = await fetch(API + `/api/news/quick?cat=${_newsCurrentCat}&bust=${force ? '1' : '0'}`);
+        const data = await r.json();
+        const items = data.items || [];
+        _newsLoaded = true;
+        _newsLastFetch = now;
+
+        if (data.cached_at) {
+            const ageEl = document.getElementById('apps-news-age');
+            if (ageEl) ageEl.textContent = 'updated ' + _newsTimeAgo(Math.floor(new Date(data.cached_at).getTime() / 1000));
+        }
+
+        if (!items.length) {
+            list.innerHTML = '<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">No headlines available</div>';
+            return;
+        }
+
+        list.innerHTML = items.map(item => {
+            const col   = _NEWS_BADGE_COLORS[item.cat] || _NEWS_BADGE_COLORS.all;
+            const abbr  = _NEWS_SOURCE_ABBR[item.source] || item.source.substring(0, 6).toUpperCase();
+            const time_ = _newsTimeAgo(item.ts);
+            const title = item.title.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#39;/g,"'").replace(/&quot;/g,'"');
+            return `<a href="${item.link}" target="_blank" rel="noopener" style="display:flex;align-items:flex-start;gap:8px;padding:7px 10px;border-bottom:1px solid var(--border);text-decoration:none;transition:background .12s;cursor:pointer" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+  <span style="flex-shrink:0;padding:2px 5px;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:.4px;margin-top:1px;background:${col.bg};color:${col.fg}">${abbr}</span>
+  <span style="flex:1;font-size:12px;line-height:1.4;color:var(--text);font-weight:500;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${title}</span>
+  <span style="flex-shrink:0;font-size:10px;color:var(--text3);margin-top:1px;white-space:nowrap">${time_}</span>
+</a>`;
+        }).join('');
+
+        if (_newsAutoTimer) clearTimeout(_newsAutoTimer);
+        _newsAutoTimer = setTimeout(() => { if (_appsSlide === 2) appsNewsLoad(true); }, 300000);
+
+    } catch(e) {
+        list.innerHTML = `<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px">Failed to load — <a href="#" onclick="appsNewsLoad(true);return false" style="color:var(--blue)">retry</a></div>`;
+    }
+}
 
 // ── Storage + Logs tab switcher ───────────────────────────────────────────
 function lsTabSwitch(tab) {

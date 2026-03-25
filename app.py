@@ -4348,7 +4348,8 @@ body {
   transition:transform .35s cubic-bezier(.25,.46,.45,.94);
 }
 /* ── Logstore swipe card (mirrors apps-swipe-card) ── */
-#logstore-swipe-card{
+#logstore-swipe-card,
+#infra-swipe-card{
   background:var(--glass-bg);
   background-image:linear-gradient(160deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0) 60%);
   backdrop-filter:var(--glass-blur-sm);
@@ -4360,7 +4361,8 @@ body {
   display:flex;flex-direction:column;
   height:100%;
 }
-#logstore-track{
+#logstore-track,
+#infra-track{
   display:flex;
   height:100%;
   transition:transform .35s cubic-bezier(.25,.46,.45,.94);
@@ -4380,35 +4382,42 @@ body {
 .livetv-tab.active{color:var(--blue);border-bottom-color:var(--blue);}
 /* Services & Storage widget headers — shared msc-* styles */
 #apps-swipe-card .msc-header,
-#logstore-swipe-card .msc-header{
+#logstore-swipe-card .msc-header,
+#infra-swipe-card .msc-header{
   display:flex;align-items:center;padding:10px 14px;
   border-bottom:1px solid rgba(255,255,255,0.06);
   gap:8px;flex-shrink:0;
 }
 #apps-swipe-card .msc-title,
-#logstore-swipe-card .msc-title{
+#logstore-swipe-card .msc-title,
+#infra-swipe-card .msc-title{
   font-size:13px;font-weight:600;color:var(--text);flex:1;letter-spacing:-.01em;
 }
 #apps-swipe-card .msc-dots,
-#logstore-swipe-card .msc-dots{
+#logstore-swipe-card .msc-dots,
+#infra-swipe-card .msc-dots{
   display:flex;gap:5px;align-items:center;
 }
 #apps-swipe-card .msc-dot,
-#logstore-swipe-card .msc-dot{
+#logstore-swipe-card .msc-dot,
+#infra-swipe-card .msc-dot{
   width:7px;height:7px;border-radius:50%;
   background:rgba(255,255,255,0.15);cursor:pointer;
   transition:background .2s,transform .2s;
 }
 #apps-swipe-card .msc-dot.active,
-#logstore-swipe-card .msc-dot.active{background:var(--blue);transform:scale(1.25);}
+#logstore-swipe-card .msc-dot.active,
+#infra-swipe-card .msc-dot.active{background:var(--blue);transform:scale(1.25);}
 #apps-swipe-card .msc-nav-btn,
-#logstore-swipe-card .msc-nav-btn{
+#logstore-swipe-card .msc-nav-btn,
+#infra-swipe-card .msc-nav-btn{
   background:none;border:none;color:var(--text3);cursor:pointer;
   padding:3px 6px;border-radius:6px;font-size:16px;line-height:1;
   transition:color .15s,background .15s;
 }
 #apps-swipe-card .msc-nav-btn:hover,
-#logstore-swipe-card .msc-nav-btn:hover{background:rgba(255,255,255,0.08);color:var(--text);}
+#logstore-swipe-card .msc-nav-btn:hover,
+#infra-swipe-card .msc-nav-btn:hover{background:rgba(255,255,255,0.08);color:var(--text);}
 /* Log+Storage tabbed card */
 #ls-panel-storage,#ls-panel-logs{
   overflow-y:auto;max-height:290px;padding:4px 2px;
@@ -6223,9 +6232,8 @@ body.sse-disconnected #app{padding-top:38px;}
             <div class="msc-header">
               <span class="msc-title">💾 Storage &amp; Logs</span>
               <div class="msc-dots" id="logstore-dots">
-                <div class="msc-dot active" onclick="logstoreGoTo(0)" title="Storage & Logs"></div>
+                <div class="msc-dot active" onclick="logstoreGoTo(0)" title="Live TV"></div>
                 <div class="msc-dot" onclick="logstoreGoTo(1)" title="Live News"></div>
-                <div class="msc-dot" onclick="logstoreGoTo(2)" title="Live TV"></div>
               </div>
               <button class="msc-nav-btn" onclick="logstoreNav(-1)" title="Previous">‹</button>
               <button class="msc-nav-btn" onclick="logstoreNav(1)" title="Next">›</button>
@@ -6234,23 +6242,30 @@ body.sse-disconnected #app{padding-top:38px;}
             <div style="flex:1;overflow:hidden;position:relative;min-height:0">
             <div id="logstore-track">
 
-              <!-- Slide 0: Storage + Logs -->
-              <div class="msc-slide">
+              <!-- Slide 0: Live TV News -->
+              <div class="msc-slide" id="apps-livetv-slide">
                 <div class="msc-slide-hdr">
-                  <span class="msc-slide-label">💾 Storage &amp; Logs</span>
-                  <button class="btn blue" style="padding:2px 8px;font-size:10px;margin-left:auto" onclick="showTab('logs',null)">Full Logs →</button>
+                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live TV</span>
+                  <button id="livetv-mute-btn" class="btn" style="padding:2px 9px;font-size:13px;margin-left:auto" onclick="livetvToggleMute()" title="Toggle mute">🔇</button>
                 </div>
-                <div class="msc-slide-body logstore-inner" style="display:flex;flex-direction:column;gap:10px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent">
-                  <div>
-                    <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💾 Disk Usage</div>
-                    <div id="dash-storage-list" style="display:flex;flex-direction:column;gap:6px">
-                      <div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">Loading...</div>
-                    </div>
-                  </div>
-                  <div style="height:1px;background:var(--border);flex-shrink:0;border-radius:1px"></div>
-                  <div style="flex:1;min-height:0">
-                    <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📋 Recent Logs</div>
-                    <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:8px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;max-height:120px">(loading...)</pre>
+                <div id="livetv-tabs" style="display:flex;gap:3px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none">
+                  <button class="livetv-tab active" onclick="livetvSwitch('bloomberg',this)">BLOOMBERG</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('skynews',this)">SKY NEWS</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('euronews',this)">EURONEWS</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('dw',this)">DW</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('cnbc',this)">CNBC</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('france24',this)">FRANCE24</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('alarabiya',this)">AL ARABIYA</button>
+                  <button class="livetv-tab" onclick="livetvSwitch('aljazeera',this)">AL JAZEERA</button>
+                </div>
+                <div style="flex:1;position:relative;background:#000;min-height:0">
+                  <iframe id="livetv-frame" src=""
+                    style="position:absolute;inset:0;width:100%;height:100%;border:none;display:block"
+                    allow="autoplay; fullscreen; picture-in-picture" allowfullscreen loading="lazy">
+                  </iframe>
+                  <div id="livetv-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text3);font-size:12px">
+                    <span style="font-size:28px">📺</span>
+                    <span>Click a channel above to start streaming</span>
                   </div>
                 </div>
               </div>
@@ -6275,34 +6290,6 @@ body.sse-disconnected #app{padding-top:38px;}
                 </div>
               </div>
 
-              <!-- Slide 2: Live TV News -->
-              <div class="msc-slide" id="apps-livetv-slide">
-                <div class="msc-slide-hdr">
-                  <span class="msc-slide-label"><span class="news-live-dot"></span>Live TV</span>
-                  <button id="livetv-mute-btn" class="btn" style="padding:2px 9px;font-size:13px;margin-left:auto" onclick="livetvToggleMute()" title="Toggle mute">🔇</button>
-                </div>
-                <div id="livetv-tabs" style="display:flex;gap:3px;padding:4px 8px 5px;border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none">
-                  <button class="livetv-tab active" onclick="livetvSwitch('bloomberg',this)">BLOOMBERG</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('skynews',this)">SKY NEWS</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('euronews',this)">EURONEWS</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('dw',this)">DW</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('cnbc',this)">CNBC</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('france24',this)">FRANCE24</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('alarabiya',this)">AL ARABIYA</button>
-                  <button class="livetv-tab" onclick="livetvSwitch('aljazeera',this)">AL JAZEERA</button>
-                </div>
-                <div style="flex:1;position:relative;background:#000;min-height:0">
-                  <iframe id="livetv-frame" src=""
-                    style="position:absolute;inset:0;width:100%;height:100%;border:none;display:block"
-                    allow="autoplay; fullscreen; picture-in-picture" allowfullscreen loading="lazy">
-                  </iframe>
-                  <div id="livetv-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text3);font-size:12px">
-                    <span style="font-size:28px">📺</span>
-                    <span>Swipe to this slide to load stream</span>
-                  </div>
-                </div>
-              </div>
-
             </div>
             </div><!-- /overflow wrapper -->
           </div>
@@ -6311,71 +6298,113 @@ body.sse-disconnected #app{padding-top:38px;}
 
 
         <!-- ③ Docker & Network I/O (row 2, col 3) -->
-        <div class="dash-cell scrollable" id="dash-infra" data-span="4" data-widget="infra">
+        <div class="dash-cell" id="dash-infra" data-span="4" data-widget="infra">
           <button class="widget-remove-btn" onclick="removeWidget('infra')" title="Hide widget">✕</button>
-            <div class="panel" style="margin:0;height:100%;display:flex;flex-direction:column">
-              <div class="panel-title" style="flex-shrink:0">
-                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                Docker &amp; Network
+          <div id="infra-swipe-card">
+            <!-- Header: title + dots + nav -->
+            <div class="msc-header">
+              <span class="msc-title">🐳 Docker &amp; Network</span>
+              <div class="msc-dots" id="infra-dots">
+                <div class="msc-dot active" onclick="infraGoTo(0)" title="Docker & Network"></div>
+                <div class="msc-dot" onclick="infraGoTo(1)" title="Storage & Logs"></div>
               </div>
-              <!-- Docker stats (compact grid) -->
-              <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px">
-                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:6px">
-                  <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                  Docker Engine
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
-                    <div id="docker-images" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--blue);line-height:1">—</div>
-                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Images</div>
-                  </div>
-                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
-                    <div id="docker-volumes" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--yellow,#e3b341);line-height:1">—</div>
-                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Volumes</div>
-                  </div>
-                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
-                    <div id="docker-networks" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--purple,#bc8cff);line-height:1">—</div>
-                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Networks</div>
-                  </div>
-                  <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
-                    <div id="docker-disk" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);line-height:1">—</div>
-                    <div style="font-size:10px;color:var(--text3);margin-top:2px">Disk Used</div>
-                  </div>
-                </div>
-              </div>
-              <!-- Network I/O section -->
-              <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;flex:1">
-                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:6px">
-                  <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
-                  Network I/O
-                </div>
-                <div style="margin-bottom:8px">
-                  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                    <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
-                      <svg width="10" height="10" fill="none" stroke="var(--green)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
-                      Upload
-                    </span>
-                    <span id="ov-net-sent" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--green)">—</span>
-                  </div>
-                  <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
-                    <div id="net-sent-bar" style="height:100%;width:30%;background:var(--green);border-radius:2px;transition:width .6s"></div>
-                  </div>
-                </div>
-                <div>
-                  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                    <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
-                      <svg width="10" height="10" fill="none" stroke="var(--blue)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
-                      Download
-                    </span>
-                    <span id="ov-net-recv" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--blue)">—</span>
-                  </div>
-                  <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
-                    <div id="net-recv-bar" style="height:100%;width:55%;background:var(--blue);border-radius:2px;transition:width .6s"></div>
-                  </div>
-                </div>
-                <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:6px">Cumulative totals since boot</div>
-              </div>
+              <button class="msc-nav-btn" onclick="infraNav(-1)" title="Previous">‹</button>
+              <button class="msc-nav-btn" onclick="infraNav(1)" title="Next">›</button>
             </div>
+            <!-- Slide track -->
+            <div style="flex:1;overflow:hidden;position:relative;min-height:0">
+            <div id="infra-track">
+
+              <!-- Slide 0: Docker & Network -->
+              <div class="msc-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label">🐳 Docker &amp; Network</span>
+                </div>
+                <div class="msc-slide-body" style="display:flex;flex-direction:column;gap:8px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent">
+                  <!-- Docker stats (compact grid) -->
+                  <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+                    <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+                      <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                      Docker Engine
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+                      <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                        <div id="docker-images" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--blue);line-height:1">—</div>
+                        <div style="font-size:10px;color:var(--text3);margin-top:2px">Images</div>
+                      </div>
+                      <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                        <div id="docker-volumes" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--yellow,#e3b341);line-height:1">—</div>
+                        <div style="font-size:10px;color:var(--text3);margin-top:2px">Volumes</div>
+                      </div>
+                      <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                        <div id="docker-networks" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--purple,#bc8cff);line-height:1">—</div>
+                        <div style="font-size:10px;color:var(--text3);margin-top:2px">Networks</div>
+                      </div>
+                      <div style="background:var(--surface);border-radius:6px;padding:6px 8px">
+                        <div id="docker-disk" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);line-height:1">—</div>
+                        <div style="font-size:10px;color:var(--text3);margin-top:2px">Disk Used</div>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Network I/O section -->
+                  <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;flex:1">
+                    <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+                      <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
+                      Network I/O
+                    </div>
+                    <div style="margin-bottom:8px">
+                      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                        <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                          <svg width="10" height="10" fill="none" stroke="var(--green)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+                          Upload
+                        </span>
+                        <span id="ov-net-sent" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--green)">—</span>
+                      </div>
+                      <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
+                        <div id="net-sent-bar" style="height:100%;width:30%;background:var(--green);border-radius:2px;transition:width .6s"></div>
+                      </div>
+                    </div>
+                    <div>
+                      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                        <span style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:4px">
+                          <svg width="10" height="10" fill="none" stroke="var(--blue)" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                          Download
+                        </span>
+                        <span id="ov-net-recv" style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--blue)">—</span>
+                      </div>
+                      <div style="height:4px;background:var(--surface2);border-radius:2px;overflow:hidden">
+                        <div id="net-recv-bar" style="height:100%;width:55%;background:var(--blue);border-radius:2px;transition:width .6s"></div>
+                      </div>
+                    </div>
+                    <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:6px">Cumulative totals since boot</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Slide 1: Storage & Logs -->
+              <div class="msc-slide">
+                <div class="msc-slide-hdr">
+                  <span class="msc-slide-label">💾 Storage &amp; Logs</span>
+                  <button class="btn blue" style="padding:2px 8px;font-size:10px;margin-left:auto" onclick="showTab('logs',null)">Full Logs →</button>
+                </div>
+                <div class="msc-slide-body logstore-inner" style="display:flex;flex-direction:column;gap:10px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent">
+                  <div>
+                    <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">💾 Disk Usage</div>
+                    <div id="dash-storage-list" style="display:flex;flex-direction:column;gap:6px">
+                      <div style="color:var(--text3);font-size:12px;text-align:center;padding:10px">Loading...</div>
+                    </div>
+                  </div>
+                  <div style="height:1px;background:var(--border);flex-shrink:0;border-radius:1px"></div>
+                  <div style="flex:1;min-height:0">
+                    <div style="font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📋 Recent Logs</div>
+                    <pre id="ov-log-excerpt" style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--bg3);border-radius:6px;padding:8px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;max-height:120px">(loading...)</pre>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+            </div><!-- /overflow wrapper -->
+          </div>
         </div>
 
         <!-- ④ Media Suite — unified swipeable card -->
@@ -13865,7 +13894,7 @@ function appsGoTo(idx) {
 
 // ── Logstore swipe card ────────────────────────────────────────────────────
 let _logstoreSlide = 0;
-const LOGSTORE_TOTAL = 3;
+const LOGSTORE_TOTAL = 2;
 
 function logstoreGoTo(idx) {
     _logstoreSlide = Math.max(0, Math.min(LOGSTORE_TOTAL - 1, idx));
@@ -13874,8 +13903,8 @@ function logstoreGoTo(idx) {
     document.querySelectorAll('#logstore-dots .msc-dot').forEach((d, i) => {
         d.classList.toggle('active', i === _logstoreSlide);
     });
+    if (_logstoreSlide === 0) livetvLoad();
     if (_logstoreSlide === 1) appsNewsLoad(false);
-    if (_logstoreSlide === 2) livetvLoad();
 }
 
 function logstoreNav(dir) { logstoreGoTo(_logstoreSlide + dir); }
@@ -13890,6 +13919,37 @@ function logstoreNav(dir) { logstoreGoTo(_logstoreSlide + dir); }
         track.addEventListener('touchend', e => {
             const dx = e.changedTouches[0].clientX - sx;
             if (Math.abs(dx) > 40) logstoreNav(dx < 0 ? 1 : -1);
+        }, {passive:true});
+        // Live TV is now slide 0 (default), auto-load it on page init
+        livetvLoad();
+    });
+}());
+
+// ── Infra (Docker & Network) swipe card ───────────────────────────────────
+let _infraSlide = 0;
+const INFRA_TOTAL = 2;
+
+function infraGoTo(idx) {
+    _infraSlide = Math.max(0, Math.min(INFRA_TOTAL - 1, idx));
+    const track = document.getElementById('infra-track');
+    if (track) track.style.transform = `translateX(-${_infraSlide * 100}%)`;
+    document.querySelectorAll('#infra-dots .msc-dot').forEach((d, i) => {
+        d.classList.toggle('active', i === _infraSlide);
+    });
+}
+
+function infraNav(dir) { infraGoTo(_infraSlide + dir); }
+
+// Touch swipe for infra card
+(function(){
+    let sx = 0;
+    document.addEventListener('DOMContentLoaded', () => {
+        const track = document.getElementById('infra-track');
+        if (!track) return;
+        track.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, {passive:true});
+        track.addEventListener('touchend', e => {
+            const dx = e.changedTouches[0].clientX - sx;
+            if (Math.abs(dx) > 40) infraNav(dx < 0 ? 1 : -1);
         }, {passive:true});
     });
 }());

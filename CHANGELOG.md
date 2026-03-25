@@ -6,6 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.18.0] — 2026-03-25
+
+### Changed
+- **Live TV promoted to first slide** — The Live TV slide is now Slide 0 (default) in the
+  Live TV / Live News card. The stream auto-loads on page init via `livetvLoad()` in
+  `DOMContentLoaded`. Updated placeholder text to "Click a channel above to start streaming".
+  All dot navigation, `logstoreGoTo` index checks, and the news auto-refresh timer updated
+  to match the new order.
+- **Storage & Logs relocated to Docker & Network card** — Removed the Storage & Logs slide
+  from the Live TV / Live News card (now a clean 2-slide card: Live TV + Live News). Added
+  Storage & Logs as Slide 1 of the Docker & Network card, which was converted from a static
+  panel to a proper swipe carousel with dots, nav arrows, and touch swipe support.
+  New JS: `infraGoTo()`, `infraNav()`, and touch swipe IIFE. CSS selectors for
+  `.msc-header`, `.msc-dots`, `.msc-dot`, `.msc-nav-btn` extended to cover `#infra-swipe-card`.
+  `LOGSTORE_TOTAL` reduced from 3 → 2; Live News index references updated from 2 → 1.
+- **Version bump** `3.17.21` → `3.18.0`.
+
+---
+
 ## [3.17.21] — 2026-03-24
 
 ### Added

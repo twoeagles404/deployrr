@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.18.0 · Full deployment, update management, and real-time monitoring
+Version: 3.18.1 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.18.0')
+app = FastAPI(title='ArrHub Monitor', version='3.18.1')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.18.0",
+            "version": "3.18.1",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1063,6 +1063,7 @@ def api_settings_get():
             "seerr_url":      _db_get("seerr_url", ""),
             "seerr_api_key":  _db_get("seerr_api_key", ""),
             "football_api_key": _db_get("football_api_key", ""),
+            "groq_api_key":     _db_get("groq_api_key", ""),
             "weather_city":     _db_get("weather_city", ""),
             "weather_country":  _db_get("weather_country", ""),
             "reddit_client_id":     _db_get("reddit_client_id", ""),
@@ -1088,6 +1089,7 @@ def api_settings_set(body: dict = Body(default={})):
         "plex_url", "plex_token",
         "seerr_url", "seerr_api_key",
         "football_api_key",
+        "groq_api_key",
         "weather_city", "weather_country",
         "reddit_client_id", "reddit_client_secret", "reddit_username", "reddit_password",
     ]
@@ -1104,7 +1106,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.18.0",
+            "version": "3.18.1",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1475,7 +1477,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.18.0"})
+    return jsonify({"update_available": False, "version": "3.18.1"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -5831,7 +5833,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.18.0</div>
+      <div class="sb-version">v3.18.1</div>
     </div>
   </div>
 
@@ -6942,6 +6944,26 @@ body.sse-disconnected #app{padding-top:38px;}
         </div>
         <button class="btn-primary" style="margin-top:12px" onclick="saveWeatherLocation()">Save & Refresh Weather</button>
       </div>
+      <!-- AI Services — Groq API key -->
+      <div class="panel">
+        <div class="panel-title">🤖 AI Services</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
+          Your Groq API key powers AI features in ArrHub — including Intellibot and World Monitor AI analysis.
+          Get a free key at <a href="https://console.groq.com/keys" target="_blank" rel="noopener" style="color:var(--blue)">console.groq.com/keys</a>.
+        </div>
+        <div class="settings-grid">
+          <div class="field" style="grid-column:1/-1">
+            <label>Groq API Key</label>
+            <input type="password" id="svc-groq-key" placeholder="gsk_••••••••••••••••••••••••••••••••">
+            <div class="field-hint">Stored securely server-side. Used by Intellibot and World Monitor features.</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+          <button class="btn-primary" onclick="saveGroqKey()">Save Groq Key</button>
+          <span id="groq-key-status" style="font-size:11px;color:var(--green)"></span>
+        </div>
+      </div>
+
       <!-- Service Integrations — API keys for Overview cards -->
       <div class="panel">
         <div class="panel-title">
@@ -7095,7 +7117,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.18.0</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.18.1</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -9532,6 +9554,7 @@ async function loadSettings() {
         setInput('svc-seerr-url',   s.seerr_url);
         setInput('svc-seerr-key',   s.seerr_api_key);
         setInput('svc-football-key', s.football_api_key);
+        setInput('svc-groq-key',     s.groq_api_key);
         setInput('cfg-weather-city',    s.weather_city);
         setInput('cfg-weather-country', s.weather_country);
         setInput('cfg-reddit-client-id',     s.reddit_client_id     || '');
@@ -13136,6 +13159,29 @@ async function saveWeatherLocation() {
         showToast(city ? `Weather set to ${city}${country ? ', ' + country : ''}` : 'Weather set to auto-detect (IP)', 'success');
         // Refresh weather immediately
         loadWeather();
+    } catch(e) { showToast('Save failed', 'error'); }
+}
+
+async function saveGroqKey() {
+    const key = (document.getElementById('svc-groq-key')?.value || '').trim();
+    const statusEl = document.getElementById('groq-key-status');
+    try {
+        const r = await fetch(API + '/api/settings', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ groq_api_key: key })
+        });
+        const d = await r.json();
+        if (d.error) {
+            showToast('Error: ' + d.error, 'error');
+            if (statusEl) { statusEl.textContent = '✗ Failed to save'; statusEl.style.color = 'var(--red)'; }
+        } else {
+            showToast('Groq API key saved', 'success');
+            if (statusEl) {
+                statusEl.textContent = key ? '✓ Key saved' : '✓ Key cleared';
+                statusEl.style.color = 'var(--green)';
+                setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
+            }
+        }
     } catch(e) { showToast('Save failed', 'error'); }
 }
 

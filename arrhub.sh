@@ -1,7 +1,7 @@
 #---
 #!/bin/bash
 # =============================================================================
-# ArrHub v3.18.0 — Production-Ready ARR Suite Deployment TUI
+# ArrHub v3.18.1 — Production-Ready ARR Suite Deployment TUI
 # Self-contained. Requires: dialog, docker (compose v2), bash 4+, root.
 # GitHub: https://github.com/twoeagles404/arrhub
 # =============================================================================
@@ -13,7 +13,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # Version & GitHub Configuration
 # ---------------------------------------------------------------------------
-VERSION="3.18.0"
+VERSION="3.18.1"
 GITHUB_USER="twoeagles404"
 GITHUB_REPO="arrhub"
 # GITHUB_BRANCH is set for the branch this file lives on (dev/main).

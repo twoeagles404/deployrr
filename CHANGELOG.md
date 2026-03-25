@@ -6,6 +6,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.18.1] — 2026-03-25
+
+### Added
+- **Groq API Key in Settings** — New "🤖 AI Services" panel in Settings stores the user's
+  Groq API key server-side (SQLite, same pattern as all other keys). Field pre-populates on
+  revisit. Dedicated `saveGroqKey()` JS function with inline ✓/✗ status feedback and a
+  3-second auto-clear on success. Key is returned by `GET /api/settings` and accepted by
+  `POST /api/settings` (`allowed` list updated). Powers AI features in Intellibot and
+  World Monitor. Link to `console.groq.com/keys` included for free key sign-up.
+- **Version bump** `3.18.0` → `3.18.1`.
+
+---
+
 ## [3.18.0] — 2026-03-25
 
 ### Changed

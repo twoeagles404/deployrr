@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse, Response
 import uvicorn
 
-app = FastAPI(title='ArrHub Monitor', version='3.18.1')
+app = FastAPI(title='ArrHub Monitor', version='3.19.0')
 
 # ── Flask-compat shim (jsonify -> JSONResponse) ────────────────────────────────────────────────────────
 def jsonify(data, status: int = 200):
@@ -1043,7 +1043,7 @@ def api_settings_get():
             "puid": _db_get("puid", "1000"),
             "pgid": _db_get("pgid", "1000"),
             "no_auth": _NO_AUTH,
-            "version": "3.18.1",
+            "version": "3.19.0",
             # Service integration keys — returned so the UI can re-populate fields on revisit
             "radarr_url":        _db_get("radarr_url", ""),
             "radarr_api_key":    _db_get("radarr_api_key", ""),
@@ -1106,7 +1106,7 @@ def api_config_export():
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         payload = {
             "arrhub_backup": True,
-            "version": "3.18.1",
+            "version": "3.19.0",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "settings": {k: v for k, v in rows},
         }
@@ -1477,7 +1477,7 @@ def api_stack_add(body: dict = Body(default={})):
 @app.get("/api/update/check")
 def api_update_check():
     """Check for ArrHub updates."""
-    return jsonify({"update_available": False, "version": "3.18.1"})
+    return jsonify({"update_available": False, "version": "3.19.0"})
 
 @app.post("/api/update/all")
 def api_update_all():
@@ -1576,7 +1576,9 @@ def api_weather():
             geo_resp = requests.get("https://ipapi.co/json/", timeout=5)
             geo = geo_resp.json()
             lat, lon = geo.get("latitude", 0), geo.get("longitude", 0)
-            location_name = geo.get("city", "Unknown")
+            # city can come back as None or empty string — fall through to region/country
+            city = geo.get("city") or geo.get("region") or ""
+            location_name = city if city else "Your Location"
             country_name = geo.get("country_name", "")
 
         # Get weather from open-meteo.
@@ -1595,7 +1597,8 @@ def api_weather():
         # Extract current conditions (humidity, wind, feels-like)
         current = weather.get("current", {})
         result = {
-            "location": f"{location_name}, {country_name}",
+            "location": f"{location_name}, {country_name}".strip(", "),
+            "current_temp": current.get("temperature_2m"),
             "humidity": current.get("relative_humidity_2m"),
             "wind_mph": round(current.get("wind_speed_10m", 0), 1),
             "feels_like": current.get("apparent_temperature"),
@@ -5833,7 +5836,7 @@ body.sse-disconnected #app{padding-top:38px;}
     <div class="sb-logo">A</div>
     <div>
       <div class="sb-title">ArrHub</div>
-      <div class="sb-version">v3.18.1</div>
+      <div class="sb-version">v3.19.0</div>
     </div>
   </div>
 
@@ -5884,19 +5887,20 @@ body.sse-disconnected #app{padding-top:38px;}
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
       Logs
     </div>
-    <div class="sb-item" onclick="openExternalLink('http://localhost:9090')">
+    <!-- Auto-detected monitoring tools — hidden until container is running -->
+    <div id="sb-link-prometheus" class="sb-item" onclick="openExternalLink('http://localhost:9090')" style="display:none" title="Prometheus (auto-detected)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
       Prometheus ↗
     </div>
-    <div class="sb-item" onclick="openExternalLink('http://localhost:3000')">
+    <div id="sb-link-grafana" class="sb-item" onclick="openExternalLink('http://localhost:3000')" style="display:none" title="Grafana (auto-detected)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 1018 0 9 9 0 00-18 0"/></svg>
       Grafana ↗
     </div>
-    <div class="sb-item" onclick="openExternalLink('http://localhost:3001')">
+    <div id="sb-link-uptime-kuma" class="sb-item" onclick="openExternalLink('http://localhost:3001')" style="display:none" title="Uptime Kuma (auto-detected)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
       Uptime Kuma ↗
     </div>
-    <div class="sb-item" onclick="openExternalLink('http://localhost:8888')">
+    <div id="sb-link-dozzle" class="sb-item" onclick="openExternalLink('http://localhost:8888')" style="display:none" title="Dozzle (auto-detected)">
       <svg class="sb-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
       Dozzle ↗
     </div>
@@ -6232,7 +6236,7 @@ body.sse-disconnected #app{padding-top:38px;}
           <div id="logstore-swipe-card">
             <!-- Header: title + dots + nav -->
             <div class="msc-header">
-              <span class="msc-title">💾 Storage &amp; Logs</span>
+              <span class="msc-title">📺 Live TV &amp; News</span>
               <div class="msc-dots" id="logstore-dots">
                 <div class="msc-dot active" onclick="logstoreGoTo(0)" title="Live TV"></div>
                 <div class="msc-dot" onclick="logstoreGoTo(1)" title="Live News"></div>
@@ -6305,7 +6309,7 @@ body.sse-disconnected #app{padding-top:38px;}
           <div id="infra-swipe-card">
             <!-- Header: title + dots + nav -->
             <div class="msc-header">
-              <span class="msc-title">🐳 Docker &amp; Network</span>
+              <span class="msc-title">🖥️ Infrastructure</span>
               <div class="msc-dots" id="infra-dots">
                 <div class="msc-dot active" onclick="infraGoTo(0)" title="Docker & Network"></div>
                 <div class="msc-dot" onclick="infraGoTo(1)" title="Storage & Logs"></div>
@@ -7117,7 +7121,7 @@ body.sse-disconnected #app{padding-top:38px;}
 
       <div class="panel">
         <div class="panel-title">About</div>
-        <div class="ctr-row"><span>ArrHub Version</span><span>3.18.1</span></div>
+        <div class="ctr-row"><span>ArrHub Version</span><span>3.19.0</span></div>
         <div class="ctr-row"><span>Auth Status</span><span style="color:var(--green)">Disabled (open access)</span></div>
         <div class="ctr-row"><span>WebUI Port</span><span>9999</span></div>
       </div>
@@ -7191,8 +7195,8 @@ body.sse-disconnected #app{padding-top:38px;}
               <div style="display:flex;align-items:center;gap:10px">
                 <span style="font-size:18px">📺</span>
                 <div>
-                  <div id="iptv-now-playing" style="font-size:13px;font-weight:600;color:var(--text)">Select a channel</div>
-                  <div id="iptv-now-source" style="font-size:10px;color:var(--text3)">MovieBite · Select a channel</div>
+                  <div id="iptv-now-playing" style="font-size:13px;font-weight:600;color:var(--text)">Select a match / channel</div>
+                  <div id="iptv-now-source" style="font-size:10px;color:var(--text3)">SportsBite · Pick a live match</div>
                 </div>
               </div>
               <div style="display:flex;gap:6px">
@@ -8265,11 +8269,32 @@ async function loadContainers() {
         setEl('ctr-stopped-count', stopped);
         setEl('ctr-total-count', allContainers.length);
         renderContainers();
+        // Show/hide monitoring sidebar links based on running containers
+        _updateMonitoringLinks(allContainers);
         // Refresh alerts since container state changed
         refreshAlerts();
     } catch(e) {
         document.getElementById('ctr-grid').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Docker not available</div></div>';
     }
+}
+
+// ── Auto-detect monitoring tools from running containers ─────────────────────
+// Shows sidebar links only when the corresponding container is running
+const _MONITORING_TOOLS = [
+    { keywords: ['prometheus'],                              id: 'sb-link-prometheus'  },
+    { keywords: ['grafana'],                                 id: 'sb-link-grafana'     },
+    { keywords: ['uptime-kuma','uptime_kuma','uptimekuma'], id: 'sb-link-uptime-kuma' },
+    { keywords: ['dozzle'],                                  id: 'sb-link-dozzle'      },
+];
+function _updateMonitoringLinks(containers) {
+    const names = containers
+        .filter(c => c.status === 'running')
+        .map(c => (c.name || '').toLowerCase());
+    _MONITORING_TOOLS.forEach(({ keywords, id }) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.style.display = keywords.some(kw => names.some(n => n.includes(kw))) ? '' : 'none';
+    });
 }
 
 function filterContainers(f, el) {
@@ -9607,7 +9632,8 @@ async function loadWeather() {
         const temp = d.current_temp != null ? Math.round(d.current_temp) : (w.temp_max != null ? Math.round(w.temp_max) : '—');
         setEl('weather-temp', temp + '°C');
         setEl('weather-desc', w.desc || 'Clear');
-        setEl('weather-location', d.location || '');
+        const loc = (d.location || '').replace(/^,\s*/, '').trim();
+        setEl('weather-location', loc || '📍 Set city in Settings');
         setEl('weather-humidity', d.humidity != null ? d.humidity + '%' : '—');
         setEl('weather-wind', d.wind_mph != null ? Math.round(d.wind_mph) + ' mph' : '—');
         setEl('weather-feels', d.feels_like != null ? Math.round(d.feels_like) + '°C' : '—');
@@ -11716,7 +11742,20 @@ function iptvSetSource(src) {
     _iptvChannels = [];
     _iptvInited = false;   // force re-init so new source channels load
     _iptvInitUI();         // show/hide domain input
+    _iptvUpdateHints();    // update placeholder/hint text for new source
     iptvInit();
+}
+
+// Update placeholder & hint text based on the active source
+function _iptvUpdateHints() {
+    const isSports = _iptvSource === 'moviebite';
+    const nowPlaying = document.getElementById('iptv-now-playing');
+    const nowSource  = document.getElementById('iptv-now-source');
+    const search     = document.getElementById('iptv-search');
+    const sourceLabel = { moviebite:'SportsBite', bintv:'BinTV', daddylive:'DaddyLive', sid_m3u8:'M3U8 List' };
+    if (nowPlaying && !_iptvCurrentId) nowPlaying.textContent = isSports ? 'Select a match' : 'Select a channel';
+    if (nowSource  && !_iptvCurrentId) nowSource.textContent  = (sourceLabel[_iptvSource]||'Stream') + (isSports ? ' · Pick a live match' : ' · Pick a channel');
+    if (search) search.placeholder = isSports ? 'Search matches…' : 'Search channels…';
 }
 
 function iptvSetTZOffset(val) {
@@ -11763,6 +11802,7 @@ async function iptvInit() {
     if (_iptvInited && _iptvChannels.length) return;
     _iptvInited = true;
     _iptvInitUI();
+    _iptvUpdateHints();   // update placeholder/search label for current source
     await iptvLoadSourceChannels();
 }
 
@@ -12487,6 +12527,8 @@ function _syncAlertsBarPadding() {
     content.style.paddingTop = (h + 8) + 'px';
 }
 
+// ── System Pulse — health alert aggregation (inspired by arr-dashboard) ──────
+// Thresholds: 80% disk = warning, 90% = critical; 90% RAM = warning
 async function refreshAlerts() {
     const body = document.getElementById('alerts-body');
     const title = document.getElementById('alerts-title');
@@ -12494,25 +12536,42 @@ async function refreshAlerts() {
     try {
         const alerts = [];
 
-        // Check containers for non-running state
+        // ① Stopped / crashed containers
         if (allContainers.length) {
             allContainers.filter(c => c.status !== 'running').forEach(c => {
-                alerts.push({level:'red', msg:`Container <b>${c.name}</b> is ${c.status}`});
+                alerts.push({level:'red', category:'Container', msg:`<b>${c.name}</b> is ${c.status}`});
             });
         }
 
-        // Check disk usage from storage API
+        // ② Disk usage — 80% warning, 90% critical (arr-dashboard thresholds)
         try {
             const r = await fetch(API + '/api/storage');
             const d = await r.json();
             (d.filesystems || []).forEach(fs => {
-                if (fs.percent > 85) {
-                    alerts.push({level:'yellow', msg:`Disk usage high: <b>${fs.mountpoint}</b> at ${fs.percent}%`});
+                if (fs.percent >= 90) {
+                    alerts.push({level:'red',    category:'Disk', msg:`<b>${fs.mountpoint}</b> critically full at <b>${fs.percent}%</b>`});
+                } else if (fs.percent >= 80) {
+                    alerts.push({level:'yellow', category:'Disk', msg:`<b>${fs.mountpoint}</b> usage high at <b>${fs.percent}%</b>`});
                 }
             });
         } catch(e) {}
 
-        // Update title
+        // ③ High RAM / CPU load
+        try {
+            const r = await fetch(API + '/api/system');
+            const d = await r.json();
+            const ramPct = d.mem_percent ?? d.memory?.percent;
+            const load1m = d.load_avg?.['1m'] ?? d.load_1m;
+            const cores  = d.cpu_count;
+            if (ramPct != null && ramPct > 90) {
+                alerts.push({level:'yellow', category:'RAM', msg:`Memory critically high at <b>${Math.round(ramPct)}%</b>`});
+            }
+            if (load1m != null && cores != null && load1m > cores * 1.5) {
+                alerts.push({level:'yellow', category:'CPU', msg:`Load average <b>${load1m.toFixed(2)}</b> is very high (${cores} cores)`});
+            }
+        } catch(e) {}
+
+        // Update title + severity colour
         if (title) {
             if (alerts.length === 0) {
                 title.textContent = '🟢 All systems nominal';
@@ -12520,25 +12579,25 @@ async function refreshAlerts() {
             } else {
                 const hasRed = alerts.some(a => a.level === 'red');
                 title.textContent = (hasRed ? '🔴 ' : '🟡 ') + alerts.length + ' alert' + (alerts.length > 1 ? 's' : '');
-                title.style.color = hasRed ? 'var(--red)' : 'var(--yellow)';
+                title.style.color = hasRed ? 'var(--red)' : 'var(--yellow,#e3b341)';
             }
         }
 
         const bar = document.getElementById('alerts-bar');
         if (alerts.length === 0) {
             body.innerHTML = '<div class="alert-row"><span>🟢</span><span>All systems nominal</span></div>';
-            // Auto-hide the floating bar when everything is OK
             if (bar) bar.classList.add('alerts-hidden');
             const content = document.getElementById('content');
             if (content) content.style.paddingTop = '';
         } else {
+            // Sort: red first, then yellow
+            alerts.sort((a,b) => (a.level==='red'?0:1) - (b.level==='red'?0:1));
             body.innerHTML = alerts.map(a => {
-                const icon = a.level === 'red' ? '🔴' : a.level === 'yellow' ? '🟡' : '🟢';
-                return `<div class="alert-row"><span>${icon}</span><span>${a.msg}</span></div>`;
+                const icon = a.level === 'red' ? '🔴' : '🟡';
+                const cat  = a.category ? `<span style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);background:var(--surface2);padding:1px 5px;border-radius:4px;margin-right:4px">${a.category}</span>` : '';
+                return `<div class="alert-row"><span>${icon}</span><span>${cat}${a.msg}</span></div>`;
             }).join('');
-            // Show the floating bar for real alerts
             if (bar) bar.classList.remove('alerts-hidden');
-            // Wait for paint then sync padding
             requestAnimationFrame(() => _syncAlertsBarPadding());
         }
     } catch(e) {}
@@ -13588,10 +13647,10 @@ const WIDGET_DEFS = {
   gauges:   { label: 'System Gauges',    icon: '📊', desc: 'CPU, RAM & load gauges',              span: 8,  scrollable: false },
   sysinfo:  { label: 'System Info',      icon: 'ℹ️', desc: 'OS, kernel, hostname, uptime',        span: 4,  scrollable: false },
   weather:  { label: 'Weather',          icon: '🌤️', desc: 'Current weather & forecast',          span: 4,  scrollable: false },
-  logstore: { label: 'Storage & Logs',   icon: '💾', desc: 'Disk usage + live log excerpt',       span: 4,  scrollable: false },
+  logstore: { label: 'Live TV & News',   icon: '📺', desc: 'Live TV news channels + RSS news feed', span: 4, scrollable: false },
   services: { label: 'Service Cards',    icon: '🃏', desc: 'ARR / Plex / qBit service cards',    span: 8,  scrollable: true  },
   featured: { label: 'Featured Media',   icon: '🎬', desc: 'Movie backdrop art + info from Radarr', span: 4, scrollable: false },
-  infra:    { label: 'Docker & Network', icon: '🐳', desc: 'Docker engine stats + network I/O',  span: 4,  scrollable: true  },
+  infra:    { label: 'Infrastructure',   icon: '🖥️', desc: 'Docker engine, network I/O & storage stats', span: 4, scrollable: true  },
   apps:     { label: 'Apps & Containers',icon: '🚀', desc: 'Swipeable launcher + container list', span: 4, scrollable: false },
   todo:     { label: 'To-Do List',       icon: '✅', desc: 'Editable personal task list',         span: 4, scrollable: true  },
   calendar: { label: 'Calendar',         icon: '📅', desc: 'Monthly calendar with custom events', span: 4, scrollable: false },

@@ -2,7 +2,7 @@
 #
 """
 ArrHub Monitor — Enhanced Server Administration Dashboard
-Version: 3.18.1 · Full deployment, update management, and real-time monitoring
+Version: 3.19.0 · Full deployment, update management, and real-time monitoring
 Port: 9999
 
 Dependencies:

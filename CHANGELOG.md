@@ -6,6 +6,34 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [3.19.0] — 2026-03-26
+
+### Fixed
+- **Widget labels corrected** — `logstore` card title changed from "💾 Storage & Logs" to
+  "📺 Live TV & News" (its slides are Live TV + Live News, not storage). `infra` card title
+  changed from "🐳 Docker & Network" to "🖥️ Infrastructure" (it now contains Docker/Network
+  on slide 0 and Storage & Logs on slide 1). `WIDGET_DEFS` labels updated to match.
+- **Weather city name** — Backend now falls back to `region` when the geolocation API
+  returns an empty `city` field, and finally to "Your Location" rather than "Unknown".
+  Frontend shows "📍 Set city in Settings" if the location string is missing entirely.
+  Added `current_temp` field to the weather API response.
+- **IPTV SportsBite channel dial** — Default "now playing" label was still showing
+  "MovieBite · Select a channel". Added `_iptvUpdateHints()` which sets context-aware
+  placeholder text: "Select a match / SportsBite · Pick a live match" for SportsBite,
+  and the appropriate channel text for BinTV/DaddyLive/etc. Called on init and source change.
+
+### Changed
+- **Monitoring sidebar links** — Prometheus, Grafana, Uptime Kuma, and Dozzle sidebar
+  items are now **hidden by default**. They auto-reveal only when their corresponding
+  Docker container is detected as running, via the new `_updateMonitoringLinks()` function
+  (called each time containers are loaded). Dozzle also removed from right-panel Quick Links.
+- **System Pulse alerts enhanced** — `refreshAlerts()` now checks: disk at 80% (warning)
+  and 90% (critical), RAM >90%, CPU load >1.5× core count. Each alert row shows a category
+  badge chip (Disk / Container / RAM / CPU). Red alerts sorted above yellow.
+- **Version bump** `3.18.1` → `3.19.0`.
+
+---
+
 ## [3.18.1] — 2026-03-25
 
 ### Added
